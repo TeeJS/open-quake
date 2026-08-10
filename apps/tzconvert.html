@@ -1,0 +1,445 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1920, height=480">
+<title>Time Zone Converter</title>
+<style>
+  :root { --bg:#05080d; --fg:#e8f0f6; --label:#8aa6b4; --face:#0d1722; --tick:#3a4a5a; --accent:#2bff88;
+    --ih:9.5vh; --colw:480px; }   /* --colw = one column's width; render() sets it from the zone count */
+  body.light { --bg:#eef3f8; --fg:#16242f; --label:#5a6c7e; --face:#ffffff; --tick:#b9c6d2; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:var(--bg);
+    font-family:'Segoe UI', system-ui, -apple-system, sans-serif; }
+  #grid { width:100vw; height:100vh; display:grid; grid-template-columns:repeat(4,1fr); }
+  .cell { display:flex; flex-direction:column; align-items:center; justify-content:center;
+    position:relative; padding:0 12px; min-width:0; gap:1.8vh; }
+  .cell::after { content:''; position:absolute; right:0; top:18%; height:64%; width:1px;
+    background:linear-gradient(transparent, color-mix(in srgb, var(--fg) 16%, transparent), transparent); }
+  .cell.edge::after { display:none; }
+  /* Type scales with the column, not the viewport, so 5-6 cities shrink to fit instead of
+     overflowing. At 4 columns (--colw:480px) these resolve to exactly the same sizes as before. */
+  .abbrs { color:var(--label); font-weight:600; letter-spacing:.12em; white-space:nowrap;
+    font-size:min(9vh, calc(var(--colw) * .088)); }
+  .abbrs .on { color:var(--fg); font-weight:800; }
+  /* cities mode: the city name leads, its GMT offset(s) sit under it in the abbreviation slot */
+  .city { color:var(--fg); font-weight:700; letter-spacing:.06em; white-space:nowrap;
+    font-size:min(8vh, calc(var(--colw) * .08)); overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  .abbrs.offs { font-size:min(5.4vh, calc(var(--colw) * .056)); letter-spacing:.06em; }
+  /* reclaim vertical space for the picker while adjusting */
+  .cell.active .abbrs, .cell.active .city { display:none; }
+  .time { width:100%; text-align:center; color:var(--accent); font-weight:700;
+    font-size:min(19vh, calc(var(--colw) * .168)); line-height:1.1; letter-spacing:.02em;
+    font-variant-numeric:tabular-nums; white-space:nowrap;
+    background:none; border:none; outline:none; border-radius:.18em;
+    font-family:inherit; caret-color:var(--fg);
+    text-shadow:0 0 .26em color-mix(in srgb, var(--accent) 55%, transparent); }
+  /* While adjusting, the drum IS the readout — a second copy of the same time would be redundant. */
+  .cell.active .time { display:none; }
+  .time.bad { color:#ff5a5a; text-shadow:0 0 .26em color-mix(in srgb, #ff5a5a 55%, transparent); }
+  /* ---- Apple-style inline drum picker (shown for the active column) ---- */
+  /* 3 rows + Done must fit inside the 480px-tall cell, or the cell overflows and every column's
+     content gets shoved off-center. 3*22vh = 66vh drum + gap + Done ~= 80vh. */
+  .cell.active { --ih:22vh; }
+  /* display:none, NOT visibility:hidden — a hidden-but-laid-out picker still reserves its full
+     height in every inactive column, which is what pushed their label+time above center. */
+  .picker { position:relative; display:none; gap:.6vw; touch-action:none; }
+  .cell.active .picker { display:flex; }
+  .done { display:none; align-items:center; justify-content:center;
+    min-height:11vh; padding:0 calc(var(--colw) * .07); font:inherit;
+    font-size:min(5.4vh, calc(var(--colw) * .056));
+    font-weight:700; letter-spacing:.06em; color:var(--bg); background:var(--accent);
+    border:none; border-radius:1.4vh; cursor:pointer; user-select:none;
+    touch-action:manipulation; white-space:nowrap; }
+  .cell.active .done { display:flex; }
+  .done:active { filter:brightness(.85); }
+  .picker::before { content:''; position:absolute; left:-.6vw; right:-.6vw;
+    top:calc(50% - var(--ih)/2); height:var(--ih); pointer-events:none; border-radius:1.6vh;
+    background:color-mix(in srgb, var(--accent) 10%, transparent);
+    box-shadow:0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+  .drum { height:calc(3*var(--ih)); overflow-y:auto; scroll-snap-type:y mandatory;
+    scrollbar-width:none; text-align:center; overscroll-behavior:contain; cursor:grab;
+    -webkit-mask-image:linear-gradient(transparent, #000 26%, #000 74%, transparent);
+    mask-image:linear-gradient(transparent, #000 26%, #000 74%, transparent); }
+  .drum:active { cursor:grabbing; }
+  .drum::-webkit-scrollbar { display:none; }
+  .dpad { height:var(--ih); }
+  .di { height:var(--ih); line-height:var(--ih); scroll-snap-align:center;
+    color:var(--label); font-weight:600; font-size:min(12vh, calc(var(--colw) * .12));
+    padding:0 .4vw; font-variant-numeric:tabular-nums; user-select:none; cursor:pointer;
+    white-space:nowrap; }
+  /* same size as the plain time text this picker replaces, per spec — never smaller */
+  .di.sel { color:var(--fg); font-weight:800; font-size:min(17vh, calc(var(--colw) * .168)); }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<script>
+  'use strict';
+  function readOpts() {
+    const o = {};
+    (location.hash.slice(1) || '').split('&').forEach(kv => {
+      const i = kv.indexOf('='); if (i < 0) return;
+      o[decodeURIComponent(kv.slice(0, i))] = decodeURIComponent(kv.slice(i + 1).replace(/\+/g, ' '));
+    });
+    return o;
+  }
+  const ACCENT_NAMES = { green:'#2bff88', red:'#ff4040', amber:'#ffb000', blue:'#38b6ff', white:'#eef4ff' };
+  // US mode keeps hand-written abbreviation pairs: Intl only returns real letter abbreviations
+  // (PDT/PST) for US zones — elsewhere it gives numeric forms like "GMT+1", so cities mode shows
+  // computed GMT offsets instead rather than inventing abbreviations.
+  const US_ZONES = [
+    { tz: 'US/Pacific',  dt: 'PDT', st: 'PST' },
+    { tz: 'US/Mountain', dt: 'MDT', st: 'MST' },
+    { tz: 'US/Central',  dt: 'CDT', st: 'CST' },
+    { tz: 'US/Eastern',  dt: 'EDT', st: 'EST' }
+  ];
+  // Same 6 city slots the World Clock offers. Unlike it, they stay on ONE row whatever the count:
+  // a second row would be 240px tall and the drum picker needs ~340px. Type sizes scale with the
+  // column width instead (--colw), so 5-6 columns shrink to fit rather than overflow.
+  const MAX_CITIES = 6;
+  const MIN_STOPS = [0, 15, 30, 45];
+  const grid = document.getElementById('grid');
+  const mod = m => ((m % 1440) + 1440) % 1440;
+  const prettify = z => (z || '').split('/').pop().replace(/_/g, ' ');
+
+  // ---- zone offsets (DST-correct via Intl; zones' relative gaps come from today's real offsets) ----
+  function zoneOffsetMin(tz, date) {
+    try {
+      const p = {};
+      new Intl.DateTimeFormat('en-US', { timeZone: tz, hour12: false, year: 'numeric', month: '2-digit',
+        day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        .formatToParts(date).forEach(x => { if (x.type !== 'literal') p[x.type] = parseInt(x.value, 10); });
+      return Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second) - date.getTime()) / 60000);
+    } catch (e) { return 0; }
+  }
+  // Computed rather than taken from Intl's short timeZoneName, which truncates half-hour zones
+  // ("GMT+5:3" for Kolkata).
+  function gmtLabel(min) {
+    if (!min) return 'GMT';
+    const a = Math.abs(min), h = Math.floor(a / 60), m = a % 60;
+    return 'GMT' + (min < 0 ? '−' : '+') + h + (m ? ':' + String(m).padStart(2, '0') : '');
+  }
+  function zoneMeta(tz) {
+    const now = new Date(), y = now.getFullYear();
+    const oJan = zoneOffsetMin(tz, new Date(Date.UTC(y, 0, 15)));
+    const oJul = zoneOffsetMin(tz, new Date(Date.UTC(y, 6, 15)));
+    const off = zoneOffsetMin(tz, now), hasDST = oJan !== oJul;
+    return { off, hasDST, isDST: hasDST && off === Math.max(oJan, oJul),
+      stdLabel: gmtLabel(Math.min(oJan, oJul)), dstLabel: gmtLabel(Math.max(oJan, oJul)) };
+  }
+  // US zones (default) or up to 4 picked cities; an empty cities list falls back to US.
+  function buildZones(O) {
+    let list = [];
+    if ((O.mode || 'us') === 'cities') {
+      for (let i = 1; i <= MAX_CITIES; i++) {
+        const z = O['c' + i]; if (!z) continue;
+        const lab = (O['l' + i] && O['l' + i].trim()) ? O['l' + i].trim() : prettify(z);
+        list.push({ tz: z, city: lab });
+      }
+    }
+    if (!list.length) list = US_ZONES.map(z => ({ ...z }));
+    const out = list.map(z => ({ ...z, ...zoneMeta(z.tz) }));
+    // Auto-order: west -> east by current GMT offset (GMT-7 before GMT+9). Sort is stable, so
+    // zones sharing an offset keep the order they were picked in. US mode is already in this
+    // order, so the option is only offered (and only does anything) in cities mode.
+    if (O.autoOrder === '1' || O.autoOrder === 'true') out.sort((a, b) => a.off - b.off);
+    return out;
+  }
+
+  // ---- sticky state: an absolute UTC minute-of-day; never follows the current time ----
+  // Stored in UTC (not "minutes in column 1") so changing the city list can't silently
+  // reinterpret the time the user set.
+  let fmt24 = false, info = buildZones(readOpts());
+  let umins = mod(13 * 60 - zoneOffsetMin('US/Pacific', new Date()));   // first launch: 1:00 PM Pacific
+  try {
+    const s = JSON.parse(localStorage.getItem('tzconvert') || '{}');
+    if (Number.isInteger(s.umins) && s.umins >= 0 && s.umins < 1440) umins = s.umins;
+    // migrate the pre-cities schema, which stored minutes-of-day in the Pacific column
+    else if (Number.isInteger(s.pmins) && s.pmins >= 0 && s.pmins < 1440) umins = mod(s.pmins - zoneOffsetMin('US/Pacific', new Date()));
+  } catch (e) {}
+  const save = () => { try { localStorage.setItem('tzconvert', JSON.stringify({ umins })); } catch (e) {} };
+
+  let activeIdx = -1, cells = [], commitT = null;
+  const zoneMins = i => mod(umins + info[i].off);
+  const setZoneMins = (i, m) => { umins = mod(m - info[i].off); save(); };
+
+  function fmtTime(m) {
+    const h = Math.floor(m / 60), mm = String(m % 60).padStart(2, '0');
+    if (fmt24) return String(h).padStart(2, '0') + ':' + mm;
+    return (((h + 11) % 12) + 1) + ':' + mm + ' ' + (h < 12 ? 'AM' : 'PM');
+  }
+
+  // Accepts "2", "2p", "230", "1430", "2:30", "2.30", "2:30 pm". In 12-hour mode with no
+  // AM/PM given, keeps the column's current meridiem (curPM) so "4:30" stays afternoon.
+  function parseTime(str, curPM) {
+    let s = String(str).trim().toLowerCase().replace(/\./g, ':');
+    let mer = null;
+    const mm = s.match(/([ap])\.?m?\.?\s*$/);
+    if (mm) { mer = mm[1]; s = s.slice(0, mm.index); }
+    s = s.replace(/[^0-9:]/g, '');
+    if (!s) return null;
+    let h, min;
+    if (s.includes(':')) {
+      const parts = s.split(':');
+      h = parseInt(parts[0], 10); min = parts[1] === '' ? 0 : parseInt(parts[1], 10);
+    } else if (s.length <= 2) { h = parseInt(s, 10); min = 0; }
+    else { h = parseInt(s.slice(0, s.length - 2), 10); min = parseInt(s.slice(-2), 10); }
+    if (!Number.isInteger(h) || !Number.isInteger(min) || min > 59 || h > 24) return null;
+    if (h === 24) h = 0;
+    if (mer) h = (h % 12) + (mer === 'p' ? 12 : 0);
+    else if (!fmt24 && h <= 12) { if (h === 12) h = curPM ? 12 : 0; else if (curPM) h += 12; }
+    if (h > 23) return null;
+    return h * 60 + min;
+  }
+
+  function paint(exceptIdx) {
+    cells.forEach((c, i) => {
+      if (i === exceptIdx) return;
+      c.input.value = fmtTime(zoneMins(i)); c.input.classList.remove('bad');
+    });
+    if (activeIdx >= 0) syncPicker(activeIdx);
+  }
+
+  // ---- drum picker ----
+  // The panel's physical touch doesn't reach the page as real touch/pointer events — the host
+  // translates raw touch points into synthetic mouseDown/mouseMove/mouseUp on the webview (see
+  // index.js webTouch()). A plain overflow:auto div does NOT scroll from mouse-drag on its own
+  // (that's native-touch-only browser behavior), so dragging is hand-rolled here from those mouse
+  // events. This also covers a real desktop mouse identically, so no browser-only shortcut exists.
+  function makeDrum(values, onSettle) {
+    const d = document.createElement('div'); d.className = 'drum';
+    const padT = document.createElement('div'); padT.className = 'dpad'; d.appendChild(padT);
+    const items = values.map(v => {
+      const it = document.createElement('div'); it.className = 'di'; it.textContent = v;
+      d.appendChild(it); return it;
+    });
+    const padB = document.createElement('div'); padB.className = 'dpad'; d.appendChild(padB);
+    const itemH = () => items[0].offsetHeight || 1;
+    const idx = () => Math.max(0, Math.min(items.length - 1, Math.round(d.scrollTop / itemH())));
+    const highlight = () => { const k = idx(); items.forEach((it, j) => it.classList.toggle('sel', j === k)); };
+    let dragging = false, dragMoved = false, startY = 0, startScroll = 0;
+    let t = null, userGesture = false;
+    // userGesture is set true only by an actual drag/wheel/tap on this drum, so a scroll event
+    // only commits when a real interaction caused it — never when syncPicker's setIdx moves the
+    // drum to display an exact state's nearest quarter-hour stop (that must never itself commit
+    // and silently round the real, possibly off-grid, time).
+    const settle = () => { clearTimeout(t); t = null; highlight(); if (userGesture) { userGesture = false; onSettle(); } };
+
+    let lastX = 0;
+    function onMove(e) {
+      if (!dragging) return;
+      const dy = e.clientY - startY;
+      if (Math.abs(dy) > 2) dragMoved = true;
+      d.scrollTop = startScroll - dy;
+      highlight();
+    }
+    // Tap-to-jump lives here (not in a 'click' listener) — the host delivers panel touch as
+    // synthetic mouseDown/mouseUp via webview.sendInputEvent, and whether that reliably
+    // auto-synthesizes a following native 'click' isn't something to depend on; hit-testing the
+    // release point ourselves works regardless of whether it does.
+    function onUp(e) {
+      if (!dragging) return;
+      dragging = false;
+      if (dragMoved) {
+        d.scrollTop = idx() * itemH();   // explicit snap — a JS-driven scroll can't rely on CSS scroll-snap
+        highlight();
+        userGesture = false;             // consume now so the resulting native 'scroll' event below is a no-op
+        onSettle();
+        return;
+      }
+      const y = e ? e.clientY : null;
+      const el = y != null && document.elementFromPoint ? document.elementFromPoint(lastX, y) : null;
+      const j = el ? items.indexOf(el) : -1;
+      if (j >= 0) { d.scrollTop = j * itemH(); highlight(); userGesture = false; onSettle(); }
+    }
+    d.addEventListener('mousedown', e => {
+      dragging = true; dragMoved = false; userGesture = true;
+      startY = e.clientY; lastX = e.clientX; startScroll = d.scrollTop;
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    // Real touch devices and a genuine desktop mouse wheel get native scrolling for free (harmless
+    // alongside the hand-rolled drag above); still gate their commits on a real user gesture.
+    d.addEventListener('pointerdown', () => { userGesture = true; });
+    d.addEventListener('wheel', () => { userGesture = true; });
+    d.addEventListener('scroll', () => { if (dragging) return; highlight(); if (!userGesture) return; clearTimeout(t); t = setTimeout(settle, 140); });
+    d.addEventListener('scrollend', () => { if (dragging || !userGesture) return; settle(); });
+    return { el: d, idx, highlight, setIdx: k => { d.scrollTop = k * itemH(); highlight(); } };
+  }
+
+  // Read the active drums -> minutes; commit only if it actually changed (programmatic syncs
+  // settle on the same value and become no-ops, so sync/commit can't loop).
+  function commitFromPicker(i) {
+    const c = cells[i];
+    if (!c.drums) return;
+    let h;
+    if (fmt24) h = c.drums.hour.idx();
+    else { h = (c.drums.hour.idx() + 1) % 12 + (c.drums.ap.idx() === 1 ? 12 : 0); }
+    const m = h * 60 + MIN_STOPS[c.drums.min.idx()];
+    if (m === zoneMins(i)) return;
+    setZoneMins(i, m); paint(-1);
+  }
+
+  function syncPicker(i) {
+    const c = cells[i];
+    if (!c.drums) return;
+    const m = zoneMins(i), h = Math.floor(m / 60);
+    c.drums.hour.setIdx(fmt24 ? h : (h + 11) % 12);
+    c.drums.min.setIdx(Math.max(0, Math.min(3, Math.round((m % 60) / 15))));
+    if (c.drums.ap) c.drums.ap.setIdx(h >= 12 ? 1 : 0);
+  }
+
+  function commit(i, { canon = false } = {}) {
+    clearTimeout(commitT); commitT = null;
+    const c = cells[i];
+    const m = parseTime(c.input.value, Math.floor(zoneMins(i) / 60) >= 12);
+    if (m === null) { c.input.classList.add('bad'); return; }
+    setZoneMins(i, m);
+    paint(canon ? -1 : i);
+    if (canon) c.input.classList.remove('bad');
+  }
+
+  // suppressPicker lets the keyboard fallback focus an input WITHOUT reopening the picker.
+  let suppressPicker = false;
+
+  function setActive(i) {
+    activeIdx = i;
+    cells.forEach((c, j) => c.cell.classList.toggle('active', j === i));
+    syncPicker(i);
+  }
+
+  // Close the picker. Every drum change has already been applied live, so this only dismisses —
+  // there is nothing left to "save". The column goes back to showing its (centered) label + time.
+  function deactivate() {
+    if (activeIdx < 0) return;
+    const i = activeIdx;
+    activeIdx = -1;
+    cells.forEach(c => c.cell.classList.remove('active'));
+    const inp = cells[i] && cells[i].input;
+    if (!inp) return;
+    if (commitT) commit(i);
+    inp.value = fmtTime(zoneMins(i)); inp.classList.remove('bad');
+    if (document.activeElement === inp) inp.blur();
+  }
+
+  function render() {
+    const O = readOpts();
+    fmt24 = O.format === '24';
+    document.body.classList.toggle('light', O._dark === '0');
+    const accent = /^#[0-9a-fA-F]{6}$/.test(O._accent || '') ? O._accent : (ACCENT_NAMES[O.color] || null);
+    if (accent) document.documentElement.style.setProperty('--accent', accent);
+
+    info = buildZones(O);
+    grid.innerHTML = ''; cells = [];
+    grid.style.gridTemplateColumns = 'repeat(' + info.length + ',1fr)';
+    grid.style.setProperty('--colw', ((grid.clientWidth || 1920) / info.length) + 'px');
+    info.forEach((z, i) => {
+      const cell = document.createElement('div'); cell.className = 'cell';
+      if (i === info.length - 1) cell.classList.add('edge');
+      // US zones show their real abbreviation pair; cities show the city name over its GMT
+      // offset(s). Either way the half in effect today is the bold one.
+      const ab = document.createElement('div'); ab.className = 'abbrs';
+      const pair = (a, b) => {
+        const x = document.createElement('span'); x.textContent = a;
+        const y = document.createElement('span'); y.textContent = b;
+        (z.isDST ? x : y).classList.add('on');
+        ab.appendChild(x); ab.appendChild(document.createTextNode('/')); ab.appendChild(y);
+      };
+      if (z.dt && z.st) pair(z.dt, z.st);
+      else {
+        const city = document.createElement('div'); city.className = 'city'; city.textContent = z.city;
+        cell.appendChild(city);
+        ab.classList.add('offs');
+        if (z.hasDST) pair(z.dstLabel, z.stdLabel);
+        else { const s = document.createElement('span'); s.textContent = z.stdLabel; s.classList.add('on'); ab.appendChild(s); }
+      }
+      const input = document.createElement('input');
+      input.className = 'time'; input.type = 'text'; input.inputMode = 'none';
+      input.autocomplete = 'off'; input.spellcheck = false; input.enterKeyHint = 'done';
+      const picker = document.createElement('div'); picker.className = 'picker';
+      const onSettle = () => commitFromPicker(i);
+      const drums = {
+        hour: makeDrum(fmt24 ? Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'))
+                             : Array.from({ length: 12 }, (_, k) => String(k + 1)), onSettle),
+        min: makeDrum(MIN_STOPS.map(v => String(v).padStart(2, '0')), onSettle),
+        ap: fmt24 ? null : makeDrum(['AM', 'PM'], onSettle)
+      };
+      picker.appendChild(drums.hour.el); picker.appendChild(drums.min.el);
+      if (drums.ap) picker.appendChild(drums.ap.el);
+      const done = document.createElement('button');
+      done.type = 'button'; done.className = 'done'; done.textContent = 'DONE';
+      // mousedown, not click: panel touch arrives as synthetic mouseDown/mouseUp and a following
+      // native 'click' isn't guaranteed (same reason the drums hit-test their own release).
+      done.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); deactivate(); });
+      cell.appendChild(ab); cell.appendChild(input); cell.appendChild(picker); cell.appendChild(done);
+      grid.appendChild(cell);
+      cells.push({ cell, input, drums });
+
+      input.addEventListener('focus', () => { if (suppressPicker) return; setActive(i); input.select(); });
+      input.addEventListener('input', () => {
+        clearTimeout(commitT); commitT = setTimeout(() => commit(i), 250);
+      });
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') commit(i, { canon: true }); });
+      input.addEventListener('blur', () => {
+        if (commitT) commit(i);
+        cells[i].input.value = fmtTime(zoneMins(i)); cells[i].input.classList.remove('bad');
+      });
+    });
+    if (activeIdx >= 0) setActive(activeIdx);
+    paint(-1);
+  }
+
+  // ±30m step used by the wheel shortcut; snaps to the half-hour grid first if off it.
+  function step(i, delta) {
+    let m = zoneMins(i);
+    const r = m % 30;
+    if (r !== 0) m = delta > 0 ? m + (30 - r) : m - r;
+    else m += delta;
+    setZoneMins(i, mod(m)); paint(-1);
+  }
+
+  // Wheel over a drum scrolls that drum natively; elsewhere it's a ±30m nudge on the column
+  // under the pointer (or the active one). Covers the knob when its turn mode is "scroll".
+  window.addEventListener('wheel', e => {
+    if (e.target.closest && e.target.closest('.drum')) return;
+    let i = cells.findIndex(c => c.cell.contains(e.target));
+    if (i < 0) i = activeIdx;
+    if (i < 0) return;
+    e.preventDefault();
+    step(i, e.deltaY < 0 ? 30 : -30);
+  }, { passive: false });
+
+  // Tapping anywhere outside the open picker closes it (tapping another column's time then opens
+  // that one, via its focus handler). mousedown, because that's what panel touch delivers.
+  window.addEventListener('mousedown', e => {
+    if (activeIdx < 0) return;
+    const c = cells[activeIdx];
+    if (c && c.cell.contains(e.target)) return;
+    deactivate();
+  });
+
+  // Keyboard: Enter/Escape close the picker. Typing a digit (muscle memory, desktop only) closes
+  // the picker and routes the keystroke into that column's text box, where the existing 250 ms
+  // debounce + Enter-to-commit take over — so the drum never blocks typed entry.
+  window.addEventListener('keydown', e => {
+    if (activeIdx < 0) return;
+    if (e.key === 'Enter' || e.key === 'Escape') { deactivate(); e.preventDefault(); return; }
+    if (e.key.length !== 1 || !/[0-9apAP:]/.test(e.key)) return;
+    const i = activeIdx;
+    deactivate();
+    const inp = cells[i].input;
+    suppressPicker = true; inp.focus(); suppressPicker = false;
+    inp.value = e.key;
+    clearTimeout(commitT); commitT = setTimeout(() => commit(i), 250);
+    e.preventDefault();
+  });
+
+  window.addEventListener('resize', () => { if (activeIdx >= 0) syncPicker(activeIdx); });
+
+  render();
+  window.addEventListener('hashchange', render);
+</script>
+</body>
+</html>

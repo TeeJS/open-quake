@@ -7,6 +7,13 @@ returns to the page selector. Sessions persist across restarts. open-quake ships
 with a public **[Windy](https://www.windy.com) weather map** as a ready-made
 dashboard example.
 
+**Reloading** — switching away to another page and back does **not** reload a
+dashboard; the panel keeps one shared webview and only re-navigates when a page's
+URL actually changes, so your session/scroll position survives page switches.
+Quitting and restarting open-quake does give a fresh load. To force a reload without
+restarting, set a global **Reload hotkey** in **Settings → Software → Dashboards** —
+it reloads whatever dashboard is currently on screen, from anywhere.
+
 **Auth** is set per page in the editor — needed because the panel has no keyboard:
 
 | Type | For |

@@ -2,6 +2,29 @@
 // open-quake launcher: multi-grid panel + PC config editor. Talks to either the DK-QUAKE /
 // ARIS-68 panel (via Aris68Connector) or the open Bedrock RP2040 knob (via BedrockConnector),
 // routed through MultiKnob which picks whichever device is plugged in.
+
+// Node bundles its own CA list (Mozilla's) and never consults the OS trust store — so on a
+// corporate network doing TLS inspection (a re-signed cert chained to a private root the OS
+// already trusts), plain Node/`ws` connections (the HA client below) fail with "unable to get
+// local issuer certificate" even though the same cert is trusted fine in Chromium-rendered
+// pages. win-ca injects whatever Windows already trusts into Node's global TLS trust at
+// startup — do this before any module below can open a connection. macOS/Linux untouched
+// (Node's default CA list is normally sufficient there); failure here is non-fatal — connections
+// just fall back to Node's default behavior, matching how they worked before this existed.
+//
+// MUST use inject:'+' (not the bare `require('win-ca')` auto-run, which defaults to inject:true).
+// inject:true only sets https.globalAgent.options.ca — it covers plain `https` calls but NOT the
+// `ws` library's WebSocket connections, which build their own TLS socket via tls.createSecureContext
+// directly. inject:'+' patches tls.createSecureContext itself, so it's picked up by every TLS
+// connection regardless of which higher-level module opened it. fallback:true skips the native
+// N-API cert reader in favor of shelling out — consistent with this app's existing preference for
+// PowerShell-backed helpers (dpapi.js, desktopFocus.js) over native binaries, which corporate EDR
+// products are more prone to flag.
+if (process.platform === 'win32') {
+  try { require('win-ca/api')({ inject: '+', fallback: true }); }
+  catch (e) { console.log('win-ca load failed:', e.message); }
+}
+
 const { app, BrowserWindow, Tray, Menu, nativeImage, screen, powerSaveBlocker, ipcMain, shell, dialog, session, net, safeStorage, clipboard, globalShortcut, nativeTheme } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -24,6 +47,7 @@ const touchSetup = require('./touchSetup');   // Bind a touchscreen to its physi
 const meetingControl = require('./meetingControl');   // Zoom/Teams call-control keystrokes (Meeting app page)
 const desktopFocus = require('./desktopFocus');   // tracks the PC's OS-level foreground app; auto-switches the panel to a mapped page
 const ahk = require('./ahk');                  // macro "ahk" step backend (shells out to an installed AutoHotkey.exe)
+const { createReservedDisplay } = require('./reservedDisplay'); // Windows helper that keeps foreign windows off the panel display
 const HA_SCHEDULE_APPS = ['haschedule', 'agenda', 'events'];   // dev apps backed by the shared HA /haschedule-data snapshot
 
 const USER_DIR = app.getPath('userData');
@@ -34,7 +58,7 @@ const APPS_DIR = path.join(__dirname, '..', 'apps').replace('app.asar', 'app.asa
 const SMTC_CTL_EXE = path.join(__dirname, 'native', 'smtc-control.exe').replace('app.asar', 'app.asar.unpacked'); // SMTC transport helper (Windows)
 const LED_DEFAULT = { effect: 1, brightness: 200, speed: 128, hue: 128, sat: 255 }; // ring lighting fallback (effect 1 = Solid Color)
 const THEME_DEFAULT = { appearance: 'system', accent: '#7CFFB2', presets: ['#7CFFB2', '#38B6FF', '#FF4040', '#FFB000'] };
-const DEFAULT_SETTINGS = { launchMode: 'editor', micOnLaunch: false, lighting: Object.assign({}, LED_DEFAULT), theme: Object.assign({}, THEME_DEFAULT) };
+const DEFAULT_SETTINGS = { launchMode: 'editor', micOnLaunch: false, reservedDisplay: false, lighting: Object.assign({}, LED_DEFAULT), theme: Object.assign({}, THEME_DEFAULT) };
 const actionDeps = { fs, shell, exec, execFile, spawn, platform: process.platform, log: message => console.log(message) };
 const mediaKeys = createMediaKeys({ log: message => console.log(message) });
 let firstRun = false;     // set by loadConfig when there was no prior config (fresh install)
@@ -56,6 +80,11 @@ let config = loadConfig();
 let panelWin = null, configWin = null, tray = null;
 let dashSession = null, cookieFlushT = null;   // dashboard webview session + a debounced cookie-store flush
 const dev = new MultiKnob({ hid: HID });
+let reservedRefreshTimer = null;
+const reservedDisplay = createReservedDisplay({
+  getDisplayState: reservedDisplayState,
+  log: message => console.log('[reserved-display] ' + message),
+});
 function appSettings() { return Object.assign({}, DEFAULT_SETTINGS, config.settings || {}); }
 // ---- theme (global light/dark + accent, with per-card overrides) ----
 function themeGlobal() { return Object.assign({}, THEME_DEFAULT, (config.settings || {}).theme || {}); }
@@ -196,10 +225,10 @@ function trustedMediaOrigins() {
     try { return new URL(origin).origin; } catch (e) { return null; }
   }).filter(Boolean);
 }
-function isLocalChatUrl(value) {
+function isLocalAppUrl(value) {
   try {
     const url = new URL(value);
-    return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Number(url.port) === serverPort && url.pathname === '/chat';
+    return url.protocol === 'http:' && url.hostname === '127.0.0.1' && Number(url.port) === serverPort;
   } catch (e) {
     return false;
   }
@@ -207,7 +236,7 @@ function isLocalChatUrl(value) {
 function isTrustedMediaRequest(wc, details) {
   const requestingUrl = (details && (details.requestingUrl || details.securityOrigin)) || (wc && wc.getURL && wc.getURL()) || '';
   if (details && Array.isArray(details.mediaTypes) && !details.mediaTypes.includes('audio')) return false;
-  if (isLocalChatUrl(requestingUrl)) return true;
+  if (isLocalAppUrl(requestingUrl)) return true;
   try { return trustedMediaOrigins().includes(new URL(requestingUrl).origin); }
   catch (e) { return false; }
 }
@@ -1008,8 +1037,52 @@ async function onMeetingActionRequest(platform, action) {
   return { ok: false, error: 'unknown platform: ' + platform };
 }
 
-function deviceDisplay() {
-  return screen.getAllDisplays().find(d => (d.bounds.width === 480 && d.bounds.height === 1920) || (d.bounds.width === 1920 && d.bounds.height === 480));
+function isDeviceDisplay(d) {
+  return !!(d && ((d.bounds.width === 480 && d.bounds.height === 1920) || (d.bounds.width === 1920 && d.bounds.height === 480)));
+}
+function deviceDisplay() { return screen.getAllDisplays().find(isDeviceDisplay); }
+// Once the panel exists, its actual HWND bounds are a stronger runtime identity than resolution alone.
+// Electron display ids remain useful only within this topology snapshot and are never persisted.
+function reservedTargetDisplay() {
+  if (panelWin && !panelWin.isDestroyed()) {
+    try {
+      const match = screen.getDisplayMatching(panelWin.getBounds());
+      const b = panelWin.getBounds();
+      const overlap = Math.max(0, Math.min(b.x + b.width, match.bounds.x + match.bounds.width) - Math.max(b.x, match.bounds.x)) *
+        Math.max(0, Math.min(b.y + b.height, match.bounds.y + match.bounds.height) - Math.max(b.y, match.bounds.y));
+      // Windows may relocate the panel HWND to a primary monitor after HDMI disconnect. Bounds are
+      // authoritative only while the containing display still has the Quake's known geometry.
+      if (overlap > 0 && isDeviceDisplay(match)) return match;
+    } catch (e) {}
+  }
+  return deviceDisplay();
+}
+function reservedDisplayState() {
+  const target = reservedTargetDisplay();
+  const rect = b => ({ x: b.x, y: b.y, width: b.width, height: b.height });
+  if (!target) return {
+    reserved: null,
+    displays: screen.getAllDisplays().map(d => ({
+      id: String(d.id),
+      primary: d.id === screen.getPrimaryDisplay().id,
+      bounds: rect(d.bounds),
+      workArea: rect(d.workArea),
+    })),
+  };
+  return {
+    reserved: rect(target.bounds),
+    displays: screen.getAllDisplays().filter(d => String(d.id) !== String(target.id)).map(d => ({
+      id: String(d.id),
+      primary: d.id === screen.getPrimaryDisplay().id,
+      bounds: rect(d.bounds),
+      workArea: rect(d.workArea),
+    })),
+  };
+}
+function refreshReservedDisplay(reason, delay) {
+  clearTimeout(reservedRefreshTimer);
+  if (!delay) reservedDisplay.refresh(reason);
+  reservedRefreshTimer = setTimeout(() => reservedDisplay.refresh(reason + ' (settled)'), delay || 900);
 }
 function applyPanelDisplayMode(d) {
   panelWin.setBounds(d.bounds);
@@ -1035,6 +1108,8 @@ function placePanel() {
       },
     });
     panelWin.loadFile(path.join(__dirname, 'index.html'));
+    panelWin.on('move', () => refreshReservedDisplay('panel moved', 350));
+    panelWin.on('resize', () => refreshReservedDisplay('panel bounds changed', 350));
     panelWin.once('ready-to-show', () => {
       const dd = deviceDisplay() || d;
       applyPanelDisplayMode(dd); panelWin.setAlwaysOnTop(true); panelWin.show(); panelWin.focus();
@@ -1042,8 +1117,9 @@ function placePanel() {
       pushToPanel();
       console.log('panel display bounds', JSON.stringify(dd.bounds), 'workArea', JSON.stringify(dd.workArea));
       console.log('panel placed at', JSON.stringify(panelWin.getBounds()), 'fullscreen', panelWin.isFullScreen(), 'simpleFullscreen', panelWin.isSimpleFullScreen && panelWin.isSimpleFullScreen());
+      refreshReservedDisplay('panel placed', 350);
     });
-  } else { applyPanelDisplayMode(d); panelWin.show(); pushToPanel(); }
+  } else { applyPanelDisplayMode(d); panelWin.show(); pushToPanel(); refreshReservedDisplay('panel placed', 350); }
 }
 
 // ---- monitor mode: use the device as a normal monitor ----
@@ -1053,6 +1129,7 @@ function placePanel() {
 function enterMonitorMode() {
   if (monitorMode || !panelWin || panelWin.isDestroyed()) return;
   monitorMode = true;
+  reservedDisplay.setSuspended(true);
   try { if (process.platform === 'darwin') panelWin.setSimpleFullScreen(false); else panelWin.setFullScreen(false); } catch (e) {}
   panelWin.hide();
   syncPollers(null);                                                // nothing on the panel is visible -> idle the page pollers
@@ -1063,6 +1140,7 @@ function enterMonitorMode() {
 function exitMonitorMode(reason) {
   if (!monitorMode) return;
   monitorMode = false;
+  reservedDisplay.setSuspended(false);
   releaseTouch();                                                   // drop any held mouse button from an in-progress touch
   if (panelWin && !panelWin.isDestroyed()) {
     const d = deviceDisplay();
@@ -1174,6 +1252,7 @@ function rotationCfg() {
     enabled: !!r.enabled,
     interval: Math.max(5, Math.min(3600, parseInt(r.interval, 10) || 30)),
     cats: Object.assign({ grids: false, dashboards: false, apps: false }, r.cats || {}),
+    hotkey: typeof r.hotkey === 'string' ? r.hotkey : '',
   };
 }
 function pageCategory(g) { return g.kind === 'web' ? 'dashboards' : g.kind === 'app' ? 'apps' : 'grids'; }
@@ -1216,10 +1295,38 @@ function applyShortcuts() {
         // immediately, not after async window/IPC churn. See modifiersInAccelerator above.
         if (process.platform === 'win32') modifiersInAccelerator(g.shortcut).forEach(m => mediaKeys.keyUp(m));
         gotoGrid(g.id, true);
-        if (rotateRunning) scheduleRotation();
+        // "Disables rotation": same path as the knob/tray toggle, so tray + panel state update
+        // and rotation stays off until the user starts it again.
+        if (g.shortcutStopsRotation) setRotation(false);
+        else if (rotateRunning) scheduleRotation();
       });
       if (!ok) console.log('shortcut already in use, not registered:', g.shortcut, '->', g.id);
     } catch (e) { console.log('shortcut register error:', g.shortcut, '-', e.message); }
+  }
+  // Rotation toggle hotkey: same start/stop path as the knob, tray, and panel, so all three stay in sync.
+  // Only registered while auto-rotate is enabled — matches the tray item (which hides when it's off) and
+  // avoids holding a global combo hostage for a feature that can't run. Page hotkeys register first, so a
+  // combo used by both goes to the page.
+  const rot = rotationCfg();
+  if (rot.enabled && rot.hotkey) {
+    try {
+      const ok = globalShortcut.register(rot.hotkey, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(rot.hotkey).forEach(m => mediaKeys.keyUp(m));
+        toggleRotation();
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', rot.hotkey, '-> rotation toggle');
+    } catch (e) { console.log('shortcut register error:', rot.hotkey, '-', e.message); }
+  }
+  // Dashboard reload hotkey: no on/off toggle (unlike rotation) -- just registers whenever a combo is set.
+  const dashReload = dashboardReloadCfg();
+  if (dashReload.hotkey) {
+    try {
+      const ok = globalShortcut.register(dashReload.hotkey, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(dashReload.hotkey).forEach(m => mediaKeys.keyUp(m));
+        reloadActiveDashboard();
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', dashReload.hotkey, '-> dashboard reload');
+    } catch (e) { console.log('shortcut register error:', dashReload.hotkey, '-', e.message); }
   }
 }
 function rotateTick() {
@@ -1246,8 +1353,43 @@ function applyRotationSettings(wasEnabled) {
   scheduleRotation(); refreshTray(); pushRotationState();
 }
 
+// ---- keyboard shortcuts (System/Pages/Custom cheat-sheet app) ----
+// customShortcuts is a global, shared-across-instances list (not per-page-app-options) — see
+// docs/charter-keyshortcuts.md for why. Edited from Settings -> Software.
+function customShortcutsCfg() {
+  const list = (config.settings && config.settings.customShortcuts) || [];
+  if (!Array.isArray(list)) return [];
+  return list.map(r => ({
+    shortcut: typeof (r && r.shortcut) === 'string' ? r.shortcut : '',
+    description: typeof (r && r.description) === 'string' ? r.description : '',
+  })).filter(r => r.shortcut || r.description);
+}
+// Live snapshot for the keyshortcuts app's /shortcuts fetch: the rotation toggle hotkey (the only
+// hotkey not tied to a specific page), every page's own jump-to hotkey, and the custom cheat-sheet.
+function keyboardShortcutsSnapshot() {
+  const rot = rotationCfg();
+  const pages = (config.grids || [])
+    .filter(g => g.shortcut)
+    .map(g => ({ id: g.id, name: g.name || g.id, shortcut: g.shortcut, stopsRotation: !!g.shortcutStopsRotation }));
+  return {
+    rotation: (rot.enabled && rot.hotkey) ? { hotkey: rot.hotkey } : null,
+    pages,
+    custom: customShortcutsCfg(),
+  };
+}
+
 // ---- desktop focus (panel auto-follows the PC's foreground app) ----
 function focusFollowCfg() { const f = (config.settings && config.settings.focusFollow) || {}; return { enabled: !!f.enabled, pauseRotation: !!f.pauseRotation }; }
+
+// ---- dashboard reload hotkey ----
+// Switching away from a dashboard and back doesn't reload it (index.js keeps the shared webview's
+// src unchanged when the URL matches, so sessions/scroll state survive page switches) -- this is the
+// deliberate way to force one anyway. Only acts on a currently-showing dashboard/web page.
+function dashboardReloadCfg() { const d = (config.settings && config.settings.dashboardReload) || {}; return { hotkey: typeof d.hotkey === 'string' ? d.hotkey : '' }; }
+function reloadActiveDashboard() {
+  const g = activeGrid();
+  if (g && g.kind === 'web' && panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('reloadDashboard');
+}
 // The page (if any) mapped to whatever app currently holds OS foreground focus, per desktopFocus.js's own
 // debounced/committed value — not the raw poll, so this agrees with whatever page onForegroundAppChange last acted on.
 function currentFocusMatch() {
@@ -1382,7 +1524,7 @@ app.whenReady().then(async () => {
   // Lazy-required so a metrics/load failure can never crash the rest of the app.
   try {
     sysserver = require('./sysserver');
-    serverPort = await sysserver.start({ onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig, getOAuthTokens: validOAuthTokensFor, connectOAuth: connectOAuthFor, onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, appFolders: discoveredServedApps() });
+    serverPort = await sysserver.start({ onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig, getOAuthTokens: validOAuthTokensFor, connectOAuth: connectOAuthFor, onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, appFolders: discoveredServedApps(), getShortcuts: keyboardShortcutsSnapshot });
     ensureSystemViewPage(serverPort); ensureMusicPage(); ensureDropInDir();
     const haUrl = configureHaSchedule();
     console.log('SystemView + Music on http://127.0.0.1:' + serverPort + (haUrl ? ' · HA Schedule -> ' + haUrl : ''));
@@ -1391,16 +1533,30 @@ app.whenReady().then(async () => {
 
   // Dashboard auth injection for the webview session. The active page's auth config drives it:
   //  - 'header'  -> add custom header(s) to requests to the dashboard host (bearer / Cloudflare Access / …)
-  //  - 'basic'   -> answer HTTP Basic Auth challenges with the configured user/pass
+  //  - 'basic'   -> send Authorization: Basic preemptively on every request (below), plus still answer
+  //                 a real 401/WWW-Authenticate challenge if one comes (app.on('login') further down)
   // ('ha' token injection is done renderer-side; 'none' does nothing.)
+  //
+  // Basic Auth used to be challenge-response only (wait for 401 + WWW-Authenticate, then retry with
+  // credentials — Electron's app.on('login') only fires on that exact exchange). Reverse-proxy SSO
+  // layers like Authelia, Traefik forward-auth, etc. don't issue that challenge for an unauthenticated
+  // request — they 302 straight to their own login page instead, so 'login' never fired and the
+  // configured credentials never got sent. Sending the header preemptively (what curl -u and
+  // wget --http-user do by default) works against both kinds of backend.
   dashSession = session.fromPartition('persist:dashboards');
   dashSession.setPermissionRequestHandler(handleDashboardPermissionRequest);
   dashSession.webRequest.onBeforeSendHeaders((details, cb) => {
     const g = activeGrid();
-    if (g && g.kind === 'web' && g.auth && g.auth.type === 'header' && hostMatches(g.url, details.url)) {
+    if (g && g.kind === 'web' && g.auth && hostMatches(g.url, details.url)) {
       const h = details.requestHeaders;
-      (g.auth.headers || []).forEach(x => { if (x.name) h[x.name] = x.value; });
-      return cb({ requestHeaders: h });
+      if (g.auth.type === 'header') {
+        (g.auth.headers || []).forEach(x => { if (x.name) h[x.name] = x.value; });
+        return cb({ requestHeaders: h });
+      }
+      if (g.auth.type === 'basic' && (g.auth.user || g.auth.pass)) {
+        h['Authorization'] = 'Basic ' + Buffer.from(`${g.auth.user || ''}:${g.auth.pass || ''}`).toString('base64');
+        return cb({ requestHeaders: h });
+      }
     }
     cb({});
   });
@@ -1499,6 +1655,7 @@ app.whenReady().then(async () => {
     if (config.grids.some(g => g.id === active)) config.activeGridId = active;
     else if (!config.grids.some(g => g.id === config.activeGridId)) config.activeGridId = (config.grids[0] || {}).id || null;
     saveConfig(); pushToPanel(); applyKnobSettings(); refreshTray(); applyRotationSettings(wasRot); applyFocusFollowSettings(); applyShortcuts(); applyTheme();
+    reservedDisplay.setEnabled(!!appSettings().reservedDisplay);
     configureHaSchedule();                                          // pick up any haAuth edits without a restart
   });
   ipcMain.handle('pickProgram', async (e) => {
@@ -1570,6 +1727,8 @@ app.whenReady().then(async () => {
   ipcMain.handle('listRunningApps', async (e) => isFrom(e, configWin) ? await desktopFocus.listRunningApps() : []);
 
   placePanel();
+  reservedDisplay.setEnabled(!!appSettings().reservedDisplay);
+  reservedDisplay.start();
   if (rotationCfg().enabled) setRotation(true);          // auto-start cycling on launch when enabled
   applyFocusFollowSettings();                             // auto-start foreground-app polling on launch when enabled
   applyShortcuts();                                       // register per-page global hotkeys
@@ -1609,13 +1768,14 @@ app.whenReady().then(async () => {
   dev.on('error', e => console.log('dev error:', e.message));
   dev.start();
 
-  screen.on('display-added', () => { dev.screenOn(); setTimeout(placePanel, 800); });
-  screen.on('display-removed', () => dev.screenOn());
-  screen.on('display-metrics-changed', () => setTimeout(placePanel, 500));
+  screen.on('display-added', () => { dev.screenOn(); refreshReservedDisplay('display added'); setTimeout(placePanel, 800); });
+  screen.on('display-removed', () => { dev.screenOn(); refreshReservedDisplay('display removed'); });
+  screen.on('display-metrics-changed', () => { refreshReservedDisplay('display metrics changed'); setTimeout(placePanel, 500); });
 });
 }
 app.on('window-all-closed', () => {});
 app.on('before-quit', () => {
+  try { reservedDisplay.stop(); } catch (e) {}                // release WinEvent hooks and terminate the native helper
   try { dev.stop(); } catch (e) {}                       // close HID devices + clear keep-alive/rescan timers — an open node-hid handle blocks process exit (Cmd+Q would hang -> force-quit)
   try { oauthHandler.stop(); } catch (e) {}              // stop OAuth callback server + background refresh timers
   try { if (sysserver) sysserver.stop(); } catch (e) {}  // stop metrics timers + close the local server

@@ -10,6 +10,7 @@
  *   GET /            -> SystemView page        GET /metrics      -> system metrics JSON
  *   GET /music       -> Music app page         GET /nowplaying   -> SMTC now-playing JSON
  *   GET /agenda /events -> the Agenda/Events dev apps (list + embedded grid; reuse /haschedule-data)
+ *   GET /keyshortcuts -> Keyboard Shortcuts app page   GET /shortcuts -> system/page/custom shortcuts JSON
  *   GET /grid-tiles  -> the active app page's embedded grid (resolved icons) — Music/Agenda/Events
  *   GET /media/<cmd> -> transport (play/pause/next/prev) via onMedia
  *   GET /launch?i=N  -> launch the active app grid's tile N via onLaunch (runAction)
@@ -58,10 +59,11 @@ const STATIC_FILES = {
   '/haschedule-ui.js': 'application/javascript; charset=utf-8',
   '/schedule.css': 'text/css; charset=utf-8',
   '/schedule-app.js': 'application/javascript; charset=utf-8',
+  '/keyshortcutsview.js': 'application/javascript; charset=utf-8',
 };
 
-let server = null, onMedia = null, onLaunch = null, getGridTiles = null, getAppConfig = null, getOAuthTokens = null, connectOAuth = null, onOpenExternal = null, onMeetingAction = null;
-let sysHtml = FALLBACK, musicHtml = FALLBACK, chatHtml = FALLBACK, officeHtml = FALLBACK, hascheduleHtml = FALLBACK, agendaHtml = FALLBACK, eventsHtml = FALLBACK, meetingHtml = FALLBACK;
+let server = null, onMedia = null, onLaunch = null, getGridTiles = null, getAppConfig = null, getOAuthTokens = null, connectOAuth = null, onOpenExternal = null, onMeetingAction = null, getShortcuts = null;
+let sysHtml = FALLBACK, musicHtml = FALLBACK, chatHtml = FALLBACK, officeHtml = FALLBACK, hascheduleHtml = FALLBACK, agendaHtml = FALLBACK, eventsHtml = FALLBACK, meetingHtml = FALLBACK, keyshortcutsHtml = FALLBACK;
 const staticAssets = {};   // request path -> { body, type }; populated at start()
 let appFolders = {};        // drop-in served app id -> { root, proxy }; supplied by main.js
 const appServers = {};      // app id -> required server module
@@ -317,6 +319,7 @@ async function handler(req, res) {
   if (url === '/haschedule') return html(res, hascheduleHtml);
   if (url === '/agenda') return html(res, agendaHtml);
   if (url === '/events') return html(res, eventsHtml);
+  if (url === '/keyshortcuts') return html(res, keyshortcutsHtml);
   const asset = staticAssets[url];
   if (asset) { res.writeHead(200, headers(asset.type)); return res.end(asset.body); }
   if (serveDropInApp(url, res)) return;
@@ -356,6 +359,7 @@ async function handler(req, res) {
   if (url === '/nowplaying') return json(res, nowplaying.getSnapshot());
   if (url === '/lyrics') { try { await lyrics.ensure(nowplaying.getSnapshot()); } catch (e) {} return json(res, lyrics.getSnapshot()); }   // synced lyrics for the current track
   if (url === '/haschedule-data') return json(res, haschedule.getSnapshot());
+  if (url === '/shortcuts') return json(res, getShortcuts ? getShortcuts() : { rotation: null, pages: [], custom: [] });
   if (url === '/grid-tiles') {
     let t = { cols: 2, rows: 2, tiles: [] };
     if (getGridTiles) { try { t = await getGridTiles(); } catch (e) {} }
@@ -401,6 +405,7 @@ function start(opts) {
   connectOAuth = opts.connectOAuth || null;
   onOpenExternal = opts.onOpenExternal || null;
   onMeetingAction = opts.onMeetingAction || null;
+  getShortcuts = opts.getShortcuts || null;
   setAppFolders(opts.appFolders);
   nowplaying.setProvider(opts.getNowPlaying || null);
   return new Promise((resolve, reject) => {
@@ -413,6 +418,7 @@ function start(opts) {
     try { hascheduleHtml = fs.readFileSync(path.join(__dirname, 'haschedule.html'), 'utf8'); } catch (e) {}
     try { agendaHtml = fs.readFileSync(path.join(__dirname, 'agenda.html'), 'utf8'); } catch (e) {}
     try { eventsHtml = fs.readFileSync(path.join(__dirname, 'events.html'), 'utf8'); } catch (e) {}
+    try { keyshortcutsHtml = fs.readFileSync(path.join(__dirname, 'keyshortcutsview.html'), 'utf8'); } catch (e) {}
     for (const [route, type] of Object.entries(STATIC_FILES)) {
       try { staticAssets[route] = { body: fs.readFileSync(path.join(__dirname, route.slice(1)), 'utf8'), type }; } catch (e) {}
     }

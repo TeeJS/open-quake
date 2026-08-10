@@ -14,6 +14,7 @@ Detailed guides for open-quake. Back to the [project README](../README.md).
 - **[System monitor](system-monitor.md)** — live CPU/GPU/RAM/disk/network/battery
 - **[Open WebUI chat + voice](ai-chat.md)** — chat to your LLM, hold the knob to talk
 - **[Settings & knob](settings.md)** — launch mode, rotation, RGB ring, knob behavior, mic
+- **[Reserved Display](reserved-display.md)** — keep normal Windows apps off the Quake display
 
 ## Under the hood
 

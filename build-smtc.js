@@ -1,6 +1,6 @@
 'use strict';
 /*
- * build-smtc.js — compile native/smtc-art.cs -> app/native/smtc-art.exe with the .NET-Framework C#
+ * build-smtc.js — compile the bundled C# helpers into app/native with the .NET-Framework C#
  * compiler, referencing the Windows union metadata + the GAC facade contracts. [build tooling, MIT]
  *
  * Build/dev machine only (needs the Windows SDK winmd + .NET Framework, both already present for signing).
@@ -14,16 +14,16 @@ const path = require('path');
 const ROOT = __dirname;
 const NATIVE = path.join(ROOT, 'native');
 const OUT_DIR = path.join(ROOT, 'app', 'native');
-// Helpers to (re)compile: the album-art reader + the SMTC transport controller. Same toolchain + refs.
+// Helpers to (re)compile. They share the same compiler and framework references.
 const TARGETS = [
   { src: path.join(NATIVE, 'smtc-art.cs'), out: path.join(OUT_DIR, 'smtc-art.exe') },
   { src: path.join(NATIVE, 'smtc-control.cs'), out: path.join(OUT_DIR, 'smtc-control.exe') },
+  { src: path.join(NATIVE, 'reserved-display.cs'), out: path.join(OUT_DIR, 'reserved-display.exe') },
 ];
 const log = m => console.log('[build:smtc] ' + m);
-// Non-fatal: the album-art helper is best-effort. If we can't build it (missing toolchain, etc.) we warn
-// and exit 0 so `npm start` / `npm run dist` proceed — a missing exe just means no cover art at runtime.
-// (Release builds verify art on-device, so a genuinely missing helper is caught in testing.)
-const bail = m => { console.warn('[build:smtc] ' + m + ' — skipping; album art will be unavailable.'); process.exit(0); };
+// Non-fatal for development: if the native toolchain is absent, JS/Electron still starts and each
+// feature logs that its helper is unavailable. Release builds verify the helpers on-device.
+const bail = m => { console.warn('[build:smtc] ' + m + ' — skipping native helper compilation.'); process.exit(0); };
 
 // Only (re)build the targets whose source is newer than its exe (or whose exe is missing).
 const stale = TARGETS.filter(t => {
@@ -58,6 +58,9 @@ for (const c of ['System.Runtime.WindowsRuntime', 'System.Runtime', 'System.Runt
   if (!p) bail('GAC facade not found: ' + c);
   refs.push(p);
 }
+const webExtensions = path.join('C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319', 'System.Web.Extensions.dll');
+if (!fs.existsSync(webExtensions)) bail('.NET Framework System.Web.Extensions.dll not found.');
+refs.push(webExtensions);
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 for (const t of stale) {

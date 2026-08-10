@@ -4,8 +4,8 @@ The editor's **⚙ Settings** page (top-right) holds the app- and device-level o
 split into a **Software** tab (on launch, screen rotation), a **Hardware** tab (knob
 ring, microphone), a **Theme** tab (light/dark + accent color), an **Apps** tab
 (which apps appear in the picker), a **Drop-In Apps** tab (manage installed drop-ins),
-an **Auth** tab (Home Assistant credentials — see below), and a **Monitor** tab (what
-the knob does in monitor mode):
+an **Auth** tab (Home Assistant credentials — see below), and a **Monitor** tab
+(Reserved Display protection and what the knob does in monitor mode):
 
 - **On launch** — open the editor window, start **minimized** to the taskbar, or run
   **tray-only** (panel + system tray, no window). open-quake always sits in the system
@@ -14,7 +14,15 @@ the knob does in monitor mode):
   set the interval (5–3600 s), and pick which **categories** to include (grids, dashboards,
   apps); then tick **Include in rotation** on each page you want in the loop (a page rotates
   only when both its category and its own box are checked). Start or pause it any time from
-  the knob's page selector (double-click) or the tray menu.
+  the knob's page selector (double-click), the tray menu, or a **hotkey** — click the Hotkey
+  box and press a combo with a modifier (e.g. Ctrl+Alt+R) to get a global start/stop that
+  works even when open-quake isn't focused. The hotkey is only live while Auto-rotate is on,
+  and a combo another app (or one of your page hotkeys) already owns simply won't fire.
+- **Hotkey shortcut** (per page, in that page's settings) — a global combo that jumps the
+  panel to the page from anywhere, even when open-quake isn't focused. Tick **Disables
+  rotation** next to it and firing the hotkey also turns auto-rotation off, so the panel
+  stays put on that page until you start rotation again (knob, tray, or panel) — handy for
+  a page you jump to when you need it to stay on screen.
 - **Desktop focus** — auto-switch the panel to a page when a chosen desktop app becomes
   the focused window on the PC. Turn on **Auto-follow**, then add one or more **Focus
   trigger app(s)** to any page's **Advanced settings** (type a process name, or pick one
@@ -23,6 +31,11 @@ the knob does in monitor mode):
   cause flicker — and manually navigating away is never overridden, since it only
   re-triggers on the next focus change. Tick **Pause auto-rotation** to hold rotation off
   for as long as a mapped app stays focused, picking back up the moment it loses focus.
+- **Dashboards → Reload hotkey** — a global combo that force-reloads whatever dashboard
+  page is currently showing, from anywhere, even when open-quake isn't focused. Switching
+  away to another page and back does **not** reload a dashboard on its own (that's what
+  keeps its session/scroll state across page switches) — this hotkey is the way to force
+  one. Only acts while a dashboard page is on screen; does nothing on a grid or app page.
 - **Knob ring** — the RGB ring around the knob. Pick an **effect** (the 44 QMK
   RGB-matrix modes, or *All Off* to turn it off), a **color**, **brightness**, and
   **effect speed**. By default the ring **follows the Theme accent** (below); tick
@@ -58,6 +71,15 @@ the knob does in monitor mode):
 - **Apps** — show or hide each bundled app in the editor's **+ App** picker (it only
   affects the picker, not pages already built on an app). A **show developer apps**
   toggle reveals extra developer-built apps, hidden by default.
+- **Reserved Display** (Monitor tab, Windows only) — prevents ordinary application
+  windows from remaining on the Quake while the panel is active. A window dropped there
+  is returned to a non-Quake display. If every other display disconnects, eligible
+  windows are recoverably minimized with their last placement cached, then restored when a
+  display returns. Open Quake windows, shell/taskbar surfaces, tool windows, cloaked
+  windows, and secure-desktop UI are excluded. This setting is off by default.
+- **Monitor Mode** — intentionally exposes the Quake as a normal Windows desktop
+  monitor. Reserved Display protection is suspended for the duration of Monitor Mode and
+  resumes when it exits; the USB panel keepalive continues in either mode.
 
 The ring is driven over the device's QMK VIA lighting channel; settings are stored in
 `%APPDATA%\open-quake` and re-applied on connect.

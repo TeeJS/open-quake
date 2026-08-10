@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Keyboard Shortcuts</title>
+<style>
+  * { box-sizing: border-box; }
+  :root { --bg:#05080d; --fg:#e8eef6; --muted:#9fb3c8; --dim:#7e93ab; --surf:#131f2c; --surf2:#0e1822;
+    --tile-bd:#233245; --accent:#7CFFB2; }
+  body.light { --bg:#e6ecf3; --fg:#12202c; --muted:#566573; --dim:#68798a; --surf:#f3f6f9; --surf2:#e6ecf2; --tile-bd:#c7d2dc; }
+  html, body { margin: 0; width: 100%; height: 100%; }
+  body { background: var(--bg); color: var(--fg); overflow: hidden; user-select: none;
+    font-family: "Segoe UI", system-ui, sans-serif; }
+  #wrap { display: flex; flex-direction: column; width: 100vw; height: 100vh; padding: 16px 28px 20px; gap: 12px; }
+
+  #title { flex: 0 0 auto; font-size: 28px; font-weight: 700; color: var(--fg); }
+
+  /* The scroll container is #card, a plain block with NO multicol properties. #list (the multicol
+     element) is given no height of its own -- it's left auto/intrinsic. A multicol container with
+     a DEFINITE height will invent extra columns beyond what the available width actually fits,
+     overflowing sideways with no way to reach the clipped columns (found while testing a size
+     bump on real hardware -- looked fine in devtools measurements until checked for horizontal
+     overflow). With auto height, column-count is driven purely by width, and anything past the
+     first screenful is reachable with an ordinary vertical scroll on #card instead. */
+  #card { flex: 1; min-height: 0; overflow-y: auto; background: var(--surf); border: 1px solid var(--tile-bd);
+    border-radius: 14px; padding: 6px 26px; }
+  #list { columns: 380px; column-gap: 32px; column-rule: 1px solid var(--tile-bd); }
+  .empty { color: var(--dim); font-size: 28px; padding: 14px 0; }
+
+  /* Sized for arm's-length reading on real hardware, not a desktop monitor -- this list IS the
+     page's whole content, so its text is the primary/focal size, not a supporting-info size.
+     Key badge sits above its description (not side-by-side) so a long combo or a long
+     description never has to fight the other for width at this size -- it wraps instead of
+     truncating, since nothing here should ever silently lose text. */
+  .srow { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px 6px;
+    border-bottom: 1px solid var(--tile-bd); break-inside: avoid; }
+  .key { background: var(--surf2); border: 1px solid var(--tile-bd); border-radius: 10px; padding: 8px 16px;
+    font: 26px/1.25 "Cascadia Code", Consolas, monospace; color: var(--accent); overflow-wrap: break-word; }
+  .desc { font-size: 26px; font-weight: 600; color: var(--fg); overflow-wrap: break-word; }
+  .desc .sub { display: block; font-size: 16px; font-weight: 400; color: var(--dim); margin-top: 3px; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="title">Keyboard Shortcuts</div>
+    <div id="card"><div id="list"></div></div>
+  </div>
+  <script src="keyshortcutsview.js"></script>
+</body>
+</html>

@@ -60,6 +60,16 @@
       return p;
     } catch (e) { return { hour: 0, minute: 0, second: 0 }; }
   }
+  // Minutes east of UTC for a zone right now — used only by the auto-order option.
+  function zoneOffsetMin(zone) {
+    try {
+      const now = new Date(), p = {};
+      new Intl.DateTimeFormat('en-US', { timeZone: zone, hour12: false, year: 'numeric', month: '2-digit',
+        day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        .formatToParts(now).forEach(x => { if (x.type !== 'literal') p[x.type] = parseInt(x.value, 10); });
+      return Math.round((Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second) - now.getTime()) / 60000);
+    } catch (e) { return 0; }
+  }
 
   // Render from the current options. Re-run on hashchange so a Save in the editor (which only changes the
   // URL fragment — mode / display / seconds / cities / theme) applies live without leaving the page.
@@ -81,6 +91,9 @@
       cells = [];
       for (let i = 1; i <= 6; i++) { const z = O['c' + i]; if (z) cells.push({ zone: z, label: (O['l' + i] && O['l' + i].trim()) ? O['l' + i].trim() : prettify(z) }); }
       if (!cells.length) cells = US_ZONES.map(([zone, label]) => ({ zone, label }));
+      // Auto-order: west -> east by current GMT offset. Stable, so zones sharing an offset keep
+      // the picked order. US mode is already in this order, so the option is cities-only.
+      if (O.autoOrder === '1' || O.autoOrder === 'true') cells.sort((a, b) => zoneOffsetMin(a.zone) - zoneOffsetMin(b.zone));
     }
 
     const n = cells.length;

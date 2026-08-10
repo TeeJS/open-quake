@@ -1,4 +1,4 @@
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const net = require('net');
@@ -72,24 +72,11 @@ async function handle(action, ctx) {
     const backendDir = path.join(appDir, 'Mark-XLVI');
     const exePath = path.join(backendDir, 'jarvis_backend.exe');
     
-    // Download jarvis_backend.exe if both binary and main.py are missing
     const mainPyPath = path.join(backendDir, 'main.py');
-    if (!fs.existsSync(exePath) && !fs.existsSync(mainPyPath)) {
-      console.log('[JARVIS server.js] jarvis_backend.exe missing! Downloading from GitHub...');
-      const downloadUrl = 'https://media.githubusercontent.com/media/1dark30-alt/open-quake-jarvis/add-jarvis-community-app/community-apps/jarvis/Mark-XLVI/jarvis_backend.exe';
-      try {
-        await downloadFile(downloadUrl, exePath);
-        console.log('[JARVIS server.js] Download completed successfully!');
-      } catch (err) {
-        console.error('[JARVIS server.js] Download failed:', err);
-        starting = false;
-        return { ok: false, error: 'Failed to download JARVIS backend: ' + err.message };
-      }
-    }
-    
+    console.log('[JARVIS server.js] start: appDir=%s backendDir=%s exeExists=%s mainPyExists=%s', appDir, backendDir, fs.existsSync(exePath), fs.existsSync(mainPyPath));
     if (!fs.existsSync(exePath) && !fs.existsSync(mainPyPath)) {
       starting = false;
-      return { ok: false, error: 'jarvis_backend.exe not found. Re-import the drop-in app.' };
+      return { ok: false, error: 'JARVIS backend not found. Re-import the drop-in app.' };
     }
     
     if (!fs.existsSync(vbsPath)) {
@@ -128,13 +115,39 @@ async function handle(action, ctx) {
       if (ctx.options.os_system !== undefined) {
         configData.os_system = ctx.options.os_system;
       }
-      
+      // Mark-XLIX added assistant identity + morning-brief config keys
+      if (ctx.options.assistant_name !== undefined) {
+        configData.assistant_name = ctx.options.assistant_name;
+      }
+      if (ctx.options.user_name !== undefined) {
+        configData.user_name = ctx.options.user_name;
+      }
+      if (ctx.options.morning_brief_enabled !== undefined) {
+        // app.json sends "true"/"false" (select); Python expects a real bool.
+        configData.morning_brief_enabled = (String(ctx.options.morning_brief_enabled).toLowerCase() === 'true');
+      }
+      // UI accent color (hex string, optional)
+      if (ctx.options.ui_color !== undefined) {
+        configData.ui_color = ctx.options.ui_color;
+      }
+      // Pairing PIN — the panel sends this at /login; XLIX accepts it as a static key.
+      // 'secret' options arrive encrypted (oqenc:v1:...) when set by the user; a plain
+      // default value ("QUAKE") is written as-is so the panel can pair out of the box.
+      if (ctx.options.pin !== undefined) {
+        const pinVal = String(ctx.options.pin);
+        configData.panel_pin = pinVal.startsWith('oqenc:v1:') ? 'QUAKE' : pinVal.toUpperCase();
+      }
+
       // Fallback defaults for missing keys
       if (configData.gemini_api_key === undefined) configData.gemini_api_key = '';
       if (configData.llm_provider === undefined) configData.llm_provider = 'gemini-live';
       if (configData.llm_url === undefined) configData.llm_url = '';
       if (configData.llm_model === undefined) configData.llm_model = '';
       if (configData.os_system === undefined) configData.os_system = 'windows';
+      if (configData.assistant_name === undefined) configData.assistant_name = 'JARVIS';
+      if (configData.user_name === undefined) configData.user_name = '';
+      if (configData.morning_brief_enabled === undefined) configData.morning_brief_enabled = true;
+      if (configData.panel_pin === undefined) configData.panel_pin = 'QUAKE';
       
       fs.writeFileSync(configPath, JSON.stringify(configData, null, 2), 'utf8');
       console.log('[JARVIS server.js] Synchronized engine settings to api_keys.json');
@@ -147,17 +160,44 @@ async function handle(action, ctx) {
       starting = false;
     }, 10000);
 
-    // Spawn hidden backend directly if binary exists to bypass wscript.exe security policies
-    if (fs.existsSync(exePath)) {
-      execFile(exePath, [], { cwd: backendDir, windowsHide: true }, (err, stdout, stderr) => {
-        starting = false;
-        if (err) {
-          console.error('[JARVIS server.js] Direct spawn failed:', err);
-          try {
-            fs.writeFileSync(path.join(backendDir, 'spawn_error.txt'), `Error: ${err.message}\nStdout: ${stdout}\nStderr: ${stderr}`, 'utf8');
-          } catch(e) {}
+    // Spawn backend. Prefer running from source with python main.py if main.py exists,
+    // otherwise fallback to the precompiled jarvis_backend.exe.
+    if (fs.existsSync(mainPyPath)) {
+      try {
+        let pythonCmd = 'python';
+        if (process.platform === 'win32') {
+          const condaPy = 'C:\\Users\\darkn\\miniconda3\\python.exe';
+          if (fs.existsSync(condaPy)) {
+            pythonCmd = condaPy;
+          }
         }
-      });
+        const logFile = fs.openSync(path.join(backendDir, 'backend_logs.txt'), 'w');
+        const child = spawn(pythonCmd, ['main.py'], { cwd: backendDir, windowsHide: false, detached: true, stdio: ['ignore', logFile, logFile] });
+        child.on('error', (e) => {
+          console.error('[JARVIS server.js] Spawn error (python):', e.message);
+          try { fs.writeFileSync(path.join(backendDir, 'spawn_error.txt'), `Spawn error: ${e.message}`, 'utf8'); } catch (_) {}
+        });
+        child.unref();
+        console.log('[JARVIS server.js] Spawned python main.py (pid %s)', child.pid);
+      } catch (e) {
+        console.error('[JARVIS server.js] Spawn threw (python):', e.message);
+        try { fs.writeFileSync(path.join(backendDir, 'spawn_error.txt'), `Spawn threw: ${e.message}`, 'utf8'); } catch (_) {}
+      }
+      starting = false;
+    } else if (fs.existsSync(exePath)) {
+      try {
+        const child = spawn(exePath, [], { cwd: backendDir, windowsHide: false, detached: true, stdio: 'ignore' });
+        child.on('error', (e) => {
+          console.error('[JARVIS server.js] Spawn error:', e.message);
+          try { fs.writeFileSync(path.join(backendDir, 'spawn_error.txt'), `Spawn error: ${e.message}`, 'utf8'); } catch (_) {}
+        });
+        child.unref();
+        console.log('[JARVIS server.js] Spawned jarvis_backend.exe (pid %s)', child.pid);
+      } catch (e) {
+        console.error('[JARVIS server.js] Spawn threw:', e.message);
+        try { fs.writeFileSync(path.join(backendDir, 'spawn_error.txt'), `Spawn threw: ${e.message}`, 'utf8'); } catch (_) {}
+      }
+      starting = false;
     } else {
       // Fallback: spawn via VBScript if developer running from source
       execFile('wscript.exe', [vbsPath], { windowsHide: true }, (err, stdout, stderr) => {

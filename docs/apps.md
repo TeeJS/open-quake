@@ -15,8 +15,17 @@ Included apps:
   (Pacific / Mountain / Central / Eastern) or a pick of **2–6 world cities**; each shown as a
   **digital** readout or an **analog** face. Options include 12/24-hour, optional seconds (with
   a second hand on the analog faces), and a **per-city label override** (e.g. pick *London* but
-  label it *Edinburgh*). DST-correct via the system's time-zone database; follows the global
-  light/dark theme and accent.
+  label it *Edinburgh*), and **Auto-order by time zone** — lay the cities out west → east by
+  GMT offset instead of the order you picked them in. DST-correct via the system's time-zone
+  database; follows the global light/dark theme and accent.
+- **Time Zone Converter** — for "can you meet at 4:30 my time?". Same two modes as the
+  World Clock: **US time zones** (PDT/PST … EDT/EST, the abbreviation in effect today bold)
+  or a pick of **2–6 world cities** (city name over its GMT offset, with the same
+  per-city label override and **Auto-order by time zone**). Each zone gets an editable
+  time — set one by spinning the
+  inline drum picker (hour/minute/AM-PM wheels), typing, or scrolling, and the rest
+  convert automatically. Sticky: keeps the last-set times across restarts and never snaps
+  to the current time (that's the World Clock's job). 12/24-hour option.
 - **[Music controller](music.md)** — now-playing + transport + a programmable app grid.
 - **[Open WebUI chat + voice](ai-chat.md)** — talk to your own LLM, with knob push-to-talk.
 - **[Meeting](meeting.md)** — one-tap mute/video/accept/decline/leave for Zoom and Teams,
@@ -25,6 +34,14 @@ Included apps:
   HA server in a dropdown, no hand-typed URLs. Requires **Use Home Assistant** in
   **Settings → Auth**; hidden from the App picker otherwise. Uses your global HA token
   so login persists. (See the full HA guide for entity tiles + icons.)
+- **Keyboard Shortcuts** — a live cheat-sheet, three columns: **System** (the auto-rotation
+  toggle hotkey, if set), **Pages** (every page's own jump-to hotkey), and **Custom** — a
+  free-text list of shortcut/description pairs for other programs, edited right on the
+  app's own **App** tab in the editor (same spot as any app's options) with a **+ Add
+  another shortcut** row-adder, same as the World Clock's city picks. That list is shared
+  across every page running the app, not per-page — edit it from any one of them and every
+  other instance shows the update. Updates live on the panel — no restart needed after
+  adding a page hotkey or editing the custom list.
 
 ![Configuring the Flip Clock app in the editor](shots/editor-clock.png)
 

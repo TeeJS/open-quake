@@ -331,16 +331,19 @@
 
   // ---- per-page global shortcut ----
   function shortcutRowHtml(g) {
-    return `<div class="row" style="margin-top:6px"><label style="width:auto">Shortcut</label>
+    return `<div class="row" style="margin-top:6px"><label style="width:auto">Hotkey shortcut</label>
       <input id="gShortcut" readonly placeholder="click, then press keys" value="${esc(g.shortcut || '')}" style="width:200px">
-      <button id="gShortcutClear" style="margin-left:8px">Clear</button></div>
-      <p class="hint">Global hotkey that jumps the panel to this page from anywhere. Click the box and press a combo that includes a modifier (e.g. Ctrl+Alt+1). If another app already owns that combo, it just won't fire.</p>`;
+      <button id="gShortcutClear" style="margin-left:8px">Clear</button>
+      <label style="width:auto;margin-left:14px;font-weight:normal;cursor:pointer"><input type="checkbox" id="gShortcutNoRot" ${g.shortcutStopsRotation ? 'checked' : ''}> Disables rotation</label></div>
+      <p class="hint">Global hotkey that jumps the panel to this page from anywhere. Click the box and press a combo that includes a modifier (e.g. Ctrl+Alt+1). If another app already owns that combo, it just won't fire. <b>Disables rotation</b> turns auto-rotation off when the hotkey fires, so the panel stays on this page until you start rotation again (knob, tray, or panel).</p>`;
   }
   function wireShortcutRow(g) {
     const inp = document.getElementById('gShortcut'); if (!inp) return;
     inp.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { g.shortcut = acc; inp.value = acc; renderGrids(); markDirty(); } };
     const clr = document.getElementById('gShortcutClear');
     if (clr) clr.onclick = () => { delete g.shortcut; inp.value = ''; renderGrids(); markDirty(); };
+    const nr = document.getElementById('gShortcutNoRot');
+    if (nr) nr.onchange = e => { if (e.target.checked) g.shortcutStopsRotation = true; else delete g.shortcutStopsRotation; markDirty(); };
   }
   // Build an Electron accelerator from a keydown. Requires a modifier (so we never bind a bare global key).
   function accelFromEvent(e) {
@@ -407,6 +410,44 @@
           <select id="gFocusPicker" style="margin-top:6px"><option value="">Browse running apps…</option></select>
         </div></div>
       <p class="hint">When <b>Desktop focus</b> is on (Settings → Software), the panel switches to this page whenever one of these apps becomes the focused window on the PC. Matched by process name, not window title.</p>`;
+  }
+  // ---- Keyboard Shortcuts app: global Custom cheat-sheet (customShortcuts) ----
+  // Edited right on the app's own page-config screen (App tab, like World Clock's city picks),
+  // but the data itself is a single shared list across every page that has this app — NOT a
+  // per-page g.options value — see docs/charter-keyshortcuts.md. Rendering always shows at least
+  // one (possibly blank) row; a blank row isn't written to config until the user types into it.
+  function shortcutRowsHtml(list) {
+    const rows = Array.isArray(list) && list.length ? list : [{ shortcut: '', description: '' }];
+    return rows.map((r, i) => `<div class="row" data-idx="${i}" style="margin-top:6px">
+        <input class="scShortcut" placeholder="e.g. Ctrl+Shift+E" value="${esc(r.shortcut || '')}" style="width:180px">
+        <input class="scDesc" placeholder="what it does" value="${esc(r.description || '')}" style="flex:1;margin-left:8px">
+        <button class="scRemove" type="button" data-rm="${i}" title="Remove" style="margin-left:8px">✕</button>
+      </div>`).join('');
+  }
+  function wireShortcutRows() {
+    const host = document.getElementById('sShortcutRows');
+    if (!host) return;
+    const list = () => { if (!config.settings) config.settings = {}; if (!Array.isArray(config.settings.customShortcuts)) config.settings.customShortcuts = []; return config.settings.customShortcuts; };
+    const redraw = () => { host.innerHTML = shortcutRowsHtml(list()); wireRows(); };
+    function wireRows() {
+      host.querySelectorAll('.scShortcut').forEach((inp, i) => {
+        inp.oninput = e => { const l = list(); if (!l[i]) l[i] = { shortcut: '', description: '' }; l[i].shortcut = e.target.value; markDirty(); };
+      });
+      host.querySelectorAll('.scDesc').forEach((inp, i) => {
+        inp.oninput = e => { const l = list(); if (!l[i]) l[i] = { shortcut: '', description: '' }; l[i].description = e.target.value; markDirty(); };
+      });
+      host.querySelectorAll('.scRemove').forEach(btn => {
+        btn.onclick = () => { list().splice(parseInt(btn.getAttribute('data-rm'), 10), 1); markDirty(); redraw(); };
+      });
+    }
+    wireRows();
+    const addBtn = document.getElementById('sShortcutAdd');
+    if (addBtn) addBtn.onclick = () => {
+      list().push({ shortcut: '', description: '' });
+      markDirty(); redraw();
+      const inputs = host.querySelectorAll('.scShortcut');
+      if (inputs.length) inputs[inputs.length - 1].focus();
+    };
   }
   function wireFocusRow(g) {
     const chips = document.getElementById('gFocusChips');
@@ -624,7 +665,7 @@
       const name = document.createElement('span'); name.textContent = `${tag} ${g.name || '(unnamed)'}`; name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' + (g.hidden ? ';opacity:.55;font-style:italic' : '');
       left.appendChild(grip); left.appendChild(name); d.appendChild(left);
       if (g.hidden) { const b = document.createElement('span'); b.className = 'badge'; b.title = 'Hidden from page menu, knob cycling, and rotation'; b.textContent = '🚫👁'; d.appendChild(b); }
-      if (g.shortcut) { const b = document.createElement('span'); b.className = 'badge'; b.title = 'Shortcut'; b.textContent = g.shortcut; d.appendChild(b); }
+      if (g.shortcut) { const b = document.createElement('span'); b.className = 'badge'; b.title = 'Hotkey shortcut'; b.textContent = g.shortcut; d.appendChild(b); }
       d.onclick = () => { view = 'pages'; gi = i; ti = -1; selEnd = -1; render(); };
       d.draggable = true;
       d.ondragstart = e => { pageDragFrom = i; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)); } catch (er) {} };
@@ -1280,6 +1321,7 @@
     // Music groups its three panels (album art / lyrics / button grid) in one box, capped at 2 on.
     const isMusic = g.app === 'music';
     const isHaDash = g.app === 'ha-dashboard';
+    const isKeyShortcuts = g.app === 'keyshortcuts';
     const musicBox = `<fieldset style="border:1px solid #2a3a4e; border-radius:8px; padding:6px 14px 10px; margin:10px 0">
         <legend style="padding:0 6px; color:#9fb3c8; font-size:13px">Panels</legend>
         <div><label class="iconopt" style="width:auto"><input type="checkbox" id="pArt" ${optVal(g, 'art', true) ? 'checked' : ''}> Show album art</label></div>
@@ -1302,7 +1344,18 @@
       </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
-    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+    // Custom shortcuts cheat-sheet: edited right here, but the list itself is global/shared — see
+    // shortcutRowsHtml's comment and docs/charter-keyshortcuts.md.
+    const keyShortcutsBox = `<div style="margin-top:10px">
+        <p class="hint" style="margin:0 0 8px">Free-text shortcut/description rows for other programs. Shown as
+        <b>Custom</b> on the panel, alongside open-quake's own rotation hotkey and every page's jump shortcut.
+        This list is shared — editing it here updates every page that has the Keyboard Shortcuts app.</p>
+        <div id="sShortcutRows">${shortcutRowsHtml((config.settings || {}).customShortcuts)}</div>
+        <button id="sShortcutAdd" type="button" style="margin-top:8px">+ Add another shortcut</button>
+      </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+        <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
+      <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
+    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : isKeyShortcuts ? keyShortcutsBox : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : ''));
     el.innerHTML = tabBar + `
@@ -1360,6 +1413,8 @@
       const kiosk = document.getElementById('haKiosk'); if (kiosk) kiosk.onchange = e => { if (!g.options) g.options = {}; g.options.kiosk = e.target.checked; markDirty(); };
       const hideHeader = document.getElementById('haHideHeader'); if (hideHeader) hideHeader.onchange = e => { if (!g.options) g.options = {}; g.options.hideHeader = e.target.checked; markDirty(); };
       const hideSidebar = document.getElementById('haHideSidebar'); if (hideSidebar) hideSidebar.onchange = e => { if (!g.options) g.options = {}; g.options.hideSidebar = e.target.checked; markDirty(); };
+    } else if (isKeyShortcuts) {
+      wireShortcutRows();
     } else {
       renderAppOpts(g, def);
     }
@@ -1547,7 +1602,7 @@
   }
 
   // ---- settings page ----
-  const DEFAULT_SETTINGS = { launchMode: 'editor', micOnLaunch: false };
+  const DEFAULT_SETTINGS = { launchMode: 'editor', micOnLaunch: false, reservedDisplay: false };
   function appSettings() { return Object.assign({}, DEFAULT_SETTINGS, config.settings || {}); }
   function renderSettings() {
     ['tilegrid', 'mergebar', 'tileform', 'iconpane'].forEach(id => { const e = document.getElementById(id); if (e) e.innerHTML = ''; });
@@ -1556,6 +1611,8 @@
     const rot = currentRot();
     const currentFocusFollow = () => Object.assign({ enabled: false, pauseRotation: false }, (config.settings || {}).focusFollow || {});
     const focusFollow = currentFocusFollow();
+    const currentDashReload = () => Object.assign({ hotkey: '' }, (config.settings || {}).dashboardReload || {});
+    const dashReload = currentDashReload();
     const currentMon = () => Object.assign({ knobTurn: 'scroll', knobTap: 'enter' }, (config.settings || {}).monitor || {});
     const mon = currentMon();
     const currentTheme = () => Object.assign({ appearance: 'system', accent: '#7CFFB2', presets: ['#7CFFB2', '#38B6FF', '#FF4040', '#FFB000'] }, (config.settings || {}).theme || {});
@@ -1586,14 +1643,24 @@
         <label class="iconopt" style="width:auto"><input type="checkbox" id="sRotG"> Grids</label>
         <label class="iconopt" style="width:auto"><input type="checkbox" id="sRotD"> Dashboards</label>
         <label class="iconopt" style="width:auto"><input type="checkbox" id="sRotA"> Apps</label></div>
+      <div class="row"><label>Hotkey</label>
+        <input id="sRotKey" readonly placeholder="click, then press keys" value="${esc(rot.hotkey || '')}" style="width:200px"${rot.enabled ? '' : ' disabled'}>
+        <button id="sRotKeyClear" style="margin-left:8px"${rot.enabled ? '' : ' disabled'}>Clear</button></div>
       <p class="hint">A page rotates only if its category is ticked here <i>and</i> that page's own “Include in rotation” box is checked — the box appears on each page once its category is enabled. Start/stop any time from the knob menu (double-click) or the tray.</p>
+      <p class="hint">The <b>hotkey</b> starts and pauses rotation from anywhere, even when open-quake isn't focused. Click the box and press a combo that includes a modifier (e.g. Ctrl+Alt+R). It's only live while Auto-rotate is on; if another app — or one of your page hotkeys — already owns the combo, it just won't fire.</p>
 
       <p class="sectitle" style="margin-top:22px">Desktop focus</p>
       <div class="row"><label>Auto-follow</label>
         <input type="checkbox" id="sFocus" style="width:auto;flex:none"><span class="hint" style="margin:0 0 0 8px">switch the panel to a page when its mapped app becomes focused on the PC</span></div>
       <div class="row"><label>While focused</label>
         <label class="iconopt" style="width:auto"><input type="checkbox" id="sFocusPauseRot" ${focusFollow.enabled ? '' : 'disabled'}> Pause auto-rotation</label></div>
-      <p class="hint">Map apps to a page under that page's Advanced settings → “Focus trigger app(s)”. Detection polls in the background and only switches once the newly-focused app has held focus for a couple seconds, so quick alt-tabbing won't cause flicker — and manually navigating the panel away is never overridden; it only re-triggers on the next focus change. With <b>Pause auto-rotation</b> on, rotation holds off the moment a mapped app takes focus and picks back up the moment it loses focus.</p>`;
+      <p class="hint">Map apps to a page under that page's Advanced settings → “Focus trigger app(s)”. Detection polls in the background and only switches once the newly-focused app has held focus for a couple seconds, so quick alt-tabbing won't cause flicker — and manually navigating the panel away is never overridden; it only re-triggers on the next focus change. With <b>Pause auto-rotation</b> on, rotation holds off the moment a mapped app takes focus and picks back up the moment it loses focus.</p>
+
+      <p class="sectitle" style="margin-top:22px">Dashboards</p>
+      <div class="row"><label>Reload hotkey</label>
+        <input id="sDashReloadKey" readonly placeholder="click, then press keys" value="${esc(dashReload.hotkey || '')}" style="width:200px">
+        <button id="sDashReloadKeyClear" style="margin-left:8px">Clear</button></div>
+      <p class="hint">A global combo that force-reloads the current dashboard page from anywhere, even when open-quake isn't focused. Switching away to another page and back does <b>not</b> reload a dashboard (that's what keeps its session/scroll state) — this hotkey is the way to force one. Only acts while a dashboard page is showing; does nothing on a grid or app page.</p>`;
 
     // Hardware tab — knob ring + microphone
     const hwHtml = `
@@ -1644,9 +1711,14 @@
       <p class="hint"><b>Clear all calibrations</b> wipes any old <code>tabcal</code> coordinate calibration. You don't normally need it — only run it if your taps land on the right display but are visibly off-target.</p>
       <div class="row" style="gap:8px"><button id="sTouchSetup">Set up touchscreen</button><button id="sTouchClear">Clear all calibrations</button><span id="sTouchMsg" class="hint" style="margin:0 0 0 10px"></span></div>`;
 
-    // Monitor tab — how the knob behaves while the device is used as a normal monitor
+    // Monitor tab — reserved-display protection and intentional normal-monitor behavior
     const monHtml = `
-      <p class="sectitle">Monitor mode</p>
+      <p class="sectitle">Reserved Display</p>
+      <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="sReserved" ${s.reservedDisplay ? 'checked' : ''}> Prevent normal application windows from remaining on the Quake display</label></div>
+      <p class="hint">Windows only. Windows dragged or relocated onto the Quake are returned to another display. If your other displays disconnect, their positions are held and restored when a display returns. Open Quake, Windows shell surfaces, and secure desktop screens are left alone.</p>
+      <p class="hint">Protection is suspended in Monitor Mode and resumes when Monitor Mode exits. This does not change the panel's USB keepalive.</p>
+
+      <p class="sectitle" style="margin-top:22px">Monitor mode</p>
       <p class="hint">Use the device as a normal monitor: it shows your Windows desktop and touch acts as the mouse. Enter it from the tray menu or a “System → monitor” tile; exit from the tray. These set what the knob does while in monitor mode.</p>
       <div class="row"><label>Knob turn</label>
         <select id="sMonTurn" style="width:230px">
@@ -1955,11 +2027,16 @@
       document.getElementById('sLaunch').value = s.launchMode;
       document.getElementById('sLaunch').onchange = e => setS('launchMode', e.target.value);
       const saveRot = r => { if (!config.settings) config.settings = {}; config.settings.rotation = r; markDirty(); };
+      const rotKey = document.getElementById('sRotKey'), rotKeyClr = document.getElementById('sRotKeyClear');
       document.getElementById('sRot').checked = !!rot.enabled;
       document.getElementById('sRotG').checked = !!rot.cats.grids;
       document.getElementById('sRotD').checked = !!rot.cats.dashboards;
       document.getElementById('sRotA').checked = !!rot.cats.apps;
-      document.getElementById('sRot').onchange = e => { const r = currentRot(); r.enabled = e.target.checked; saveRot(r); };
+      // The hotkey only registers while auto-rotate is on (main.js applyShortcuts), so grey it out with the
+      // toggle — same pattern as "Pause auto-rotation" under Desktop focus below.
+      document.getElementById('sRot').onchange = e => { const r = currentRot(); r.enabled = e.target.checked; saveRot(r); rotKey.disabled = rotKeyClr.disabled = !e.target.checked; };
+      rotKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { const r = currentRot(); r.hotkey = acc; rotKey.value = acc; saveRot(r); } };
+      rotKeyClr.onclick = () => { const r = currentRot(); delete r.hotkey; rotKey.value = ''; saveRot(r); };
       document.getElementById('sRotInt').onchange = e => { const r = currentRot(); r.interval = Math.max(5, Math.min(3600, parseInt(e.target.value, 10) || 30)); e.target.value = r.interval; saveRot(r); };
       document.getElementById('sRotG').onchange = e => { const r = currentRot(); r.cats.grids = e.target.checked; saveRot(r); };
       document.getElementById('sRotD').onchange = e => { const r = currentRot(); r.cats.dashboards = e.target.checked; saveRot(r); };
@@ -1972,6 +2049,12 @@
       };
       document.getElementById('sFocusPauseRot').checked = !!focusFollow.pauseRotation;
       document.getElementById('sFocusPauseRot').onchange = e => { const f = currentFocusFollow(); f.pauseRotation = e.target.checked; saveFocusFollow(f); };
+
+      const saveDashReload = d => { if (!config.settings) config.settings = {}; config.settings.dashboardReload = d; markDirty(); };
+      const dashReloadKey = document.getElementById('sDashReloadKey'), dashReloadKeyClr = document.getElementById('sDashReloadKeyClear');
+      dashReloadKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { const d = currentDashReload(); d.hotkey = acc; dashReloadKey.value = acc; saveDashReload(d); } };
+      dashReloadKeyClr.onclick = () => { const d = currentDashReload(); delete d.hotkey; dashReloadKey.value = ''; saveDashReload(d); };
+
     } else if (tab === 'hardware') {
       // Lighting writes go straight to the device (and persist in config) via the main process — no Save needed.
       const live = patch => { Object.assign(L, patch); if (!config.settings) config.settings = {}; config.settings.lighting = Object.assign({}, L); configApi.setLighting(patch); markDirty(); };
@@ -2032,6 +2115,7 @@
       });
     } else if (tab === 'monitor') {
       // Monitor mode — knob turn/tap behavior (applied by the main process while in monitor mode)
+      document.getElementById('sReserved').onchange = e => setS('reservedDisplay', e.target.checked);
       const saveMon = patch => { if (!config.settings) config.settings = {}; config.settings.monitor = Object.assign(currentMon(), patch); markDirty(); };
       document.getElementById('sMonTurn').value = mon.knobTurn;
       document.getElementById('sMonTap').value = mon.knobTap;

@@ -48,6 +48,9 @@ It gives you:
   drag-and-drop to rearrange, then **Save** to push to the panel. → [Editor](docs/editor.md)
 - **Settings** — choose how it launches, **auto-rotate** through pages on a timer, toggle
   the mic, and tune the knob ring; plus a system-tray menu of quick toggles. → [Settings](docs/settings.md)
+- **Reserved Display (Windows, optional)** — keep ordinary application windows from
+  settling on the Quake when your primary displays disconnect; automatically suspends
+  while using the Quake in Monitor Mode. → [Reserved Display](docs/reserved-display.md)
 
 > **Status:** early but capable. Touch, knob (incl. RGB ring + hold-to-talk), grids, merged
 > buttons, web dashboards, the bundled apps (clock / world clock / music / meeting / system
@@ -62,7 +65,7 @@ Detailed guides live in **[docs/](docs/README.md)**:
 
 - [The editor](docs/editor.md) · [Web dashboards](docs/dashboards.md) · [Bundled apps](docs/apps.md)
 - [Music controller](docs/music.md) · [System monitor](docs/system-monitor.md) · [Open WebUI chat + voice](docs/ai-chat.md)
-- [Home Assistant integration](docs/home-assistant.md) · [Settings & knob lighting](docs/settings.md) · [Building & how it works](docs/building.md) · [Device protocol](docs/DEVICE_PROTOCOL.md)
+- [Home Assistant integration](docs/home-assistant.md) · [Settings & knob lighting](docs/settings.md) · [Reserved Display](docs/reserved-display.md) · [Building & how it works](docs/building.md) · [Device protocol](docs/DEVICE_PROTOCOL.md)
 
 ## Companion project
 

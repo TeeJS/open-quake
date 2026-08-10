@@ -65,6 +65,21 @@
   let isRecording = false;
   let stopTimer = null;
 
+  function consoleLog(...args) {
+    const msg = args.map(x => typeof x === 'object' ? JSON.stringify(x) : String(x)).join(' ');
+    console.log('[JARVIS]', msg);
+    if (authToken) {
+      fetch(`${config.endpoint}/api/log`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ msg })
+      }).catch(() => {});
+    }
+  }
+
   // ── Setup & Auth ──
 
   async function loadConfig() {
@@ -95,7 +110,8 @@
     pairingStatus.textContent = 'Authenticating...';
 
     const endpointsToTry = [config.endpoint];
-    if (config.endpoint.startsWith('http://')) {
+    const isLocal = config.endpoint.includes('127.0.0.1') || config.endpoint.includes('localhost');
+    if (config.endpoint.startsWith('http://') && !isLocal) {
       endpointsToTry.push(config.endpoint.replace(/^http:/, 'https:'));
     }
 
@@ -182,16 +198,19 @@
     }
 
     const host = config.endpoint.startsWith('https:') ? config.endpoint.replace(/^https:/, 'wss:') : config.endpoint.replace(/^http:/, 'ws:');
+    consoleLog('Connecting status feed: ' + host + '/ws');
     logSystemMessage('Connecting status feed...');
     
     try {
       ws = new WebSocket(`${host}/ws?token=${encodeURIComponent(authToken)}`);
     } catch (e) {
+      consoleLog('Failed to create status WebSocket: ' + e.message);
       logSystemMessage('Failed to create status WebSocket.');
       return;
     }
 
     ws.onopen = () => {
+      consoleLog('Status WebSocket connected');
       logSystemMessage('Connected to JARVIS.');
     };
 
@@ -210,13 +229,15 @@
       } catch (err) {}
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
+      consoleLog('Status WebSocket closed. Code: ' + event.code + ' Reason: ' + (event.reason || 'None'));
       logSystemMessage('Connection lost. Retrying in 5 seconds...');
       updateStatus('sleeping');
       setTimeout(startSetup, 5000);
     };
 
-    ws.onerror = () => {
+    ws.onerror = (err) => {
+      consoleLog('Status WebSocket error');
       logSystemMessage('WebSocket feed error.');
     };
   }
@@ -340,21 +361,21 @@
 
     const host = config.endpoint.startsWith('https:') ? config.endpoint.replace(/^https:/, 'wss:') : config.endpoint.replace(/^http:/, 'ws:');
     try {
-      console.log('[JARVIS] Opening Voice WebSocket:', host);
+      consoleLog('Opening Voice WebSocket: ' + host + '/ws/phone-audio');
       const w = new WebSocket(`${host}/ws/phone-audio?token=${encodeURIComponent(authToken)}`);
       w.binaryType = 'arraybuffer';
       voiceWs = w;
 
       w.onopen = () => {
-        console.log('[JARVIS] Voice WebSocket connected');
+        consoleLog('Voice WebSocket connected');
         if (voiceWs !== w) {
-          console.warn('[JARVIS] Voice WebSocket changed, closing socket.');
+          consoleLog('Voice WebSocket changed, closing socket.');
           try { w.close(); } catch (e) {}
           return;
         }
         isRecording = true;
         if (audioBuffer.length > 0) {
-          console.log('[JARVIS] Flushing', audioBuffer.length, 'buffered chunks.');
+          consoleLog('Flushing ' + audioBuffer.length + ' buffered chunks.');
           audioBuffer.forEach(bufChunk => {
             w.send(f32ToPcm16(bufChunk, rate));
           });
@@ -363,12 +384,12 @@
       };
 
       w.onclose = (event) => {
-        console.log('[JARVIS] Voice WebSocket closed. Code:', event.code, 'Reason:', event.reason || 'None');
+        consoleLog('Voice WebSocket closed. Code: ' + event.code + ' Reason: ' + (event.reason || 'None'));
         if (voiceWs === w) stopVoice('onclose');
       };
 
       w.onerror = (err) => {
-        console.warn('[JARVIS] Voice WebSocket error:', err);
+        consoleLog('Voice WebSocket error');
         if (voiceWs === w) {
           logSystemMessage('Audio streaming connection error.');
           stopVoice('onerror');
@@ -447,25 +468,18 @@
   // Re-pair checking button
   retryBtn.addEventListener('click', startSetup);
 
-  // Click on Orb triggers manual toggle PTT (sends API command to toggle PC mic mute state)
+  // Click on Orb triggers manual toggle PTT (click to start, click to stop)
   orbTrigger.addEventListener('click', async () => {
     if (!authToken) {
       logSystemMessage('Not authenticated yet. Pair with JARVIS first.');
       return;
     }
-    try {
-      const r = await fetch(`${config.endpoint}/api/toggle_mute`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
-        }
-      });
-      if (!r.ok) {
-        console.error('Failed to toggle mute state:', r.statusText);
-      }
-    } catch (e) {
-      console.error('Network error toggling mute:', e);
+    if (isRecording) {
+      console.log('[JARVIS] Orb clicked while recording - stopping PTT');
+      window.pttStop();
+    } else {
+      console.log('[JARVIS] Orb clicked while idle - starting PTT');
+      await window.pttStart();
     }
   });
 

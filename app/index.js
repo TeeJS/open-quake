@@ -186,6 +186,10 @@
     lastTheme = t; injectWebTheme();                                    // push the theme live into a served app page (no reload needed)
   });
   panelApi.onGridList(d => { grids = d.grids; activeId = d.activeId; if (selOpen) renderWheel(); });
+  // Global reload hotkey (Settings -> Software -> Dashboards): main already checked the active page
+  // is kind:'web' before sending this, but webMode is the renderer's own source of truth for what's
+  // actually on screen right now, so gate on it here too.
+  panelApi.onReloadDashboard(() => { if (webMode) { try { web.reload(); } catch (e) {} } });
   panelApi.onRotation(r => {
     rotEnabled = !!r.enabled; rotRunning = !!r.running; if (selOpen) renderWheel();
     if (pendingRotFlash) { pendingRotFlash = false; flashVol(rotRunning ? '⟳ Rotation on' : '⛔ Rotation off'); }
