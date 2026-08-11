@@ -179,14 +179,13 @@ class OAuthHandler {
     return merged;
   }
 
-  async getValidTokens(providerId, requestedScopes) {
+  async getValidAccessToken(providerId, requestedScopes) {
     const tokens = await this.refreshTokenIfNeeded(providerId, false, requestedScopes);
     if (!tokens) return null;
     return {
       provider: tokens.provider,
       tokenType: tokens.tokenType || 'Bearer',
       accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
       scope: tokens.scope || '',
       scopes: tokenScopes(tokens),

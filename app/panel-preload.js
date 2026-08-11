@@ -19,7 +19,6 @@ contextBridge.exposeInMainWorld('openQuakePanel', {
   stopRotation() { ipcRenderer.send('stopRotation'); },
   gotoHome() { ipcRenderer.send('gotoHome'); },
   openExternal(url) { ipcRenderer.send('openExternal', url); },
-  getOAuthTokens(provider, scopes) { return ipcRenderer.invoke('get-oauth-tokens', provider, scopes); },
   introDone() { ipcRenderer.send('introDone'); },
   saveTileValue(gridId, index, value) { ipcRenderer.send('saveTileValue', { gridId, index, value }); },
   onTheme(callback) { return on('theme', callback); },

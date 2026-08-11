@@ -1,5 +1,6 @@
 (function () {
-  var SCOPES = ['User.Read', 'Presence.Read', 'Calendars.Read', 'offline_access'];
+  var capability = '';
+  var officeLoad = null;
 
   try {
     var q = new URLSearchParams(location.search);
@@ -15,18 +16,25 @@
     $('status').textContent = text || '';
     $('status').classList.toggle('bad', !!bad);
   }
-  function tokenUrl() {
-    return '/api/oauth-tokens.json?provider=microsoft&scopes=' + encodeURIComponent(SCOPES.join(' '));
+  function readCapability() {
+    try { return new URLSearchParams(location.hash.slice(1)).get('_cap') || ''; }
+    catch (e) { return ''; }
   }
-  function authUrl() {
-    return '/api/oauth-connect?provider=microsoft&scopes=' + encodeURIComponent(SCOPES.join(' '));
+  function rememberCapability(next) {
+    if (!next) return;
+    capability = next;
+    try { history.replaceState(null, '', location.pathname + location.search + '#_cap=' + encodeURIComponent(next)); }
+    catch (e) {}
   }
-  function graph(path, token) {
-    return fetch('https://graph.microsoft.com/v1.0' + path, {
+  function officeFetch(path) {
+    capability = capability || readCapability();
+    if (!capability) return Promise.reject(new Error('Office session authorization is missing.'));
+    return fetch(path, {
       cache: 'no-store',
-      headers: { Authorization: 'Bearer ' + token.accessToken }
+      headers: { Authorization: 'Bearer ' + capability }
     }).then(function (r) {
-      if (!r.ok) throw new Error('Graph ' + r.status);
+      rememberCapability(r.headers.get('X-Open-Quake-Capability'));
+      if (!r.ok) throw new Error(r.status === 403 ? 'Office session authorization expired.' : 'Office service failed (HTTP ' + r.status + ').');
       return r.json();
     });
   }
@@ -86,40 +94,32 @@
     fetch('/grid-tiles', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(renderGrid).catch(function () {});
   }
   function loadOffice() {
-    fetch(tokenUrl(), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (token) {
-      if (!token || !token.ok || !token.accessToken) {
+    if (officeLoad) return officeLoad;
+    officeLoad = officeFetch('/api/office/data').then(function (data) {
+      if (!data || !data.ok) {
         status('Microsoft connection needed.', true);
-        showAuth(token && token.error ? token.error : '');
+        showAuth(data && data.error ? data.error : '');
         return;
       }
       hideAuth();
-      status('Loading Microsoft 365...');
-      var now = new Date();
-      var end = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-      var calPath = '/me/calendarView?startDateTime=' + encodeURIComponent(now.toISOString()) + '&endDateTime=' + encodeURIComponent(end.toISOString()) + '&$orderby=start/dateTime&$top=5';
-      Promise.all([
-        graph('/me?$select=displayName,userPrincipalName', token),
-        graph('/me/presence', token).catch(function () { return null; }),
-        graph(calPath, token)
-      ]).then(function (all) {
-        var me = all[0], presence = all[1], cal = all[2];
-        $('name').textContent = me.displayName || me.userPrincipalName || 'Office';
-        var p = presence && (presence.availability || presence.activity) || 'Calendar';
-        $('presence').textContent = p;
-        $('presence').className = 'presence ' + presenceClass(p);
-        renderEvents(cal && cal.value || []);
-        status('');
-      }).catch(function (e) {
-        status(e.message || 'Microsoft Graph failed', true);
-      });
-    }).catch(function () {
-      status('Could not reach Open-Quake OAuth service.', true);
+      var me = data.profile || {}, presence = data.presence;
+      $('name').textContent = me.displayName || me.userPrincipalName || 'Office';
+      var p = presence && (presence.availability || presence.activity) || 'Calendar';
+      $('presence').textContent = p;
+      $('presence').className = 'presence ' + presenceClass(p);
+      renderEvents(data.events || []);
+      status('');
+    }).catch(function (e) {
+      status(e.message || 'Could not reach the Open-Quake Office service.', true);
+    }).finally(function () {
+      officeLoad = null;
     });
+    return officeLoad;
   }
   $('connect').onclick = function () {
     $('connect').disabled = true;
     $('authMsg').textContent = 'Opening Microsoft sign-in...';
-    fetch(authUrl(), { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (r) {
+    officeFetch('/api/office/connect').then(function (r) {
       $('authMsg').textContent = r && r.ok ? 'Finish sign-in in the browser, then this deck will refresh.' : ((r && r.error) || 'Could not start sign-in.');
       setTimeout(loadOffice, 3000);
     }).catch(function () {

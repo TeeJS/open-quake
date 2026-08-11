@@ -40,6 +40,8 @@ const { createSecretStore } = require('./secretStore');
 const { OAuthHandler } = require('../src/auth/oauth-handler');
 const { TokenStorage } = require('../src/auth/token-storage');
 const { providers: oauthProviders } = require('../src/auth/providers');
+const { createOfficeGraph } = require('./officeGraph');
+const { configForRenderer } = require('./oauthConfigBoundary');
 const nowplaying = require('./nowplaying');   // same singleton sysserver polls — read its snapshot to target transport
 const haschedule = require('./haschedule');   // HA Schedule dev app — fed HA creds from .env, polled while shown
 const haClient = require('./haClient');       // Global HA cache (registries + dashboards); per-entity states fetched lazily
@@ -428,6 +430,10 @@ const secretStore = createSecretStore({
 });
 const oauthStorage = new TokenStorage({ getConfig: () => config, saveConfig });
 const oauthHandler = new OAuthHandler({ storage: oauthStorage, openExternal: openExternalUrl, log: m => console.log(m) });
+const officeGraph = createOfficeGraph({
+  getAccessToken: (provider, scopes) => oauthHandler.getValidAccessToken(provider, scopes),
+  connectOAuth: (provider, scopes) => oauthHandler.connect(provider, scopes),
+});
 
 // Build the file: URL for an app page, encoding its options as a #hash (file:// drops a ?query).
 function appOptionQuery(def, opts, include) {
@@ -451,7 +457,8 @@ function appPageUrl(page) {
     const opts = page.options || {};                                         // non-secret options only; secrets are served by /app-config
     const qs = [appOptionQuery(def, opts, o => o.type !== 'secret' && !o.serverOnly), themeParams(page)].filter(Boolean).join('&');
     if (def._folder) return 'http://127.0.0.1:' + serverPort + '/apps/' + encodeURIComponent(def.id) + '/' + appEntryUrlPath(def.entry || def.file) + (qs ? '?' + qs : '');
-    return 'http://127.0.0.1:' + serverPort + '/' + def.id + (qs ? '?' + qs : '');
+    const capability = def.id === 'office' && sysserver ? sysserver.issueOfficeCapability() : '';
+    return 'http://127.0.0.1:' + serverPort + '/' + def.id + (qs ? '?' + qs : '') + (capability ? '#_cap=' + encodeURIComponent(capability) : '');
   }
   const file = def._folder ? path.join(def._dir, def.entry || def.file) : path.join(APPS_DIR, def.file);
   const opts = page.options || {};
@@ -487,6 +494,7 @@ function syncPollers(g) {
   const which = monitorMode ? null                                  // panel hidden (monitor mode) -> idle every page poller
     : (g && g.id === 'sysview') ? 'sysview'
     : (g && g.kind === 'app' && g.app === 'music') ? 'music'
+    : (g && g.kind === 'app' && g.app === 'office') ? 'office'
     : null;
   try { sysserver.setActivePage(which); } catch (e) {}
   // HA-backed dev apps (HA Schedule / Agenda / Events): poll HA only while one is shown, at the page's
@@ -519,14 +527,6 @@ function oauthProviderPayload() {
   });
 }
 
-async function validOAuthTokensFor(provider, scopes) {
-  return oauthHandler.getValidTokens(provider, scopes);
-}
-
-async function connectOAuthFor(provider, scopes) {
-  await oauthHandler.connect(provider, scopes);
-  return { ok: true };
-}
 async function pushToPanel() {
   if (panelWin && !panelWin.isDestroyed()) {
     const g = activeGrid();
@@ -1524,7 +1524,7 @@ app.whenReady().then(async () => {
   // Lazy-required so a metrics/load failure can never crash the rest of the app.
   try {
     sysserver = require('./sysserver');
-    serverPort = await sysserver.start({ onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig, getOAuthTokens: validOAuthTokensFor, connectOAuth: connectOAuthFor, onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, appFolders: discoveredServedApps(), getShortcuts: keyboardShortcutsSnapshot });
+    serverPort = await sysserver.start({ onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig, getOfficeData: officeGraph.getData, connectOffice: officeGraph.connect, onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, appFolders: discoveredServedApps(), getShortcuts: keyboardShortcutsSnapshot });
     ensureSystemViewPage(serverPort); ensureMusicPage(); ensureDropInDir();
     const haUrl = configureHaSchedule();
     console.log('SystemView + Music on http://127.0.0.1:' + serverPort + (haUrl ? ' · HA Schedule -> ' + haUrl : ''));
@@ -1604,7 +1604,7 @@ app.whenReady().then(async () => {
     console.log('[counter] SAVED: grid', data.gridId, 'tile', data.index, '=', data.value);
   });
   ipcMain.on('openExternal', (e, url) => { if (!isFrom(e, panelWin) && !isFrom(e, configWin)) return; openExternalUrl(url); });
-  ipcMain.handle('getConfig', (e) => isFrom(e, configWin) ? config : null);
+  ipcMain.handle('getConfig', (e) => isFrom(e, configWin) ? configForRenderer(config) : null);
   ipcMain.handle('listOAuthProviders', (e) => isFrom(e, configWin) ? oauthProviderPayload() : []);
   ipcMain.handle('setOAuthProviderSettings', (e, provider, patch) => {
     if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
@@ -1621,12 +1621,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('disconnectOAuthProvider', async (e, provider) => {
     if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
-    try { const r = await oauthHandler.revokeToken(provider); return Object.assign({}, r, { providers: oauthProviderPayload() }); }
+    try {
+      const r = await oauthHandler.revokeToken(provider);
+      if (String(provider || '').toLowerCase() === 'microsoft' && sysserver) {
+        sysserver.clearOfficeCapability();
+        pushToPanel();
+      }
+      return Object.assign({}, r, { providers: oauthProviderPayload() });
+    }
     catch (err) { return { ok: false, error: err.message || String(err) }; }
-  });
-  ipcMain.handle('get-oauth-tokens', (e, provider, scopes) => {
-    if (!isFrom(e, panelWin) && !isFrom(e, configWin)) return null;
-    return validOAuthTokensFor(provider, scopes).catch(err => ({ ok: false, error: err.message || String(err), code: err.code || '', provider: err.provider || provider, scopes: err.scopes || scopes || [] }));
   });
   // HA cache: editor reads the registries + dashboards for picker UIs; refresh kicks a new fetchAll.
   // fetchHaEntityState is wired now for phase-2 features that assign an entity to a button.

@@ -1783,7 +1783,7 @@
       <p class="hint">The token is stored encrypted at rest (same secret store as your dashboard tokens). It only leaves the main process for features that need it.</p>
 
       <p class="sectitle" style="margin-top:22px">OAuth 2.0</p>
-      <p class="hint">Connect services once, then local apps can request fresh tokens through IPC or <code>/api/oauth-tokens.json?provider=microsoft&amp;scopes=Calendars.Read</code>. Tokens are encrypted at rest and refreshed before expiry.</p>
+      <p class="hint">Connect services once for built-in integrations. OAuth tokens stay in the main process, are encrypted at rest, and are refreshed before expiry; drop-in apps cannot request them.</p>
       <div id="sOauthList"><p class="hint">Loading OAuth providers...</p></div>`;
 
     // Drop-In Apps tab — manage user-installed app folders (import/export/delete) + storage location

@@ -11,7 +11,6 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   setOAuthProviderSettings(provider, patch) { return ipcRenderer.invoke('setOAuthProviderSettings', provider, patch); },
   connectOAuthProvider(provider, scopes) { return ipcRenderer.invoke('connectOAuthProvider', provider, scopes); },
   disconnectOAuthProvider(provider) { return ipcRenderer.invoke('disconnectOAuthProvider', provider); },
-  getOAuthTokens(provider, scopes) { return ipcRenderer.invoke('get-oauth-tokens', provider, scopes); },
   pickProgram() { return ipcRenderer.invoke('pickProgram'); },
   pickFile() { return ipcRenderer.invoke('pickFile'); },
   pickFolder() { return ipcRenderer.invoke('pickFolder'); },

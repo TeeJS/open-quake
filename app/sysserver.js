@@ -12,12 +12,14 @@
  *   GET /agenda /events -> the Agenda/Events dev apps (list + embedded grid; reuse /haschedule-data)
  *   GET /keyshortcuts -> Keyboard Shortcuts app page   GET /shortcuts -> system/page/custom shortcuts JSON
  *   GET /grid-tiles  -> the active app page's embedded grid (resolved icons) — Music/Agenda/Events
+ *   GET /api/office/* -> capability-gated Microsoft 365 data/connect operations (tokens stay in main)
  *   GET /media/<cmd> -> transport (play/pause/next/prev) via onMedia
  *   GET /launch?i=N  -> launch the active app grid's tile N via onLaunch (runAction)
  *   GET /apps/<id>/… -> static files for discovered served drop-in apps  ·  /app-proxy /app-api
  */
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const metrics = require('./sysmetrics');
@@ -62,16 +64,57 @@ const STATIC_FILES = {
   '/keyshortcutsview.js': 'application/javascript; charset=utf-8',
 };
 
-let server = null, onMedia = null, onLaunch = null, getGridTiles = null, getAppConfig = null, getOAuthTokens = null, connectOAuth = null, onOpenExternal = null, onMeetingAction = null, getShortcuts = null;
+let server = null, onMedia = null, onLaunch = null, getGridTiles = null, getAppConfig = null, getOfficeData = null, connectOffice = null, onOpenExternal = null, onMeetingAction = null, getShortcuts = null;
 let sysHtml = FALLBACK, musicHtml = FALLBACK, chatHtml = FALLBACK, officeHtml = FALLBACK, hascheduleHtml = FALLBACK, agendaHtml = FALLBACK, eventsHtml = FALLBACK, meetingHtml = FALLBACK, keyshortcutsHtml = FALLBACK;
 const staticAssets = {};   // request path -> { body, type }; populated at start()
 let appFolders = {};        // drop-in served app id -> { root, proxy }; supplied by main.js
 const appServers = {};      // app id -> required server module
+const DEFAULT_OFFICE_CAPABILITY_TTL_MS = 24 * 60 * 60 * 1000;
+let officeCapability = null;
+let officeCapabilityTtlMs = DEFAULT_OFFICE_CAPABILITY_TTL_MS;
+let currentTime = Date.now;
 
 function headers(type) { return { 'Content-Type': type, 'Cache-Control': 'no-store', 'Content-Security-Policy': LOCAL_APP_CSP }; }
 function html(res, body) { res.writeHead(200, headers('text/html; charset=utf-8')); res.end(body); }
 function json(res, obj) { res.writeHead(200, headers('application/json; charset=utf-8')); res.end(JSON.stringify(obj)); }
 function done(res, ok) { res.writeHead(ok ? 200 : 400, headers('application/json')); res.end(JSON.stringify({ ok: !!ok })); }
+function officeJson(res, obj, nextCapability) {
+  const h = headers('application/json; charset=utf-8');
+  if (nextCapability) h['X-Open-Quake-Capability'] = nextCapability;
+  res.writeHead(200, h);
+  res.end(JSON.stringify(obj));
+}
+
+function newOfficeCapability() {
+  officeCapability = {
+    token: crypto.randomBytes(32).toString('base64url'),
+    expiresAt: currentTime() + officeCapabilityTtlMs,
+  };
+  return officeCapability.token;
+}
+
+function issueOfficeCapability() {
+  if (officeCapability && officeCapability.expiresAt > currentTime()) return officeCapability.token;
+  return newOfficeCapability();
+}
+
+function clearOfficeCapability() {
+  officeCapability = null;
+}
+
+function consumeOfficeCapability(req) {
+  const auth = String(req.headers.authorization || '');
+  const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(auth);
+  if (!match || !officeCapability) return null;
+  if (officeCapability.expiresAt <= currentTime()) {
+    clearOfficeCapability();
+    return null;
+  }
+  const supplied = Buffer.from(match[1]);
+  const expected = Buffer.from(officeCapability.token);
+  if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return null;
+  return newOfficeCapability();
+}
 function setAppFolders(folders) {
   appFolders = {};
   Object.keys(appServers).forEach(id => { if (!folders || !folders[id]) delete appServers[id]; });
@@ -337,21 +380,13 @@ async function handler(req, res) {
     const cfg = appId && getAppConfig ? getAppConfig(appId) : null;
     return cfg ? json(res, cfg) : done(res, false);
   }
-  if (url === '/api/oauth-tokens.json') {
-    const provider = queryValue(full, 'provider');
-    const scopes = queryValue(full, 'scopes');
-    let tokens = null;
-    if (provider && typeof getOAuthTokens === 'function') {
-      try { tokens = await getOAuthTokens(provider, scopes); } catch (e) { return json(res, { ok: false, error: e.message || 'oauth token lookup failed', code: e.code || '', provider: e.provider || provider, scopes: e.scopes || [] }); }
-    }
-    return tokens ? json(res, Object.assign({ ok: true }, tokens)) : json(res, { ok: false, error: 'not connected' });
-  }
-  if (url === '/api/oauth-connect') {
-    const provider = queryValue(full, 'provider');
-    const scopes = queryValue(full, 'scopes');
-    if (!provider || typeof connectOAuth !== 'function') return done(res, false);
-    try { return json(res, await connectOAuth(provider, scopes)); }
-    catch (e) { return json(res, { ok: false, error: e.message || 'oauth connect failed' }); }
+  if (url === '/api/office/data' || url === '/api/office/connect') {
+    const nextCapability = consumeOfficeCapability(req);
+    if (!nextCapability) { res.writeHead(403); res.end(); return; }
+    const operation = url === '/api/office/data' ? getOfficeData : connectOffice;
+    if (typeof operation !== 'function') return officeJson(res, { ok: false, error: 'Office service unavailable' }, nextCapability);
+    try { return officeJson(res, await operation(), nextCapability); }
+    catch (e) { return officeJson(res, { ok: false, error: e.message || 'Office request failed', code: e.code || '' }, nextCapability); }
   }
   if (url === '/app-proxy') return serveAppProxy(req, res, full);
   if (url.indexOf('/app-api/') === 0) return serveAppApi(req, res, full, url);
@@ -401,8 +436,11 @@ function start(opts) {
   onLaunch = opts.onLaunch || null;
   getGridTiles = opts.getGridTiles || null;
   getAppConfig = opts.getAppConfig || null;
-  getOAuthTokens = opts.getOAuthTokens || null;
-  connectOAuth = opts.connectOAuth || null;
+  getOfficeData = opts.getOfficeData || null;
+  connectOffice = opts.connectOffice || null;
+  currentTime = typeof opts.now === 'function' ? opts.now : Date.now;
+  officeCapabilityTtlMs = Number.isFinite(opts.officeCapabilityTtlMs) && opts.officeCapabilityTtlMs > 0
+    ? opts.officeCapabilityTtlMs : DEFAULT_OFFICE_CAPABILITY_TTL_MS;
   onOpenExternal = opts.onOpenExternal || null;
   onMeetingAction = opts.onMeetingAction || null;
   getShortcuts = opts.getShortcuts || null;
@@ -431,9 +469,10 @@ function start(opts) {
 }
 
 // Run only the poller the visible page needs; stop the others. Called by main.js whenever the
-// active panel page changes. which: 'sysview' (metrics) | 'music' (now-playing) | null (neither).
+// active panel page changes. which: 'sysview' (metrics) | 'music' (now-playing) | 'office' | null.
 // start()/stop() are idempotent, so this is safe to call on every page push.
 function setActivePage(which) {
+  if (which !== 'office') clearOfficeCapability();
   if (which === 'sysview') { metrics.start(); nowplaying.stop(); }
   else if (which === 'music') { nowplaying.start(); metrics.stop(); }
   else { metrics.stop(); nowplaying.stop(); }
@@ -443,6 +482,11 @@ function stop() {
   metrics.stop();
   nowplaying.stop();
   if (server) { try { server.close(); } catch (e) {} server = null; }
+  clearOfficeCapability();
+  getOfficeData = null;
+  connectOffice = null;
+  currentTime = Date.now;
+  officeCapabilityTtlMs = DEFAULT_OFFICE_CAPABILITY_TTL_MS;
 }
 
-module.exports = { start, stop, setActivePage, setAppFolders };
+module.exports = { start, stop, setActivePage, setAppFolders, issueOfficeCapability, clearOfficeCapability };
