@@ -274,6 +274,12 @@ The served server binds `127.0.0.1` only, and:
   `/app-proxy`, `/app-proxy/config`, `/app-api/*`, plus host routes like launch/media/metrics)
   require `Sec-Fetch-Site: same-origin` (with an `Origin`-based fallback that fails closed). Only
   the static page + asset routes are reachable by top-level navigation.
+- **No global OAuth-token API:** same-origin request metadata is not app or native-process
+  authentication. A served or drop-in app MUST NOT receive host OAuth access or refresh tokens.
+  Built-in integrations that need OAuth-protected data use a host-controlled, scope-fixed operation
+  plus a random, memory-only capability delivered outside normal HTTP requests. The reference Office
+  capability is carried in the page URL fragment, rotated after each authorized operation, expires,
+  and is cleared when the page is no longer active.
 
 ### 6.3 Informed consent for host code (import warning)
 

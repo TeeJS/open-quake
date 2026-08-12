@@ -34,18 +34,18 @@ function createSecretStore({ safeStorage, dpapi, loadApps, log = () => {} }) {
   }
 
   // Encrypt one value for at-rest storage. Idempotent (already-marked values pass through), and a
-  // no-op for non-strings / empty strings. Falls back to plaintext (caller logs) when unavailable.
+  // no-op for non-strings / empty strings. Encryption failure aborts the enclosing save.
   function encryptValue(plain) {
     if (typeof plain !== 'string' || plain === '') return plain;
     if (plain.startsWith(MARKER) || plain.startsWith(MARKER2)) return plain;   // already encrypted — don't double-wrap
     if (dp) {
       const blob = dp.protectOne(plain);
       if (blob) return MARKER2 + blob;
-      log('dpapi protect failed — storing plaintext (fallback)');
-      return plain;
+      throw new Error('Secret encryption failed');
     }
-    if (!available()) return plain;                          // fallback: store plaintext (logged by saveConfig path)
-    return MARKER + safeStorage.encryptString(plain).toString('base64');
+    if (!available()) throw new Error('Secret encryption is unavailable');
+    try { return MARKER + safeStorage.encryptString(plain).toString('base64'); }
+    catch (e) { throw new Error('Secret encryption failed'); }
   }
 
   // Decrypt one stored value. Plaintext (unmarked) values pass through unchanged — this is also the

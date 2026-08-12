@@ -38,8 +38,12 @@ class TokenStorage {
   setProviderSettings(provider, patch) {
     provider = canonicalProviderId(provider);
     const root = this.oauthRoot();
-    root.providers[provider] = Object.assign({}, root.providers[provider] || {}, patch || {});
-    this.saveConfig();
+    const previous = root.providers[provider];
+    root.providers[provider] = Object.assign({}, previous || {}, patch || {});
+    if (this.saveConfig() === false) {
+      if (previous === undefined) delete root.providers[provider]; else root.providers[provider] = previous;
+      throw new Error('OAuth settings could not be stored securely');
+    }
     return Object.assign({}, root.providers[provider]);
   }
 
@@ -53,16 +57,24 @@ class TokenStorage {
   setTokens(provider, tokens) {
     provider = canonicalProviderId(provider);
     const root = this.oauthRoot();
+    const previous = root.tokens[provider];
     root.tokens[provider] = Object.assign({}, tokens || {}, { provider, updatedAt: Date.now() });
-    this.saveConfig();
+    if (this.saveConfig() === false) {
+      if (previous === undefined) delete root.tokens[provider]; else root.tokens[provider] = previous;
+      throw new Error('OAuth tokens could not be stored securely');
+    }
     return Object.assign({}, root.tokens[provider]);
   }
 
   deleteTokens(provider) {
     provider = canonicalProviderId(provider);
     const root = this.oauthRoot();
+    const previous = root.tokens[provider];
     delete root.tokens[provider];
-    this.saveConfig();
+    if (this.saveConfig() === false) {
+      if (previous !== undefined) root.tokens[provider] = previous;
+      throw new Error('OAuth token deletion could not be stored');
+    }
   }
 
   status(provider) {

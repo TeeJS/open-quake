@@ -564,7 +564,21 @@
   // ---- save model (no live edit) ----
   function setState(text, cls) { const el = document.getElementById('state'); el.textContent = text; el.className = 'state' + (cls ? ' ' + cls : ''); }
   function markDirty() { dirty = true; setState('● unsaved changes', 'dirty'); document.getElementById('saveBtn').disabled = false; }
-  function doSave() { configApi.saveConfig(config); dirty = false; document.getElementById('saveBtn').disabled = true; setState('saved ✓', 'saved'); }
+  async function doSave() {
+    try {
+      const result = await configApi.saveConfig(config);
+      if (!(result && result.ok)) throw new Error(result && result.error || 'secure persistence failed');
+      dirty = false;
+      document.getElementById('saveBtn').disabled = true;
+      setState('saved ✓', 'saved');
+      return true;
+    } catch (e) {
+      dirty = true;
+      document.getElementById('saveBtn').disabled = false;
+      setState('save failed: secrets could not be stored securely', 'dirty');
+      return false;
+    }
+  }
 
   // ---- tiles / icons ----
   function blankTile() { return { label: '', icon: '', type: '', value: '', iconType: 'emoji', iconImage: '', iconUrl: '', iconCache: '' }; }
@@ -1930,7 +1944,10 @@
         // Auto-save first so toggling Use HA and clicking Refresh "just works" without remembering
         // to Save between. IPC is ordered, so the save (ipc.send) is processed before the refresh
         // (ipc.invoke) reaches main's handler.
-        if (dirty) { statusEl.textContent = 'Saving, then refreshing…'; statusEl.style.color = '#7e93ab'; doSave(); }
+        if (dirty) {
+          statusEl.textContent = 'Saving, then refreshing…'; statusEl.style.color = '#7e93ab';
+          if (!await doSave()) throw new Error('settings were not saved securely');
+        }
         else { statusEl.textContent = 'Refreshing…'; statusEl.style.color = '#7e93ab'; }
         try {
           const c = await configApi.refreshHaCache();

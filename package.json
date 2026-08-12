@@ -1,6 +1,6 @@
 {
   "name": "open-quake",
-  "version": "0.4.2",
+  "version": "0.4.3-beta.2",
   "private": true,
   "description": "Open driver + multi-grid touchscreen launcher for the DK-QUAKE / ARIS-68 touchscreen-and-knob macro device.",
   "main": "app/main.js",
@@ -9,11 +9,12 @@
     "node": ">=18 <25"
   },
   "scripts": {
-    "start": "node build-smtc.js && electron .",
-    "rebuild": "electron-rebuild -v 42.4.1 -f --only node-hid",
+    "start": "node build-dpapi.js && node build-smtc.js && electron .",
+    "rebuild": "electron-rebuild -v 42.4.1 -f --only node-hid && node build-dpapi.js",
+    "build:dpapi": "node build-dpapi.js",
     "build:smtc": "node build-smtc.js",
     "test": "node --test test/*.test.js",
-    "dist": "node build-smtc.js && electron-builder --win"
+    "dist": "node build-dpapi.js && node build-smtc.js && electron-builder --win"
   },
   "license": "SEE LICENSE IN LICENSE",
   "keywords": [
@@ -49,6 +50,7 @@
       "!docs/**",
       "!tools/**",
       "!native/**",
+      "!build-dpapi.js",
       "!build-smtc.js",
       "!sign.js",
       "!afterpack.js",

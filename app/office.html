@@ -8,31 +8,78 @@
 </head>
 <body>
   <main id="wrap">
-    <section class="panel main">
-      <aside class="profile">
+    <section class="panel workspace">
+      <header class="header">
         <div class="identity">
           <p class="eyebrow">Microsoft 365</p>
           <h1 id="name">Office</h1>
         </div>
-        <div class="presence" id="presence">Not connected</div>
-      </aside>
-      <section class="focus" aria-label="Current or next meeting">
-        <p class="section-label" id="focusLabel">Up next</p>
-        <div id="status" class="status">Connecting to Microsoft Graph...</div>
-        <div id="primaryEvent" class="primary-event" aria-live="polite">
-          <div class="title">Loading calendar</div>
-          <div class="meta">Checking your schedule...</div>
+        <div class="header-meta">
+          <div id="presence" class="presence">Not connected</div>
+          <button id="drawerToggle" class="drawer-toggle" type="button" aria-expanded="false">More</button>
         </div>
-      </section>
-      <section class="agenda" aria-label="Later meetings">
-        <p class="section-label">Later today</p>
-        <div id="events" class="events"><div class="empty-state">Loading agenda...</div></div>
-      </section>
+      </header>
+
+      <div class="workspace-main">
+        <section class="focus-card" aria-live="polite">
+          <div class="section-head">
+            <span id="focusLabel" class="section-label">Now</span>
+            <span id="status" class="status">Connecting to Microsoft Graph...</span>
+          </div>
+          <div id="primaryEvent" class="primary-event">
+            <div class="title">Loading calendar</div>
+            <div class="meta">Checking your schedule...</div>
+          </div>
+          <div class="primary-action-wrap">
+            <button id="primaryActionBtn" class="primary-button" type="button">Open Teams</button>
+          </div>
+        </section>
+
+        <section class="agenda-card" aria-label="Later meetings">
+          <div class="section-head">
+            <span class="section-label">Later today</span>
+          </div>
+          <div id="events" class="events"><div class="empty-state">Loading agenda...</div></div>
+        </section>
+      </div>
+
+      <footer class="quick-actions" aria-label="Quick actions">
+        <button class="mini-action" data-action="teams" type="button">Teams</button>
+        <button class="mini-action" data-action="chat" type="button">Chat</button>
+        <button class="mini-action" data-action="activity" type="button">Activity</button>
+        <button class="mini-action" data-action="calendar" type="button">Calendar</button>
+      </footer>
     </section>
-    <section class="panel grid-panel">
+
+    <aside class="panel action-panel">
+      <div class="action-header">
+        <span class="section-label">Quick actions</span>
+      </div>
       <div class="grid" id="grid"></div>
-    </section>
+    </aside>
+
+    <aside id="shortcutDrawer" class="panel shortcut-drawer" aria-hidden="true">
+      <div class="drawer-header">
+        <span class="section-label">Shortcuts</span>
+        <button id="drawerClose" class="drawer-close" type="button" aria-label="Close shortcuts">×</button>
+      </div>
+      <div class="shortcut-groups">
+        <div class="shortcut-group">
+          <h3>Workspace</h3>
+          <button class="shortcut-item" data-action="teams" type="button">Teams</button>
+          <button class="shortcut-item" data-action="chat" type="button">Chat</button>
+          <button class="shortcut-item" data-action="calendar" type="button">Calendar</button>
+        </div>
+        <div class="shortcut-group">
+          <h3>Workday</h3>
+          <button class="shortcut-item" data-action="activity" type="button">Activity</button>
+          <button class="shortcut-item" data-action="calendar" type="button">Outlook</button>
+          <button class="shortcut-item" data-action="teams" type="button">Meet</button>
+        </div>
+      </div>
+    </aside>
   </main>
+
   <div id="auth" class="auth hidden">
     <div class="auth-box">
       <h2>Connect Microsoft 365</h2>

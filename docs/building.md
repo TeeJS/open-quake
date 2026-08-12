@@ -121,5 +121,7 @@ apps/                     bundled local web apps + apps.json manifest [MIT]
 ```
 
 Secrets (dashboard/HA tokens, app secret options) are encrypted at rest via `secretStore.js`,
-which dispatches to a platform backend: raw Windows DPAPI (`dpapi.js`, per-value, no key file)
-on Windows, Electron `safeStorage` (Keychain-backed) elsewhere.
+which dispatches to a platform backend: an in-process, first-party raw Windows DPAPI Node-API
+binding (`dpapi.js`, per-value, current-user scope, no key file) on Windows, and Electron
+`safeStorage` (Keychain-backed) elsewhere. Run `npm run build:dpapi` to build that binding alone;
+`npm start`, `npm run rebuild`, and `npm run dist` build it automatically when stale.

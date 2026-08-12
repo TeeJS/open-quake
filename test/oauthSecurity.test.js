@@ -209,9 +209,55 @@ test('Office Graph service fixes provider, scopes, and operations in the main pr
     ok: true,
     profile: { displayName: 'Example' },
     presence: { availability: 'Available' },
-    events: [{ subject: 'Example' }],
+    events: [{
+      id: '',
+      subject: 'Example',
+      start: null,
+      end: null,
+      startTimeZone: null,
+      endTimeZone: null,
+      location: '',
+      isCancelled: false,
+      isAllDay: false,
+      showAs: 'busy',
+      status: 'busy',
+      isOnlineMeeting: false,
+      joinUrl: null,
+      webLink: null,
+    }],
   });
   assert.doesNotMatch(JSON.stringify(result), /accessToken|refreshToken/);
+});
+
+test('Office Graph service normalizes meeting metadata needed for reactive calendar states', async () => {
+  const service = createOfficeGraph({
+    getAccessToken: async () => ({ accessToken: 'synthetic-access-value' }),
+    connectOAuth: async () => undefined,
+    now: () => new Date('2026-08-11T12:00:00.000Z'),
+    fetchImpl: async (url) => {
+      if (url.endsWith('/me/presence')) return { ok: true, json: async () => ({ availability: 'inAMeeting', activity: 'inACall' }) };
+      if (url.includes('/calendarView?')) return { ok: true, json: async () => ({ value: [{
+        id: 'evt-1',
+        subject: 'Daily Standup',
+        start: { dateTime: '2026-08-11T12:15:00', timeZone: 'UTC' },
+        end: { dateTime: '2026-08-11T12:45:00', timeZone: 'UTC' },
+        location: { displayName: 'Room 1' },
+        isCancelled: false,
+        isOnlineMeeting: true,
+        onlineMeeting: { joinWebUrl: 'https://teams.microsoft.com/l/meetup-join/abc' },
+        webLink: 'https://outlook.office.com/calendar/item/abc',
+        showAs: 'busy',
+      }] }) };
+      return { ok: true, json: async () => ({ displayName: 'Example User', userPrincipalName: 'example@contoso.com' }) };
+    },
+  });
+
+  const result = await service.getData();
+  assert.equal(result.events[0].start, '2026-08-11T12:15:00.000Z');
+  assert.equal(result.events[0].end, '2026-08-11T12:45:00.000Z');
+  assert.equal(result.events[0].joinUrl, 'https://teams.microsoft.com/l/meetup-join/abc');
+  assert.equal(result.events[0].location, 'Room 1');
+  assert.equal(result.events[0].status, 'busy');
 });
 
 test('preload and Office renderer sources expose no OAuth token getter', () => {

@@ -1,6 +1,7 @@
 (function () {
   var capability = '';
   var officeLoad = null;
+  var lastState = null;
 
   try {
     var q = new URLSearchParams(location.search);
@@ -13,8 +14,9 @@
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
   function status(text, bad) {
-    $('status').textContent = text || '';
-    $('status').classList.toggle('bad', !!bad);
+    var st = $('status');
+    st.textContent = text || '';
+    st.classList.toggle('bad', !!bad);
   }
   function readCapability() {
     try { return new URLSearchParams(location.hash.slice(1)).get('_cap') || ''; }
@@ -40,44 +42,137 @@
   }
   function fmtTime(value) {
     if (!value) return '';
-    try { return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
-    catch (e) { return ''; }
+    try {
+      var d = new Date(value);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return ''; }
   }
-  function presenceClass(value) {
+  function fmtDuration(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return 'Now';
+    var totalMin = Math.max(1, Math.round(ms / 60000));
+    if (totalMin < 60) return 'in ' + totalMin + ' min';
+    var hours = Math.floor(totalMin / 60);
+    var mins = totalMin % 60;
+    return 'in ' + hours + 'h ' + mins + 'm';
+  }
+  function fmtRange(startIso, endIso) {
+    if (!startIso || !endIso) return '';
+    var start = new Date(startIso);
+    var end = new Date(endIso);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
+    return fmtTime(startIso) + ' – ' + fmtTime(endIso);
+  }
+  function getPresenceState(value) {
     var v = String(value || '').toLowerCase();
-    if (v.indexOf('available') >= 0) return 'available';
-    if (v.indexOf('donotdisturb') >= 0) return 'dnd';
-    if (v.indexOf('busy') >= 0) return 'busy';
-    return '';
+    if (v.indexOf('inacall') >= 0 || v.indexOf('in a call') >= 0) return { className: 'call', label: 'In a call' };
+    if (v.indexOf('inameeting') >= 0 || v.indexOf('in a meeting') >= 0) return { className: 'meeting', label: 'In a meeting' };
+    if (v.indexOf('donotdisturb') >= 0 || v.indexOf('do not disturb') >= 0) return { className: 'dnd', label: 'Do not disturb' };
+    if (v.indexOf('busy') >= 0) return { className: 'busy', label: 'Busy' };
+    if (v.indexOf('away') >= 0) return { className: 'away', label: 'Away' };
+    if (v.indexOf('offline') >= 0) return { className: 'offline', label: 'Offline' };
+    if (v.indexOf('available') >= 0) return { className: 'available', label: 'Available' };
+    return { className: '', label: 'Unknown' };
   }
-  function renderEvents(items) {
-    items = items || [];
-    var primary = items[0];
+  function getCurrentPresence(presence) {
+    if (!presence) return { className: 'available', label: 'Available' };
+    var availability = presence.availability || presence.activity || '';
+    return getPresenceState(availability);
+  }
+  function getMeetingState(events) {
     var now = Date.now();
-    var current = primary && new Date(primary.start && primary.start.dateTime).getTime() <= now &&
-      new Date(primary.end && primary.end.dateTime).getTime() > now;
-    $('focusLabel').textContent = current ? 'Happening now' : 'Up next';
-    if (primary) {
-      var primaryWhere = primary.location && primary.location.displayName || '';
-      $('primaryEvent').innerHTML = '<div class="time">' + esc(fmtTime(primary.start && primary.start.dateTime)) + '</div>' +
-        '<div class="title">' + esc(primary.subject || '(busy)') + '</div>' +
-        '<div class="meta">' + esc(primaryWhere || primary.showAs || '') + '</div>';
-    } else {
-      $('primaryEvent').innerHTML = '<div class="title">No upcoming meetings</div><div class="meta">Your calendar is clear for today.</div>';
+    var upcoming = [];
+    for (var i = 0; i < (events || []).length; i++) {
+      var ev = events[i];
+      if (!ev || ev.isCancelled) continue;
+      var startMs = ev.start ? new Date(ev.start).getTime() : null;
+      var endMs = ev.end ? new Date(ev.end).getTime() : null;
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+      upcoming.push({ event: ev, startMs: startMs, endMs: endMs });
     }
+    upcoming.sort(function (a, b) { return a.startMs - b.startMs; });
+    var current = null;
+    var next = null;
+    for (var j = 0; j < upcoming.length; j++) {
+      var candidate = upcoming[j];
+      if (candidate.startMs <= now && candidate.endMs > now) {
+        current = candidate.event;
+        break;
+      }
+      if (!next && candidate.startMs > now) {
+        next = candidate.event;
+      }
+    }
+    if (!current && !next) return { current: null, next: null, activeWindow: null };
+    return { current: current || next, next: next || current, activeWindow: current ? 'current' : 'next' };
+  }
+  function openAction(url) {
+    if (!url) return;
+    try {
+      var win = window.open(url, '_blank', 'noopener,noreferrer');
+      if (win) win.opener = null;
+    } catch (e) {}
+  }
+  function getPrimaryAction(event) {
+    if (!event) return { label: 'Open Microsoft 365', url: 'https://www.office.com' };
+    if (event.joinUrl) return { label: 'Join Teams meeting', url: event.joinUrl };
+    if (event.webLink) return { label: 'Open meeting', url: event.webLink };
+    return { label: 'Open calendar', url: 'https://outlook.office.com/calendar' };
+  }
+  function renderPresence(presence) {
+    var state = getCurrentPresence(presence);
+    var el = $('presence');
+    el.textContent = state.label;
+    el.className = 'presence ' + state.className;
+  }
+  function renderPrimary(event, presence) {
+    var focusState = getMeetingState(lastState && lastState.events ? lastState.events : []);
+    if (!event) {
+      $('focusLabel').textContent = 'Now';
+      $('primaryEvent').innerHTML = '<div class="title">No more meetings today</div><div class="meta">Your calendar is clear for the rest of the day.</div>';
+      $('primaryActionBtn').textContent = 'Open Microsoft 365';
+      $('primaryActionBtn').onclick = function () { openAction('https://www.office.com'); };
+      return;
+    }
+
+    var now = Date.now();
+    var startMs = new Date(event.start).getTime();
+    var endMs = new Date(event.end).getTime();
+    var isCurrent = startMs <= now && endMs > now;
+    var minutesUntil = Math.max(0, Math.round((startMs - now) / 60000));
+    var timeLabel = isCurrent ? 'In progress' : (minutesUntil <= 30 ? 'Meeting in ' + minutesUntil + ' min' : 'Next up');
+    var focusLabel = isCurrent ? 'Now' : (minutesUntil <= 10 ? 'Meeting soon' : 'Next');
+    $('focusLabel').textContent = focusLabel;
+    $('primaryEvent').innerHTML = '<div class="time">' + esc(timeLabel) + '</div>' +
+      '<div class="title">' + esc(event.subject || '(untitled)') + '</div>' +
+      '<div class="meta">' + esc(fmtRange(event.start, event.end)) + (event.location ? ' · ' + esc(event.location) : '') + '</div>';
+    var action = getPrimaryAction(event);
+    $('primaryActionBtn').textContent = action.label;
+    $('primaryActionBtn').onclick = function () { openAction(action.url); };
+    if (presence && String(presence.availability || presence.activity || '').toLowerCase().indexOf('inacall') >= 0) {
+      $('primaryEvent').innerHTML = '<div class="time">In a call</div><div class="title">' + esc(event.subject || '(untitled)') + '</div><div class="meta">' + esc(fmtRange(event.start, event.end)) + (event.location ? ' · ' + esc(event.location) : '') + '</div>';
+    }
+  }
+  function renderAgenda(items) {
+    items = items || [];
     var html = '';
-    for (var i = 1; i < Math.min(items.length, 5); i++) {
+    var shown = 0;
+    for (var i = 0; i < items.length && shown < 4; i++) {
       var ev = items[i];
-      var where = ev.location && ev.location.displayName || '';
-      html += '<div class="event"><div class="time">' + esc(fmtTime(ev.start && ev.start.dateTime)) + '</div><div><div class="title">' + esc(ev.subject || '(busy)') + '</div><div class="meta">' + esc(where || ev.showAs || '') + '</div></div></div>';
+      if (!ev || ev.isCancelled) continue;
+      var start = ev.start ? fmtTime(ev.start) : '';
+      var where = ev.location || '';
+      html += '<div class="event"><div class="time">' + esc(start) + '</div><div><div class="title">' + esc(ev.subject || '(untitled)') + '</div><div class="meta">' + esc(where || (ev.isOnlineMeeting ? 'Teams meeting' : 'Calendar')) + '</div></div></div>';
+      shown += 1;
     }
-    if (!html) html = '<div class="empty-state">No more events today</div>';
+    if (!html) html = '<div class="empty-state">No more meetings today</div>';
     $('events').innerHTML = html;
   }
   function renderEventError() {
-    $('focusLabel').textContent = 'Calendar';
+    $('focusLabel').textContent = 'Now';
     $('primaryEvent').innerHTML = '<div class="title">Calendar unavailable</div><div class="meta">Your schedule could not be loaded.</div>';
     $('events').innerHTML = '<div class="empty-state">Unable to load agenda</div>';
+    $('primaryActionBtn').textContent = 'Open Microsoft 365';
+    $('primaryActionBtn').onclick = function () { openAction('https://www.office.com'); };
   }
   function showAuth(message) {
     $('auth').classList.remove('hidden');
@@ -108,23 +203,88 @@
   function pollGrid() {
     fetch('/grid-tiles', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(renderGrid).catch(function () {});
   }
+  function handleAction(action) {
+    if (action === 'teams') openAction('https://teams.microsoft.com');
+    else if (action === 'chat') openAction('https://teams.microsoft.com/l/chat/0/0');
+    else if (action === 'activity') openAction('https://www.office.com/');
+    else if (action === 'calendar') openAction('https://outlook.office.com/calendar');
+    else if (action === 'meet') openAction('https://teams.microsoft.com/l/meetup-join');
+    else if (action === 'outlook') openAction('https://outlook.office.com');
+    else openAction('https://www.office.com');
+  }
+  function bindActionButtons() {
+    document.querySelectorAll('.mini-action, .shortcut-item').forEach(function (button) {
+      button.onclick = function () {
+        handleAction(button.getAttribute('data-action'));
+      };
+    });
+
+    var drawerToggle = $('drawerToggle');
+    var drawerClose = $('drawerClose');
+    if (drawerToggle) {
+      drawerToggle.onclick = function () {
+        var wrap = document.getElementById('wrap');
+        var open = wrap.classList.toggle('drawer-open');
+        drawerToggle.setAttribute('aria-expanded', String(open));
+      };
+    }
+    if (drawerClose) {
+      drawerClose.onclick = function () {
+        var wrap = document.getElementById('wrap');
+        wrap.classList.remove('drawer-open');
+        if (drawerToggle) drawerToggle.setAttribute('aria-expanded', 'false');
+      };
+    }
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') {
+        var wrap = document.getElementById('wrap');
+        wrap.classList.remove('drawer-open');
+        if (drawerToggle) drawerToggle.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+  function applyState(data) {
+    if (!data || !data.ok) {
+      status('Microsoft connection needed.', true);
+      renderEventError();
+      showAuth(data && data.error ? data.error : '');
+      return;
+    }
+    hideAuth();
+    var me = data.profile || {};
+    var presence = data.presence || {};
+    $('name').textContent = me.displayName || me.userPrincipalName || 'Office';
+    renderPresence(presence);
+    var events = Array.isArray(data.events) ? data.events : [];
+    var next = null;
+    var now = Date.now();
+    for (var i = 0; i < events.length; i++) {
+      var ev = events[i];
+      if (!ev || ev.isCancelled) continue;
+      var startMs = ev.start ? new Date(ev.start).getTime() : null;
+      var endMs = ev.end ? new Date(ev.end).getTime() : null;
+      if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs <= now && endMs > now) {
+        next = ev;
+        break;
+      }
+      if (!next && Number.isFinite(startMs) && startMs > now) next = ev;
+    }
+    if (!next) {
+      renderPrimary(null, presence);
+      renderAgenda(events);
+      status('');
+      lastState = { events: events || [] };
+      return;
+    }
+    renderPrimary(next, presence);
+    renderAgenda(events.filter(function (ev) { return ev && ev.id !== next.id; }));
+    status('');
+    lastState = { events: events || [] };
+  }
   function loadOffice() {
     if (officeLoad) return officeLoad;
     officeLoad = officeFetch('/api/office/data').then(function (data) {
-      if (!data || !data.ok) {
-        status('Microsoft connection needed.', true);
-        renderEventError();
-        showAuth(data && data.error ? data.error : '');
-        return;
-      }
-      hideAuth();
-      var me = data.profile || {}, presence = data.presence;
-      $('name').textContent = me.displayName || me.userPrincipalName || 'Office';
-      var p = presence && (presence.availability || presence.activity) || 'Calendar';
-      $('presence').textContent = p;
-      $('presence').className = 'presence ' + presenceClass(p);
-      renderEvents(data.events || []);
-      status('');
+      applyState(data);
     }).catch(function (e) {
       status(e.message || 'Could not reach the Open-Quake Office service.', true);
       renderEventError();
@@ -145,6 +305,7 @@
       $('connect').disabled = false;
     });
   };
+  bindActionButtons();
   pollGrid();
   loadOffice();
   setInterval(loadOffice, 60000);

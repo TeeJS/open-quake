@@ -17,9 +17,8 @@
 // `ws` library's WebSocket connections, which build their own TLS socket via tls.createSecureContext
 // directly. inject:'+' patches tls.createSecureContext itself, so it's picked up by every TLS
 // connection regardless of which higher-level module opened it. fallback:true skips the native
-// N-API cert reader in favor of shelling out — consistent with this app's existing preference for
-// PowerShell-backed helpers (dpapi.js, desktopFocus.js) over native binaries, which corporate EDR
-// products are more prone to flag.
+// N-API cert reader in favor of shelling out. This is unrelated to secret storage: DPAPI operations
+// use the in-process first-party binding and never create a PowerShell child process.
 if (process.platform === 'win32') {
   try { require('win-ca/api')({ inject: '+', fallback: true }); }
   catch (e) { console.log('win-ca load failed:', e.message); }
@@ -482,9 +481,20 @@ function activeServedAppConfig(appId) {
 }
 // Persist config with secret fields encrypted at rest. encryptConfig clones, so the in-memory
 // `config` keeps its plaintext secrets — consumers (renderer HA token, Basic/header auth, served
-// app config) read the live plaintext. When safeStorage is unavailable, encryptValue logs nothing
-// itself but falls back to plaintext on disk (see decrypt passthrough on the next load).
-function saveConfig() { try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(secretStore.encryptConfig(config), null, 2)); } catch (e) { console.log('config save error:', e.message); } }
+// app config) read the live plaintext. Encryption is fail-closed: the existing file is left intact.
+function saveConfig() {
+  const temporaryPath = CONFIG_PATH + '.tmp';
+  try {
+    const serialized = JSON.stringify(secretStore.encryptConfig(config), null, 2);
+    fs.writeFileSync(temporaryPath, serialized);
+    fs.renameSync(temporaryPath, CONFIG_PATH);
+    return true;
+  } catch (e) {
+    try { fs.rmSync(temporaryPath, { force: true }); } catch (cleanupError) {}
+    console.log('config save error: secure persistence failed');
+    return false;
+  }
+}
 function activeGrid() { return config.grids.find(g => g.id === config.activeGridId) || config.grids[0] || { cols: 8, rows: 2, tiles: [] }; }
 function gridList() { return config.grids.filter(g => !g.hidden).map(g => ({ id: g.id, name: g.name })); }
 // Tell the local server which served page is on screen so it runs only that page's poller
@@ -1515,9 +1525,7 @@ app.whenReady().then(async () => {
   config = secretStore.decryptConfig(config);
   if (secretStore.available()) {
     if (needsMigration) saveConfig();                        // migrate plaintext/legacy config to current at-rest form
-  } else if (needsMigration) {
-    console.log('secret encryption unavailable — config secrets kept in plaintext on disk (fallback)');
-  }
+  } else if (needsMigration) console.log('secret encryption unavailable — refusing to rewrite config secrets');
   try { powerSaveBlocker.start('prevent-display-sleep'); } catch (e) {}
   createTray();
   // SystemView: live local metrics server on 127.0.0.1 (OS-assigned port) + ensure the dashboard page.
@@ -1645,8 +1653,9 @@ app.whenReady().then(async () => {
     try { if (sysserver && sysserver.setAppFolders) sysserver.setAppFolders(catalog.servedApps); } catch (er) {}
     return catalog.apps;
   });
-  ipcMain.on('saveConfigFromEditor', (e, newCfg) => {
-    if (!isFrom(e, configWin) || !newCfg || typeof newCfg !== 'object' || !Array.isArray(newCfg.grids)) return;
+  ipcMain.handle('saveConfigFromEditor', (e, newCfg) => {
+    if (!isFrom(e, configWin) || !newCfg || typeof newCfg !== 'object' || !Array.isArray(newCfg.grids)) return { ok: false, error: 'invalid configuration' };
+    const previousConfig = config;
     const active = config.activeGridId;                          // the knob owns the live page — editor edits never change it
     const wasRot = rotationCfg().enabled;                        // detect a fresh off->on to auto-start (else keep the runtime pause)
     const oauth = config.settings && config.settings.oauth;
@@ -1657,9 +1666,11 @@ app.whenReady().then(async () => {
     config = newCfg;
     if (config.grids.some(g => g.id === active)) config.activeGridId = active;
     else if (!config.grids.some(g => g.id === config.activeGridId)) config.activeGridId = (config.grids[0] || {}).id || null;
-    saveConfig(); pushToPanel(); applyKnobSettings(); refreshTray(); applyRotationSettings(wasRot); applyFocusFollowSettings(); applyShortcuts(); applyTheme();
+    if (!saveConfig()) { config = previousConfig; return { ok: false, error: 'secure persistence failed' }; }
+    pushToPanel(); applyKnobSettings(); refreshTray(); applyRotationSettings(wasRot); applyFocusFollowSettings(); applyShortcuts(); applyTheme();
     reservedDisplay.setEnabled(!!appSettings().reservedDisplay);
     configureHaSchedule();                                          // pick up any haAuth edits without a restart
+    return { ok: true };
   });
   ipcMain.handle('pickProgram', async (e) => {
     if (!isFrom(e, configWin)) return null;
