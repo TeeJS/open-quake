@@ -52,17 +52,32 @@
   }
   function renderEvents(items) {
     items = items || [];
-    var html = '';
-    for (var i = 0; i < 5; i++) {
-      var ev = items[i];
-      if (!ev) {
-        html += '<div class="event"><div class="time"></div><div><div class="title"></div><div class="meta"></div></div></div>';
-      } else {
-        var where = ev.location && ev.location.displayName || '';
-        html += '<div class="event"><div class="time">' + esc(fmtTime(ev.start && ev.start.dateTime)) + '</div><div><div class="title">' + esc(ev.subject || '(busy)') + '</div><div class="meta">' + esc(where || ev.showAs || '') + '</div></div></div>';
-      }
+    var primary = items[0];
+    var now = Date.now();
+    var current = primary && new Date(primary.start && primary.start.dateTime).getTime() <= now &&
+      new Date(primary.end && primary.end.dateTime).getTime() > now;
+    $('focusLabel').textContent = current ? 'Happening now' : 'Up next';
+    if (primary) {
+      var primaryWhere = primary.location && primary.location.displayName || '';
+      $('primaryEvent').innerHTML = '<div class="time">' + esc(fmtTime(primary.start && primary.start.dateTime)) + '</div>' +
+        '<div class="title">' + esc(primary.subject || '(busy)') + '</div>' +
+        '<div class="meta">' + esc(primaryWhere || primary.showAs || '') + '</div>';
+    } else {
+      $('primaryEvent').innerHTML = '<div class="title">No upcoming meetings</div><div class="meta">Your calendar is clear for today.</div>';
     }
+    var html = '';
+    for (var i = 1; i < Math.min(items.length, 5); i++) {
+      var ev = items[i];
+      var where = ev.location && ev.location.displayName || '';
+      html += '<div class="event"><div class="time">' + esc(fmtTime(ev.start && ev.start.dateTime)) + '</div><div><div class="title">' + esc(ev.subject || '(busy)') + '</div><div class="meta">' + esc(where || ev.showAs || '') + '</div></div></div>';
+    }
+    if (!html) html = '<div class="empty-state">No more events today</div>';
     $('events').innerHTML = html;
+  }
+  function renderEventError() {
+    $('focusLabel').textContent = 'Calendar';
+    $('primaryEvent').innerHTML = '<div class="title">Calendar unavailable</div><div class="meta">Your schedule could not be loaded.</div>';
+    $('events').innerHTML = '<div class="empty-state">Unable to load agenda</div>';
   }
   function showAuth(message) {
     $('auth').classList.remove('hidden');
@@ -98,6 +113,7 @@
     officeLoad = officeFetch('/api/office/data').then(function (data) {
       if (!data || !data.ok) {
         status('Microsoft connection needed.', true);
+        renderEventError();
         showAuth(data && data.error ? data.error : '');
         return;
       }
@@ -111,6 +127,7 @@
       status('');
     }).catch(function (e) {
       status(e.message || 'Could not reach the Open-Quake Office service.', true);
+      renderEventError();
     }).finally(function () {
       officeLoad = null;
     });

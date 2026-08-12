@@ -9,15 +9,25 @@
 <body>
   <main id="wrap">
     <section class="panel main">
-      <div class="top">
-        <div>
+      <aside class="profile">
+        <div class="identity">
           <p class="eyebrow">Microsoft 365</p>
           <h1 id="name">Office</h1>
         </div>
         <div class="presence" id="presence">Not connected</div>
-      </div>
-      <div id="status" class="status">Connecting to Microsoft Graph...</div>
-      <div id="events" class="events"></div>
+      </aside>
+      <section class="focus" aria-label="Current or next meeting">
+        <p class="section-label" id="focusLabel">Up next</p>
+        <div id="status" class="status">Connecting to Microsoft Graph...</div>
+        <div id="primaryEvent" class="primary-event" aria-live="polite">
+          <div class="title">Loading calendar</div>
+          <div class="meta">Checking your schedule...</div>
+        </div>
+      </section>
+      <section class="agenda" aria-label="Later meetings">
+        <p class="section-label">Later today</p>
+        <div id="events" class="events"><div class="empty-state">Loading agenda...</div></div>
+      </section>
     </section>
     <section class="panel grid-panel">
       <div class="grid" id="grid"></div>
