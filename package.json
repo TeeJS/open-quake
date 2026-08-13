@@ -55,6 +55,7 @@
       "!sign.js",
       "!afterpack.js",
       "!.signing/**",
+      "!.ua/**",
       "!node_modules/win-ca/pem/**"
     ],
     "npmRebuild": false,

@@ -33,3 +33,6 @@ app/native/*.exe
 
 # dev-app secrets
 .env
+
+# generated Understand Anything analysis (regenerated from source; never a build input)
+.ua/
