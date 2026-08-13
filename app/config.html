@@ -13,13 +13,17 @@
   header .sub { color: #6f8298; font-size: 13px; }
   .main { flex: 1; display: flex; min-height: 0; }
   .col { padding: 14px; overflow: auto; }
-  .grids { width: 240px; border-right: 1px solid #1e2733; }
-  .editor { flex: 1; }
+  .grids { width: 240px; flex: none; }
+  .colsplit { flex: none; width: 6px; cursor: col-resize; background: #1e2733; position: relative; }
+  .colsplit:hover, .colsplit.dragging { background: #2b6fb0; }
+  .editor { flex: 1; min-width: 0; }
   .sectitle { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: #6f8298; margin: 0 0 8px; }
-  .gridrow { padding: 9px 11px; border-radius: 8px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; border: 1px solid transparent; }
+  .gridrow { padding: 9px 11px; border-radius: 8px; cursor: pointer; display: flex; flex-direction: column; align-items: stretch; gap: 2px; border: 1px solid transparent; }
+  .gridrow .gtop { display: flex; justify-content: flex-start; align-items: center; gap: 8px; min-width: 0; }
   .gridrow:hover { background: #182230; }
   .gridrow.active { background: #16314f; border-color: #2b6fb0; }
-  .gridrow .badge { font-size: 11px; color: #7CFFB2; }
+  .gridrow .badge { font-size: 11px; color: #7CFFB2; flex: none; }
+  .gridrow .gsub { padding-left: 24px; }
   .gridrow.dragover { border-color: #7CFFB2; box-shadow: 0 0 0 2px #7CFFB2; }
   .gridrow .griphandle { cursor: grab; opacity: .4; user-select: none; flex: none; }
   .gridrow:hover .griphandle { opacity: .75; }
@@ -100,6 +104,7 @@
       <div id="addPageBtns" class="row" style="margin-top:12px; gap:6px; flex-wrap:wrap"><button class="primary" id="addGrid">+ Grid</button><button id="addDash">+ Dashboard</button><button id="addApp">+ App</button></div>
       <div id="addGroupBtns" class="row" style="margin-top:12px; gap:6px; display:none"><button class="primary" id="addGroup">+ Group</button></div>
     </div>
+    <div id="colsplit" class="colsplit" title="Drag to resize"></div>
     <div class="col editor">
       <div id="gridmeta"></div>
       <div id="tilegrid" class="tilegrid"></div>

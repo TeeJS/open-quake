@@ -677,9 +677,14 @@
       const left = document.createElement('span'); left.style.cssText = 'display:flex;align-items:center;gap:8px;min-width:0;overflow:hidden';
       const grip = document.createElement('span'); grip.className = 'griphandle'; grip.title = 'Drag to reorder'; grip.textContent = '☰';
       const name = document.createElement('span'); name.textContent = `${tag} ${g.name || '(unnamed)'}`; name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' + (g.hidden ? ';opacity:.55;font-style:italic' : '');
-      left.appendChild(grip); left.appendChild(name); d.appendChild(left);
-      if (g.hidden) { const b = document.createElement('span'); b.className = 'badge'; b.title = 'Hidden from page menu, knob cycling, and rotation'; b.textContent = '🚫👁'; d.appendChild(b); }
-      if (g.shortcut) { const b = document.createElement('span'); b.className = 'badge'; b.title = 'Hotkey shortcut'; b.textContent = g.shortcut; d.appendChild(b); }
+      left.appendChild(grip); left.appendChild(name);
+      // Top row is name + grip only -- the shortcut badge used to sit in this same row and steal its
+      // width, truncating long page names even though the sidebar had room to spare below. It now gets
+      // its own row underneath instead of competing for horizontal space.
+      const top = document.createElement('span'); top.className = 'gtop'; top.appendChild(left);
+      if (g.hidden) { const b = document.createElement('span'); b.className = 'badge'; b.title = 'Hidden from page menu, knob cycling, and rotation'; b.textContent = '🚫👁'; top.appendChild(b); }
+      d.appendChild(top);
+      if (g.shortcut) { const sub = document.createElement('span'); sub.className = 'gsub badge'; sub.title = 'Hotkey shortcut'; sub.textContent = g.shortcut; d.appendChild(sub); }
       d.onclick = () => { view = 'pages'; gi = i; ti = -1; selEnd = -1; render(); };
       d.draggable = true;
       d.ondragstart = e => { pageDragFrom = i; e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(i)); } catch (er) {} };
@@ -2188,6 +2193,32 @@
     render();
   };
   window.addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (dirty) doSave(); } });
+
+  // ---- page-list sidebar width: drag #colsplit to resize, remembered across launches ----
+  (function wireSidebarResize() {
+    const gridsEl = document.querySelector('.grids');
+    const split = document.getElementById('colsplit');
+    if (!gridsEl || !split) return;
+    const MIN = 180, MAX = 480;
+    const saved = parseInt(localStorage.getItem('oq_sidebar_width'), 10);
+    if (saved >= MIN && saved <= MAX) gridsEl.style.width = saved + 'px';
+    let dragging = false, startX = 0, startW = 0;
+    split.addEventListener('mousedown', e => {
+      dragging = true; startX = e.clientX; startW = gridsEl.getBoundingClientRect().width;
+      split.classList.add('dragging'); document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+    window.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      const w = Math.max(MIN, Math.min(MAX, startW + (e.clientX - startX)));
+      gridsEl.style.width = w + 'px';
+    });
+    window.addEventListener('mouseup', () => {
+      if (!dragging) return;
+      dragging = false; split.classList.remove('dragging'); document.body.style.userSelect = '';
+      localStorage.setItem('oq_sidebar_width', Math.round(gridsEl.getBoundingClientRect().width));
+    });
+  })();
 
   (async () => {
     config = await configApi.getConfig(); if (!config.grids) config.grids = [];
