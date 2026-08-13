@@ -563,7 +563,7 @@ function oauthProviderPayload() {
     return Object.assign({}, oauthHandler.status(id), {
       name: p.name,
       scopes: p.suggestedScopes || p.scopes,
-      clientId: settings.clientId || '',
+      managedClient: !!p.clientId,
       hasClientSecret: !!settings.clientSecret,
       enabled: id === 'microsoft',
     });
@@ -1656,14 +1656,6 @@ app.whenReady().then(async () => {
   ipcMain.on('openExternal', (e, url) => { if (!isFrom(e, panelWin) && !isFrom(e, configWin)) return; openExternalUrl(url); });
   ipcMain.handle('getConfig', (e) => isFrom(e, configWin) ? configForRenderer(config) : null);
   ipcMain.handle('listOAuthProviders', (e) => isFrom(e, configWin) ? oauthProviderPayload() : []);
-  ipcMain.handle('setOAuthProviderSettings', (e, provider, patch) => {
-    if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
-    const safePatch = {};
-    if (patch && typeof patch.clientId === 'string') safePatch.clientId = patch.clientId.trim();
-    if (patch && typeof patch.clientSecret === 'string') safePatch.clientSecret = patch.clientSecret.trim();
-    try { oauthStorage.setProviderSettings(provider, safePatch); return { ok: true, providers: oauthProviderPayload() }; }
-    catch (err) { return { ok: false, error: err.message || String(err) }; }
-  });
   ipcMain.handle('connectOAuthProvider', async (e, provider, scopes) => {
     if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
     try { await oauthHandler.connect(provider, scopes); return { ok: true, providers: oauthProviderPayload() }; }

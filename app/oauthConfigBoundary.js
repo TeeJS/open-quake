@@ -6,8 +6,10 @@ function configForRenderer(config) {
   if (!oauth || typeof oauth !== 'object') return clone;
   oauth.tokens = {};
   const providers = oauth.providers && typeof oauth.providers === 'object' ? oauth.providers : {};
-  Object.values(providers).forEach(settings => {
-    if (settings && typeof settings === 'object') delete settings.clientSecret;
+  Object.entries(providers).forEach(([provider, settings]) => {
+    if (!settings || typeof settings !== 'object') return;
+    delete settings.clientSecret;
+    if (provider === 'microsoft') delete settings.clientId;
   });
   return clone;
 }

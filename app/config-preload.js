@@ -8,7 +8,6 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   getApps() { return ipcRenderer.invoke('getApps'); },
   saveConfig(config) { return ipcRenderer.invoke('saveConfigFromEditor', config); },
   listOAuthProviders() { return ipcRenderer.invoke('listOAuthProviders'); },
-  setOAuthProviderSettings(provider, patch) { return ipcRenderer.invoke('setOAuthProviderSettings', provider, patch); },
   connectOAuthProvider(provider, scopes) { return ipcRenderer.invoke('connectOAuthProvider', provider, scopes); },
   disconnectOAuthProvider(provider) { return ipcRenderer.invoke('disconnectOAuthProvider', provider); },
   pickProgram() { return ipcRenderer.invoke('pickProgram'); },

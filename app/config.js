@@ -2113,11 +2113,10 @@
           <div class="advsec" style="margin-top:10px;padding:10px;border:1px solid #213145;border-radius:8px">
             <div class="row" style="gap:8px;align-items:center">
               <label style="width:auto;font-weight:bold">${esc(p.name || p.provider)}</label>
-              <span class="hint" style="margin:0">${p.connected ? 'Connected, ' + esc(fmtExpiry(p.expiresAt)) : (p.configured ? 'Ready to connect' : 'Client ID required')}</span>
+              <span class="hint" style="margin:0">${p.connected ? 'Connected, ' + esc(fmtExpiry(p.expiresAt)) : (p.configured ? 'Ready to connect' : 'Not configured')}</span>
               <span id="oauthMsg_${esc(p.provider)}" class="hint" style="margin:0 0 0 auto"></span>
             </div>
-            <div class="row"><label>Client ID</label>
-              <input type="text" class="oauthClientId" data-provider="${esc(p.provider)}" value="${esc(p.clientId || '')}" ${p.enabled ? '' : 'disabled'} placeholder="Microsoft app client ID" style="flex:1"></div>
+            ${p.managedClient ? '<div class="row"><label>Application</label><span class="hint" style="margin:0">Built into Open-Quake</span></div>' : ''}
             <div class="row"><label>Scopes</label><span class="hint" style="margin:0">${esc((p.scopes || []).join(' '))}</span></div>
             <div class="row" style="gap:8px">
               <button class="oauthConnect" data-provider="${esc(p.provider)}" ${p.enabled ? '' : 'disabled'}>${p.connected ? 'Reconnect' : 'Connect'}</button>
@@ -2125,22 +2124,12 @@
               ${p.enabled ? '' : '<span class="hint" style="margin:0">Framework placeholder</span>'}
             </div>
           </div>`).join('');
-        host.querySelectorAll('.oauthClientId').forEach(inp => {
-          inp.onchange = async e => {
-            const id = e.currentTarget.dataset.provider;
-            oauthMsg(id, 'Saving...');
-            const r = await configApi.setOAuthProviderSettings(id, { clientId: e.currentTarget.value });
-            oauthMsg(id, r && r.ok ? 'Saved' : 'Save failed: ' + ((r && r.error) || ''), !(r && r.ok));
-          };
-        });
         host.querySelectorAll('.oauthConnect').forEach(btn => {
           btn.onclick = async e => {
             const id = e.currentTarget.dataset.provider;
-            const input = host.querySelector('.oauthClientId[data-provider="' + id + '"]');
             e.currentTarget.disabled = true;
             oauthMsg(id, 'Opening browser...');
-            let r = await configApi.setOAuthProviderSettings(id, { clientId: input ? input.value : '' });
-            if (r && r.ok) r = await configApi.connectOAuthProvider(id, ['User.Read', 'Presence.Read', 'Calendars.Read', 'offline_access']);
+            const r = await configApi.connectOAuthProvider(id, ['User.Read', 'Presence.Read', 'Calendars.Read', 'offline_access']);
             oauthMsg(id, r && r.ok ? 'Finish sign-in in your browser.' : 'Connect failed: ' + ((r && r.error) || ''), !(r && r.ok));
             e.currentTarget.disabled = false;
             if (oauthPoll) clearInterval(oauthPoll);

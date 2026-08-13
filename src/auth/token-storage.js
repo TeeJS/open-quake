@@ -1,6 +1,6 @@
 'use strict';
 
-const { canonicalProviderId } = require('./providers');
+const { canonicalProviderId, providerFor } = require('./providers');
 
 class TokenStorage {
   constructor({ getConfig, saveConfig }) {
@@ -21,6 +21,16 @@ class TokenStorage {
       delete config.settings.oauth.providers.teams;
       this.saveConfig();
     }
+    // Microsoft is a shipped public OAuth client. Its application identity belongs to the
+    // provider definition, not mutable user configuration; remove legacy overrides/secrets.
+    const microsoftSettings = config.settings.oauth.providers.microsoft;
+    if (microsoftSettings && typeof microsoftSettings === 'object') {
+      const hadLegacySettings = Object.hasOwn(microsoftSettings, 'clientId') || Object.hasOwn(microsoftSettings, 'clientSecret');
+      delete microsoftSettings.clientId;
+      delete microsoftSettings.clientSecret;
+      if (!Object.keys(microsoftSettings).length) delete config.settings.oauth.providers.microsoft;
+      if (hadLegacySettings) this.saveConfig();
+    }
     if (config.settings.oauth.tokens.teams && !config.settings.oauth.tokens.microsoft) {
       config.settings.oauth.tokens.microsoft = Object.assign({}, config.settings.oauth.tokens.teams, { provider: 'microsoft' });
       delete config.settings.oauth.tokens.teams;
@@ -32,11 +42,14 @@ class TokenStorage {
   getProviderSettings(provider) {
     provider = canonicalProviderId(provider);
     const root = this.oauthRoot();
-    return Object.assign({}, root.providers[provider] || {});
+    const fixed = providerFor(provider);
+    return Object.assign({}, root.providers[provider] || {}, fixed && fixed.clientId ? { clientId: fixed.clientId } : {});
   }
 
   setProviderSettings(provider, patch) {
     provider = canonicalProviderId(provider);
+    const fixed = providerFor(provider);
+    if (fixed && fixed.clientId) throw new Error(fixed.name + ' client settings are built into Open-Quake');
     const root = this.oauthRoot();
     const previous = root.providers[provider];
     root.providers[provider] = Object.assign({}, previous || {}, patch || {});

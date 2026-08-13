@@ -63,7 +63,8 @@ class OAuthHandler {
   async generateAuthUrl(providerId, requestedScopes) {
     const provider = this.provider(providerId);
     const settings = this.storage.getProviderSettings(provider.id);
-    if (!settings.clientId) throw new Error(provider.name + ' client ID is required');
+    const clientId = provider.clientId || settings.clientId;
+    if (!clientId) throw new Error(provider.name + ' client ID is required');
     const requested = scopesFor(provider, requestedScopes);
     const state = base64Url(crypto.randomBytes(24));
     const verifier = base64Url(crypto.randomBytes(48));
@@ -71,7 +72,7 @@ class OAuthHandler {
     this.pending.set(state, { providerId: provider.id, verifier, scopes: requested, createdAt: Date.now() });
 
     const params = new URLSearchParams({
-      client_id: settings.clientId,
+      client_id: clientId,
       response_type: 'code',
       redirect_uri: provider.redirectUri,
       response_mode: 'query',
@@ -106,7 +107,7 @@ class OAuthHandler {
     const settings = this.storage.getProviderSettings(provider.id);
     const token = await this.fetchToken(provider, {
       grant_type: 'authorization_code',
-      client_id: settings.clientId,
+      client_id: provider.clientId || settings.clientId,
       client_secret: settings.clientSecret,
       code,
       redirect_uri: provider.redirectUri,
@@ -164,7 +165,7 @@ class OAuthHandler {
     const settings = this.storage.getProviderSettings(provider.id);
     const next = await this.fetchToken(provider, {
       grant_type: 'refresh_token',
-      client_id: settings.clientId,
+      client_id: provider.clientId || settings.clientId,
       client_secret: settings.clientSecret,
       refresh_token: tokens.refreshToken,
       redirect_uri: provider.redirectUri,

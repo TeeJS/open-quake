@@ -7,6 +7,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const sysserver = require('../app/sysserver');
 const { OAuthHandler } = require('../src/auth/oauth-handler');
+const { MICROSOFT_CLIENT_ID, providerFor } = require('../src/auth/providers');
+const { TokenStorage } = require('../src/auth/token-storage');
 const { OFFICE_SCOPES, createOfficeGraph } = require('../app/officeGraph');
 const { configForRenderer } = require('../app/oauthConfigBoundary');
 
@@ -214,6 +216,32 @@ test('OAuth access DTO never includes the refresh token', async () => {
   handler.stop();
 });
 
+test('Microsoft OAuth uses the fixed Open-Quake public client ID', async () => {
+  const handler = new OAuthHandler({
+    storage: { getProviderSettings: () => ({ clientId: 'ignored-user-override' }) },
+    openExternal: () => false,
+  });
+  const url = new URL(await handler.generateAuthUrl('microsoft', OFFICE_SCOPES));
+
+  assert.equal(MICROSOFT_CLIENT_ID, '1b171d2e-040f-4e4c-b841-dbb1eb8023c7');
+  assert.equal(providerFor('microsoft').clientId, MICROSOFT_CLIENT_ID);
+  assert.equal(url.searchParams.get('client_id'), MICROSOFT_CLIENT_ID);
+  handler.stop();
+});
+
+test('Microsoft client settings are immutable and legacy overrides are removed', () => {
+  let saves = 0;
+  const config = {
+    settings: { oauth: { providers: { microsoft: { clientId: 'legacy', clientSecret: 'legacy-secret' } }, tokens: {} } },
+  };
+  const storage = new TokenStorage({ getConfig: () => config, saveConfig: () => { saves += 1; return true; } });
+
+  assert.equal(storage.getProviderSettings('microsoft').clientId, MICROSOFT_CLIENT_ID);
+  assert.equal(config.settings.oauth.providers.microsoft, undefined);
+  assert.equal(saves, 1);
+  assert.throws(() => storage.setProviderSettings('microsoft', { clientId: 'replacement' }), /built into Open-Quake/);
+});
+
 test('OAuth refresh rotation remains internal while the access DTO stays minimal', async () => {
   let stored = {
     provider: 'microsoft',
@@ -344,7 +372,7 @@ test('editor configuration DTO removes OAuth credentials without mutating stored
   };
   const dto = configForRenderer(stored);
   assert.deepEqual(dto.settings.oauth.tokens, {});
-  assert.equal(dto.settings.oauth.providers.microsoft.clientId, 'public-client');
+  assert.equal(Object.hasOwn(dto.settings.oauth.providers.microsoft, 'clientId'), false);
   assert.equal(Object.hasOwn(dto.settings.oauth.providers.microsoft, 'clientSecret'), false);
   assert.equal(stored.settings.oauth.tokens.microsoft.refreshToken, 'synthetic-refresh-value');
   assert.equal(stored.settings.oauth.providers.microsoft.clientSecret, 'synthetic-client-secret');
