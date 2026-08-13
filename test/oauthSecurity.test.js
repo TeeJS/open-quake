@@ -93,6 +93,69 @@ test('Office operations require and rotate a bounded session capability', async 
   assert.equal(calls, 1);
 });
 
+test('Office external actions use the host launcher without racing the calendar capability', async () => {
+  const opened = [];
+  const port = await sysserver.start({
+    onOpenExternal: value => { opened.push(value); return true; },
+    getOfficeData: async () => ({ ok: true, events: [] }),
+  });
+  const first = sysserver.issueOfficeCapability();
+  const missing = await request(port, '/api/office/open?url=' + encodeURIComponent('https://teams.microsoft.com/v2/'), {
+    'Sec-Fetch-Site': 'cross-site',
+  });
+  assert.equal(missing.status, 403);
+
+  const [allowed, calendar] = await Promise.all([
+    request(port, '/api/office/open?url=' + encodeURIComponent('https://teams.microsoft.com/v2/'), {
+      'Sec-Fetch-Site': 'same-origin',
+    }),
+    request(port, '/api/office/data', {
+      'Sec-Fetch-Site': 'same-origin',
+      Authorization: 'Bearer ' + first,
+    }),
+  ]);
+  assert.equal(allowed.status, 200);
+  assert.equal(allowed.body.ok, true);
+  assert.equal(calendar.status, 200);
+  assert.equal(calendar.body.ok, true);
+  assert.deepEqual(opened, ['https://teams.microsoft.com/v2/']);
+
+  const rejectedScheme = await request(port, '/api/office/open?url=' + encodeURIComponent('file:///C:/Windows/System32/calc.exe'), {
+    'Sec-Fetch-Site': 'same-origin',
+  });
+  assert.equal(rejectedScheme.status, 200);
+  assert.equal(rejectedScheme.body.ok, false);
+  assert.equal(opened.length, 1);
+
+  const rejectedHost = await request(port, '/api/office/open?url=' + encodeURIComponent('https://example.com/'), {
+    'Sec-Fetch-Site': 'same-origin',
+  });
+  assert.equal(rejectedHost.status, 200);
+  assert.equal(rejectedHost.body.ok, false);
+  assert.equal(opened.length, 1);
+});
+
+test('Office app and keypress actions are fixed host callbacks protected by same-origin checks', async () => {
+  const calls = [];
+  const port = await sysserver.start({
+    onOfficeAction: async (kind, index, shortcutIndex) => { calls.push({ kind, index, shortcutIndex }); return { ok: true }; },
+  });
+  const crossSite = await request(port, '/api/office/action/app/2', { 'Sec-Fetch-Site': 'cross-site' });
+  const appAction = await request(port, '/api/office/action/app/2', { 'Sec-Fetch-Site': 'same-origin' });
+  const shortcut = await request(port, '/api/office/action/shortcut/3/1', { 'Sec-Fetch-Site': 'same-origin' });
+  const arbitrary = await request(port, '/api/office/action/app/99', { 'Sec-Fetch-Site': 'same-origin' });
+
+  assert.equal(crossSite.status, 403);
+  assert.equal(appAction.status, 200);
+  assert.equal(appAction.body.ok, true);
+  assert.equal(shortcut.body.ok, true);
+  assert.equal(arbitrary.body.ok, false);
+  assert.deepEqual(calls, [
+    { kind: 'app', index: 2, shortcutIndex: undefined },
+    { kind: 'shortcut', index: 3, shortcutIndex: 1 },
+  ]);
+});
+
 test('leaving Office or replacing its session invalidates the previous capability', async () => {
   const port = await sysserver.start({ getOfficeData: async () => ({ ok: true }) });
   const oldCapability = sysserver.issueOfficeCapability();

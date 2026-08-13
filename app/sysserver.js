@@ -57,14 +57,18 @@ const STATIC_FILES = {
   '/chatview-main.js': 'application/javascript; charset=utf-8',
   '/chatview-ptt.js': 'application/javascript; charset=utf-8',
   '/office.js': 'application/javascript; charset=utf-8',
+  '/officeCalendar.js': 'application/javascript; charset=utf-8',
   '/office.css': 'text/css; charset=utf-8',
   '/haschedule-ui.js': 'application/javascript; charset=utf-8',
   '/schedule.css': 'text/css; charset=utf-8',
   '/schedule-app.js': 'application/javascript; charset=utf-8',
   '/keyshortcutsview.js': 'application/javascript; charset=utf-8',
 };
+for (const appId of ['teams', 'outlook', 'word', 'excel', 'powerpoint', 'onenote', 'onedrive', 'office']) {
+  STATIC_FILES['/office-icons/' + appId + '.svg'] = 'image/svg+xml; charset=utf-8';
+}
 
-let server = null, onMedia = null, onLaunch = null, getGridTiles = null, getAppConfig = null, getOfficeData = null, connectOffice = null, onOpenExternal = null, onMeetingAction = null, getShortcuts = null;
+let server = null, onMedia = null, onLaunch = null, getGridTiles = null, getAppConfig = null, getOfficeData = null, connectOffice = null, onOpenExternal = null, onMeetingAction = null, onOfficeAction = null, getShortcuts = null;
 let sysHtml = FALLBACK, musicHtml = FALLBACK, chatHtml = FALLBACK, officeHtml = FALLBACK, hascheduleHtml = FALLBACK, agendaHtml = FALLBACK, eventsHtml = FALLBACK, meetingHtml = FALLBACK, keyshortcutsHtml = FALLBACK;
 const staticAssets = {};   // request path -> { body, type }; populated at start()
 let appFolders = {};        // drop-in served app id -> { root, proxy }; supplied by main.js
@@ -348,6 +352,19 @@ function sameOrigin(req) {
   try { const o = new URL(origin); return o.protocol === 'http:' && (o.hostname === '127.0.0.1' || o.hostname === 'localhost') && Number(o.port) === loopbackPort(); }
   catch (e) { return false; }
 }
+function allowedOfficeExternalUrl(value) {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'https:') return null;
+    const host = parsed.hostname.toLowerCase();
+    const allowed = host === 'teams.microsoft.com'
+      || host === 'teams.live.com'
+      || host === 'outlook.office.com'
+      || host === 'www.office.com'
+      || host === 'office.com';
+    return allowed ? parsed.href : null;
+  } catch (e) { return null; }
+}
 
 async function handler(req, res) {
   if (req.method !== 'GET') { res.writeHead(405); res.end(); return; }
@@ -379,6 +396,15 @@ async function handler(req, res) {
     const appId = requestingAppId(req);
     const cfg = appId && getAppConfig ? getAppConfig(appId) : null;
     return cfg ? json(res, cfg) : done(res, false);
+  }
+  // Opening a host-owned URL is a non-secret side effect guarded by the same-origin check above.
+  // It deliberately does not consume Office's rotating data capability: calendar polling and a
+  // touchscreen action may occur concurrently, and sharing the one-time capability would make one
+  // request invalidate the other and strand the renderer with an expired token.
+  if (url === '/api/office/open') {
+    const target = allowedOfficeExternalUrl(queryValue(full, 'url'));
+    const ok = !!target && typeof onOpenExternal === 'function' && !!onOpenExternal(target);
+    return json(res, { ok });
   }
   if (url === '/api/office/data' || url === '/api/office/connect') {
     const nextCapability = consumeOfficeCapability(req);
@@ -418,6 +444,16 @@ async function handler(req, res) {
     }
     return json(res, result);
   }
+  if (url.indexOf('/api/office/action/') === 0) {
+    const match = /^\/api\/office\/action\/(app)\/([0-3])$/.exec(url)
+      || /^\/api\/office\/action\/(shortcut)\/([0-3])\/([0-3])$/.exec(url);
+    let result = { ok: false, error: 'unknown Office action' };
+    if (match && typeof onOfficeAction === 'function') {
+      try { result = await onOfficeAction(match[1], Number(match[2]), match[3] == null ? undefined : Number(match[3])); }
+      catch (e) { result = { ok: false, error: e.message || 'Office action failed' }; }
+    }
+    return json(res, result);
+  }
   if (url === '/launch') {
     const m = /[?&]i=(\d+)/.exec(full);
     let ok = false;
@@ -443,6 +479,7 @@ function start(opts) {
     ? opts.officeCapabilityTtlMs : DEFAULT_OFFICE_CAPABILITY_TTL_MS;
   onOpenExternal = opts.onOpenExternal || null;
   onMeetingAction = opts.onMeetingAction || null;
+  onOfficeAction = opts.onOfficeAction || null;
   getShortcuts = opts.getShortcuts || null;
   setAppFolders(opts.appFolders);
   nowplaying.setProvider(opts.getNowPlaying || null);
@@ -485,6 +522,7 @@ function stop() {
   clearOfficeCapability();
   getOfficeData = null;
   connectOffice = null;
+  onOfficeAction = null;
   currentTime = Date.now;
   officeCapabilityTtlMs = DEFAULT_OFFICE_CAPABILITY_TTL_MS;
 }

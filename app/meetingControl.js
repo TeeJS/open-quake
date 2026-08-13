@@ -42,7 +42,7 @@ const ZOOM_DEFAULT_COMBO = {
 // Non-elevated -- focusing a window the signed-in user already owns needs no UAC prompt (unlike
 // touchSetup.js's multidigimon/tabcal, which write to HKLM and require admin). Tries new Teams'
 // process name first, falls back to classic Teams for any remaining holdouts.
-const FOCUS_TEAMS_PS = `
+const FOCUS_WINDOW_PS = names => `
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
@@ -56,7 +56,7 @@ public class OqFocus {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
 }
 "@
-$names = @('ms-teams','Teams')
+$names = @(${names.map(name => "'" + name + "'").join(',')})
 $target = $null
 foreach ($n in $names) {
   $p = Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
@@ -75,11 +75,15 @@ if ([OqFocus]::IsIconic($hWnd)) { [OqFocus]::ShowWindowAsync($hWnd, 9) | Out-Nul
 Write-Output 'OK'
 `.trim();
 
-function focusTeamsWindow() {
+function focusProcessWindow(processNames) {
   if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: 'Windows only' });
+  const names = (Array.isArray(processNames) ? processNames : [])
+    .map(name => String(name || '').replace(/\.exe$/i, ''))
+    .filter(name => /^[A-Za-z0-9._-]+$/.test(name));
+  if (!names.length) return Promise.resolve({ ok: false, error: 'No process names supplied' });
   return new Promise(resolve => {
     let child;
-    try { child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', FOCUS_TEAMS_PS], { windowsHide: true }); }
+    try { child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', FOCUS_WINDOW_PS(names)], { windowsHide: true }); }
     catch (e) { return resolve({ ok: false, error: 'spawn: ' + e.message }); }
     let out = '', err = '';
     child.stdout.on('data', d => { out += d.toString(); });
@@ -88,9 +92,13 @@ function focusTeamsWindow() {
     child.on('close', () => {
       const trimmed = out.trim();
       if (trimmed === 'OK') return resolve({ ok: true });
-      resolve({ ok: false, error: trimmed === 'NOTFOUND' ? 'Teams window not found (is it running?)' : (err.trim() || 'unknown focus failure') });
+      resolve({ ok: false, error: trimmed === 'NOTFOUND' ? 'Application window not found.' : (err.trim() || 'unknown focus failure') });
     });
   });
+}
+
+function focusTeamsWindow() {
+  return focusProcessWindow(['ms-teams', 'Teams']);
 }
 
 // Force-focus Teams, then send the fixed shortcut. Focus failure doesn't block the keystroke --
@@ -112,4 +120,4 @@ function sendZoomAction(combo, deps) {
   return { ok: sent };
 }
 
-module.exports = { TEAMS_COMBO, ZOOM_DEFAULT_COMBO, focusTeamsWindow, sendTeamsAction, sendZoomAction };
+module.exports = { TEAMS_COMBO, ZOOM_DEFAULT_COMBO, focusProcessWindow, focusTeamsWindow, sendTeamsAction, sendZoomAction };

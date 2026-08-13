@@ -1,313 +1,390 @@
 (function () {
+  'use strict';
+
   var capability = '';
   var officeLoad = null;
-  var lastState = null;
+  var officeOptions = {};
+  var selectedAppIndex = 0;
+  var Calendar = window.OfficeCalendar;
+  var TEAMS_URLS = {
+    teams: 'https://teams.microsoft.com/v2/',
+    activity: 'https://teams.microsoft.com/v2/?clientType=web#/activity',
+    chat: 'https://teams.microsoft.com/v2/?clientType=web#/chat',
+    channels: 'https://teams.microsoft.com/v2/?clientType=web#/conversations',
+    calendar: 'https://outlook.office.com/calendar',
+    office: 'https://www.office.com/',
+  };
+  var APP_PRESENTATION = {
+    teams: { name: 'Teams', description: 'Open Microsoft Teams', icon: 'T', className: 'teams' },
+    outlook: { name: 'Outlook', description: 'Mail and calendar', icon: 'O', className: 'outlook' },
+    word: { name: 'Word', description: 'Documents', icon: 'W', className: 'word' },
+    excel: { name: 'Excel', description: 'Spreadsheets', icon: 'X', className: 'excel' },
+    powerpoint: { name: 'PowerPoint', description: 'Presentations', icon: 'P', className: 'powerpoint' },
+    onenote: { name: 'OneNote', description: 'Notes and notebooks', icon: 'N', className: 'onenote' },
+    onedrive: { name: 'OneDrive', description: 'Cloud files', icon: '☁', className: 'onedrive' },
+    office: { name: 'Microsoft 365', description: 'Office home', icon: '365', className: 'office' },
+  };
+  var DEFAULT_APPS = ['teams', 'outlook', 'word', 'excel'];
+  var DEFAULT_SHORTCUTS_BY_APP = {
+    teams: [{ label: 'Mute', keys: 'Ctrl+Shift+M', icon: '🎙️' }, { label: 'Camera', keys: 'Ctrl+Shift+O', icon: '📹' }, { label: 'Accept audio', keys: 'Ctrl+Shift+S', icon: '📞' }, { label: 'Hang up', keys: 'Ctrl+Shift+H', icon: '📴' }],
+    outlook: [{ label: 'New message', keys: 'Ctrl+N', icon: '✉️' }, { label: 'Reply', keys: 'Ctrl+R', icon: '↩️' }, { label: 'Forward', keys: 'Ctrl+F', icon: '↪️' }, { label: 'Send', keys: 'Alt+S', icon: '🚀' }],
+    word: [{ label: 'New document', keys: 'Ctrl+N', icon: '📄' }, { label: 'Save', keys: 'Ctrl+S', icon: '💾' }, { label: 'Find', keys: 'Ctrl+F', icon: '🔍' }, { label: 'Undo', keys: 'Ctrl+Z', icon: '↶' }],
+    excel: [{ label: 'New workbook', keys: 'Ctrl+N', icon: '📊' }, { label: 'Save', keys: 'Ctrl+S', icon: '💾' }, { label: 'Find', keys: 'Ctrl+F', icon: '🔍' }, { label: 'Undo', keys: 'Ctrl+Z', icon: '↶' }],
+    powerpoint: [{ label: 'New presentation', keys: 'Ctrl+N', icon: '🖥️' }, { label: 'Save', keys: 'Ctrl+S', icon: '💾' }, { label: 'New slide', keys: 'Ctrl+M', icon: '➕' }, { label: 'Start slideshow', keys: 'F5', icon: '▶️' }],
+    onenote: [{ label: 'New page', keys: 'Ctrl+N', icon: '📝' }, { label: 'Search', keys: 'Ctrl+E', icon: '🔍' }, { label: 'To-do tag', keys: 'Ctrl+1', icon: '☑️' }, { label: 'Undo', keys: 'Ctrl+Z', icon: '↶' }],
+    onedrive: [{ label: 'New folder', keys: 'Ctrl+Shift+N', icon: '📁' }, { label: 'Copy', keys: 'Ctrl+C', icon: '📋' }, { label: 'Paste', keys: 'Ctrl+V', icon: '📥' }, { label: 'Refresh', keys: 'F5', icon: '↻' }],
+    office: [{ label: 'New', keys: 'Ctrl+N', icon: '✨' }, { label: 'Save', keys: 'Ctrl+S', icon: '💾' }, { label: 'Find', keys: 'Ctrl+F', icon: '🔍' }, { label: 'Undo', keys: 'Ctrl+Z', icon: '↶' }],
+  };
 
   try {
-    var q = new URLSearchParams(location.search);
-    document.body.classList.toggle('light', q.get('_dark') === '0');
-    var a = q.get('_accent') || '';
-    if (/^#[0-9a-fA-F]{6}$/.test(a)) document.documentElement.style.setProperty('--accent', a);
+    var query = new URLSearchParams(location.search);
+    document.body.classList.toggle('light', query.get('_dark') === '0');
+    var accent = query.get('_accent') || '';
+    if (/^#[0-9a-fA-F]{6}$/.test(accent)) document.documentElement.style.setProperty('--accent', accent);
   } catch (e) {}
 
   function $(id) { return document.getElementById(id); }
-  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-  function status(text, bad) {
-    var st = $('status');
-    st.textContent = text || '';
-    st.classList.toggle('bad', !!bad);
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function (char) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
+    });
   }
+
+  function setStatus(text, bad) {
+    var element = $('status');
+    element.textContent = text || '';
+    element.classList.toggle('bad', !!bad);
+  }
+
   function readCapability() {
     try { return new URLSearchParams(location.hash.slice(1)).get('_cap') || ''; }
     catch (e) { return ''; }
   }
+
   function rememberCapability(next) {
     if (!next) return;
     capability = next;
     try { history.replaceState(null, '', location.pathname + location.search + '#_cap=' + encodeURIComponent(next)); }
     catch (e) {}
   }
+
   function officeFetch(path) {
     capability = capability || readCapability();
     if (!capability) return Promise.reject(new Error('Office session authorization is missing.'));
     return fetch(path, {
       cache: 'no-store',
-      headers: { Authorization: 'Bearer ' + capability }
-    }).then(function (r) {
-      rememberCapability(r.headers.get('X-Open-Quake-Capability'));
-      if (!r.ok) throw new Error(r.status === 403 ? 'Office session authorization expired.' : 'Office service failed (HTTP ' + r.status + ').');
-      return r.json();
+      headers: { Authorization: 'Bearer ' + capability },
+    }).then(function (response) {
+      rememberCapability(response.headers.get('X-Open-Quake-Capability'));
+      if (!response.ok) {
+        throw new Error(response.status === 403
+          ? 'Office session authorization expired.'
+          : 'Office service failed (HTTP ' + response.status + ').');
+      }
+      return response.json();
     });
   }
-  function fmtTime(value) {
-    if (!value) return '';
-    try {
-      var d = new Date(value);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch (e) { return ''; }
+
+  function formatTime(value) {
+    var date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '--:--';
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
-  function fmtDuration(ms) {
-    if (!Number.isFinite(ms) || ms <= 0) return 'Now';
-    var totalMin = Math.max(1, Math.round(ms / 60000));
-    if (totalMin < 60) return 'in ' + totalMin + ' min';
-    var hours = Math.floor(totalMin / 60);
-    var mins = totalMin % 60;
-    return 'in ' + hours + 'h ' + mins + 'm';
+
+  function relativeStart(event, now) {
+    var start = new Date(event.start).getTime();
+    var end = new Date(event.end).getTime();
+    if (!Number.isFinite(start)) return '';
+    if (start <= now && Number.isFinite(end) && end > now) return 'in progress';
+    var minutes = Math.max(0, Math.round((start - now) / 60000));
+    if (minutes < 1) return 'starting now';
+    if (minutes === 1) return 'in 1 minute';
+    if (minutes < 60) return 'in ' + minutes + ' minutes';
+    var hours = Math.floor(minutes / 60);
+    var remainder = minutes % 60;
+    return 'in ' + hours + ' hr' + (hours === 1 ? '' : 's') + (remainder ? ' ' + remainder + ' min' : '');
   }
-  function fmtRange(startIso, endIso) {
-    if (!startIso || !endIso) return '';
-    var start = new Date(startIso);
-    var end = new Date(endIso);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
-    return fmtTime(startIso) + ' – ' + fmtTime(endIso);
+
+  function meetingSource(event) {
+    if (event.isOnlineMeeting || event.joinUrl) return 'Microsoft Teams meeting';
+    return event.location || 'Calendar event';
   }
-  function getPresenceState(value) {
-    var v = String(value || '').toLowerCase();
-    if (v.indexOf('inacall') >= 0 || v.indexOf('in a call') >= 0) return { className: 'call', label: 'In a call' };
-    if (v.indexOf('inameeting') >= 0 || v.indexOf('in a meeting') >= 0) return { className: 'meeting', label: 'In a meeting' };
-    if (v.indexOf('donotdisturb') >= 0 || v.indexOf('do not disturb') >= 0) return { className: 'dnd', label: 'Do not disturb' };
-    if (v.indexOf('busy') >= 0) return { className: 'busy', label: 'Busy' };
-    if (v.indexOf('away') >= 0) return { className: 'away', label: 'Away' };
-    if (v.indexOf('offline') >= 0) return { className: 'offline', label: 'Offline' };
-    if (v.indexOf('available') >= 0) return { className: 'available', label: 'Available' };
-    return { className: '', label: 'Unknown' };
+
+  function initials(profile) {
+    var value = String(profile.displayName || profile.userPrincipalName || 'Microsoft 365').trim();
+    var words = value.split(/\s+/).filter(Boolean);
+    if (words.length > 1) return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+    return value.slice(0, 2).toUpperCase();
   }
-  function getCurrentPresence(presence) {
-    if (!presence) return { className: 'available', label: 'Available' };
-    var availability = presence.availability || presence.activity || '';
-    return getPresenceState(availability);
+
+  function presenceState(presence) {
+    if (!presence) return { className: 'offline', label: 'Unavailable' };
+    var value = String(presence.activity || presence.availability || '').toLowerCase();
+    if (value.indexOf('inacall') >= 0) return { className: 'call', label: 'In a call' };
+    if (value.indexOf('inameeting') >= 0) return { className: 'meeting', label: 'In a meeting' };
+    if (value.indexOf('donotdisturb') >= 0) return { className: 'dnd', label: 'Do not disturb' };
+    if (value.indexOf('busy') >= 0) return { className: 'busy', label: 'Busy' };
+    if (value.indexOf('away') >= 0 || value.indexOf('berightback') >= 0) return { className: 'away', label: 'Away' };
+    if (value.indexOf('available') >= 0) return { className: 'available', label: 'Available' };
+    return { className: 'offline', label: 'Offline' };
   }
-  function getMeetingState(events) {
-    var now = Date.now();
-    var upcoming = [];
-    for (var i = 0; i < (events || []).length; i++) {
-      var ev = events[i];
-      if (!ev || ev.isCancelled) continue;
-      var startMs = ev.start ? new Date(ev.start).getTime() : null;
-      var endMs = ev.end ? new Date(ev.end).getTime() : null;
-      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
-      upcoming.push({ event: ev, startMs: startMs, endMs: endMs });
-    }
-    upcoming.sort(function (a, b) { return a.startMs - b.startMs; });
-    var current = null;
-    var next = null;
-    for (var j = 0; j < upcoming.length; j++) {
-      var candidate = upcoming[j];
-      if (candidate.startMs <= now && candidate.endMs > now) {
-        current = candidate.event;
-        break;
-      }
-      if (!next && candidate.startMs > now) {
-        next = candidate.event;
-      }
-    }
-    if (!current && !next) return { current: null, next: null, activeWindow: null };
-    return { current: current || next, next: next || current, activeWindow: current ? 'current' : 'next' };
-  }
-  function openAction(url) {
-    if (!url) return;
-    try {
-      var win = window.open(url, '_blank', 'noopener,noreferrer');
-      if (win) win.opener = null;
-    } catch (e) {}
-  }
-  function getPrimaryAction(event) {
-    if (!event) return { label: 'Open Microsoft 365', url: 'https://www.office.com' };
-    if (event.joinUrl) return { label: 'Join Teams meeting', url: event.joinUrl };
-    if (event.webLink) return { label: 'Open meeting', url: event.webLink };
-    return { label: 'Open calendar', url: 'https://outlook.office.com/calendar' };
-  }
+
   function renderPresence(presence) {
-    var state = getCurrentPresence(presence);
-    var el = $('presence');
-    el.textContent = state.label;
-    el.className = 'presence ' + state.className;
+    var state = presenceState(presence);
+    var element = $('presence');
+    element.textContent = state.label;
+    element.className = 'presence ' + state.className;
+    $('presenceAvatar').className = 'avatar ' + state.className;
   }
-  function renderPrimary(event, presence) {
-    var focusState = getMeetingState(lastState && lastState.events ? lastState.events : []);
+
+  function openExternal(url) {
+    if (!url) return Promise.resolve(false);
+    setStatus('Opening…', false);
+    return fetch('/api/office/open?url=' + encodeURIComponent(url), { cache: 'no-store' }).then(function (response) {
+      if (!response.ok) throw new Error('Open-Quake could not open that destination.');
+      return response.json();
+    }).then(function (result) {
+      if (!result || !result.ok) throw new Error('Open-Quake could not open that destination.');
+      setStatus('', false);
+      return true;
+    }).catch(function (error) {
+      setStatus(error.message || 'Could not open that destination.', true);
+      return false;
+    });
+  }
+
+  function openTeamsApp() {
+    setStatus('Opening Microsoft Teams…', false);
+    return fetch('/meeting-action/teams/focus', { cache: 'no-store' }).then(function (response) {
+      if (!response.ok) throw new Error('Teams action failed.');
+      return response.json();
+    }).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || 'Microsoft Teams could not be opened.');
+      setStatus('', false);
+      return true;
+    }).catch(function () {
+      return openExternal(TEAMS_URLS.teams);
+    });
+  }
+
+  function handleAction(action) {
+    if (action === 'teams') return openTeamsApp();
+    return openExternal(TEAMS_URLS[action] || TEAMS_URLS.office);
+  }
+
+  function runOfficeAction(kind, index, shortcutIndex) {
+    setStatus(kind === 'app' ? 'Opening Office app…' : 'Sending keyboard shortcut…', false);
+    var path = '/api/office/action/' + kind + '/' + index;
+    if (kind === 'shortcut') path += '/' + shortcutIndex;
+    return fetch(path, { cache: 'no-store' }).then(function (response) {
+      if (!response.ok) throw new Error('Office action failed.');
+      return response.json();
+    }).then(function (result) {
+      if (!result || !result.ok) throw new Error((result && result.error) || 'Office action failed.');
+      setStatus('', false);
+      return true;
+    }).catch(function (error) {
+      setStatus(error.message || 'Office action failed.', true);
+      return false;
+    });
+  }
+
+  function renderConfiguredControls(options) {
+    officeOptions = options || {};
+    document.querySelectorAll('[data-app-index]').forEach(function (button) {
+      var index = Number(button.getAttribute('data-app-index'));
+      var appId = APP_PRESENTATION[officeOptions['app' + (index + 1)]] ? officeOptions['app' + (index + 1)] : DEFAULT_APPS[index];
+      var app = APP_PRESENTATION[appId];
+      var mode = officeOptions['mode' + (index + 1)] || 'prefer-desktop';
+      var iconHtml = '<img src="/office-icons/' + encodeURIComponent(appId) + '.svg" alt="">';
+      button.className = 'header-action office-app-control ' + app.className + (index === selectedAppIndex ? ' selected' : '');
+      button.innerHTML = '<span class="office-app-mark" aria-hidden="true">' + iconHtml + '</span>'
+        + '<span class="app-nav-copy"><strong>' + escapeHtml(app.name) + '</strong><small>' + escapeHtml(mode === 'web' ? 'Web' : mode === 'desktop' ? 'Desktop' : 'Desktop / web') + '</small></span>';
+    });
+    var appNumber = selectedAppIndex + 1;
+    var selectedAppId = APP_PRESENTATION[officeOptions['app' + appNumber]] ? officeOptions['app' + appNumber] : DEFAULT_APPS[selectedAppIndex];
+    var defaults = DEFAULT_SHORTCUTS_BY_APP[selectedAppId] || DEFAULT_SHORTCUTS_BY_APP.office;
+    document.querySelectorAll('[data-shortcut-index]').forEach(function (button) {
+      var index = Number(button.getAttribute('data-shortcut-index'));
+      var prefix = 'app' + appNumber + 'Shortcut' + (index + 1);
+      var label = String(officeOptions[prefix + 'Label'] || defaults[index].label);
+      var keys = String(officeOptions[prefix + 'Keys'] == null ? defaults[index].keys : officeOptions[prefix + 'Keys']);
+      var icon = String(officeOptions[prefix + 'Icon'] || defaults[index].icon);
+      button.querySelector('.shortcut-glyph').textContent = icon || '⌨';
+      button.querySelector('strong').textContent = label || 'Shortcut ' + (index + 1);
+      button.querySelector('small').textContent = keys || 'Not configured';
+      button.disabled = !keys;
+      button.setAttribute('aria-label', label + (keys ? ', ' + keys : ', not configured'));
+    });
+  }
+
+  function selectOfficeApp(index) {
+    selectedAppIndex = Math.max(0, Math.min(3, Number(index) || 0));
+    renderConfiguredControls(officeOptions);
+    return runOfficeAction('app', selectedAppIndex);
+  }
+
+  function loadOfficeConfig() {
+    return fetch('/app-config?app=office', { cache: 'no-store' }).then(function (response) {
+      if (!response.ok) throw new Error('Office configuration unavailable.');
+      return response.json();
+    }).then(function (config) {
+      renderConfiguredControls(config && config.options);
+    }).catch(function () {
+      renderConfiguredControls({});
+    });
+  }
+
+  function choosePrimary(events) {
+    var now = Date.now();
+    var candidates = (events || []).filter(function (event) {
+      if (!event || event.isCancelled) return false;
+      var start = new Date(event.start).getTime();
+      var end = new Date(event.end).getTime();
+      return Number.isFinite(start) && Number.isFinite(end) && end > now;
+    }).sort(function (a, b) {
+      return new Date(a.start).getTime() - new Date(b.start).getTime();
+    });
+    return candidates[0] || null;
+  }
+
+  function renderPrimary(event) {
+    var actionButton = $('primaryActionBtn');
+    var actionLabel = $('primaryActionLabel');
+    actionButton.disabled = false;
+
     if (!event) {
-      $('focusLabel').textContent = 'Now';
-      $('primaryEvent').innerHTML = '<div class="title">No more meetings today</div><div class="meta">Your calendar is clear for the rest of the day.</div>';
-      $('primaryActionBtn').textContent = 'Open Microsoft 365';
-      $('primaryActionBtn').onclick = function () { openAction('https://www.office.com'); };
+      $('focusLabel').textContent = 'Next meeting';
+      $('primaryTime').textContent = '—';
+      $('primaryTitle').textContent = 'Calendar clear';
+      $('primaryMeta').textContent = 'No more meetings in the current calendar window.';
+      actionLabel.textContent = 'Open calendar';
+      actionButton.onclick = function () { handleAction('calendar'); };
       return;
     }
 
     var now = Date.now();
-    var startMs = new Date(event.start).getTime();
-    var endMs = new Date(event.end).getTime();
-    var isCurrent = startMs <= now && endMs > now;
-    var minutesUntil = Math.max(0, Math.round((startMs - now) / 60000));
-    var timeLabel = isCurrent ? 'In progress' : (minutesUntil <= 30 ? 'Meeting in ' + minutesUntil + ' min' : 'Next up');
-    var focusLabel = isCurrent ? 'Now' : (minutesUntil <= 10 ? 'Meeting soon' : 'Next');
-    $('focusLabel').textContent = focusLabel;
-    $('primaryEvent').innerHTML = '<div class="time">' + esc(timeLabel) + '</div>' +
-      '<div class="title">' + esc(event.subject || '(untitled)') + '</div>' +
-      '<div class="meta">' + esc(fmtRange(event.start, event.end)) + (event.location ? ' · ' + esc(event.location) : '') + '</div>';
-    var action = getPrimaryAction(event);
-    $('primaryActionBtn').textContent = action.label;
-    $('primaryActionBtn').onclick = function () { openAction(action.url); };
-    if (presence && String(presence.availability || presence.activity || '').toLowerCase().indexOf('inacall') >= 0) {
-      $('primaryEvent').innerHTML = '<div class="time">In a call</div><div class="title">' + esc(event.subject || '(untitled)') + '</div><div class="meta">' + esc(fmtRange(event.start, event.end)) + (event.location ? ' · ' + esc(event.location) : '') + '</div>';
-    }
+    var start = new Date(event.start).getTime();
+    var end = new Date(event.end).getTime();
+    var current = start <= now && end > now;
+    $('focusLabel').textContent = current ? 'Current meeting' : 'Next meeting';
+    $('primaryTime').textContent = formatTime(event.start);
+    $('primaryTitle').textContent = event.subject || '(untitled)';
+
+    var meta = [
+      relativeStart(event, now),
+      Calendar.durationLabel(event.start, event.end),
+      meetingSource(event),
+    ].filter(Boolean);
+    $('primaryMeta').textContent = meta.join(' · ');
+
+    var url = event.joinUrl || event.webLink || TEAMS_URLS.calendar;
+    actionLabel.textContent = event.joinUrl ? 'Join meeting' : (event.webLink ? 'Open meeting' : 'Open calendar');
+    actionButton.onclick = function () { openExternal(url); };
   }
-  function renderAgenda(items) {
-    items = items || [];
-    var html = '';
-    var shown = 0;
-    for (var i = 0; i < items.length && shown < 4; i++) {
-      var ev = items[i];
-      if (!ev || ev.isCancelled) continue;
-      var start = ev.start ? fmtTime(ev.start) : '';
-      var where = ev.location || '';
-      html += '<div class="event"><div class="time">' + esc(start) + '</div><div><div class="title">' + esc(ev.subject || '(untitled)') + '</div><div class="meta">' + esc(where || (ev.isOnlineMeeting ? 'Teams meeting' : 'Calendar')) + '</div></div></div>';
-      shown += 1;
+
+  function renderAgenda(events, primary) {
+    var remaining = (events || []).filter(function (event) { return event !== primary; }).slice(0, 3);
+    var groups = Calendar.groupEvents(remaining, new Date());
+    if (!groups.length) {
+      $('events').innerHTML = '<div class="empty-state">No other upcoming events</div>';
+      return;
     }
-    if (!html) html = '<div class="empty-state">No more meetings today</div>';
+
+    var html = '';
+    groups.forEach(function (group) {
+      html += '<section class="agenda-group"><div class="agenda-date">' + escapeHtml(group.label) + '</div>';
+      group.events.forEach(function (event) {
+        var secondary = [Calendar.durationLabel(event.start, event.end), event.isOnlineMeeting ? 'Teams' : (event.location || 'Calendar')].filter(Boolean).join(' · ');
+        html += '<div class="event"><time datetime="' + escapeHtml(event.start) + '">' + escapeHtml(formatTime(event.start)) + '</time>'
+          + '<div class="event-title">' + escapeHtml(event.subject || '(untitled)') + '</div>'
+          + '<div class="event-meta">' + escapeHtml(secondary) + '</div></div>';
+      });
+      html += '</section>';
+    });
     $('events').innerHTML = html;
   }
-  function renderEventError() {
-    $('focusLabel').textContent = 'Now';
-    $('primaryEvent').innerHTML = '<div class="title">Calendar unavailable</div><div class="meta">Your schedule could not be loaded.</div>';
+
+  function renderCalendarError() {
+    $('focusLabel').textContent = 'Next meeting';
+    $('primaryTime').textContent = '—';
+    $('primaryTitle').textContent = 'Calendar unavailable';
+    $('primaryMeta').textContent = 'Your schedule could not be loaded.';
     $('events').innerHTML = '<div class="empty-state">Unable to load agenda</div>';
-    $('primaryActionBtn').textContent = 'Open Microsoft 365';
-    $('primaryActionBtn').onclick = function () { openAction('https://www.office.com'); };
+    $('primaryActionLabel').textContent = 'Open Microsoft 365';
+    $('primaryActionBtn').disabled = false;
+    $('primaryActionBtn').onclick = function () { openExternal(TEAMS_URLS.office); };
   }
+
   function showAuth(message) {
     $('auth').classList.remove('hidden');
     $('authMsg').textContent = message || '';
   }
+
   function hideAuth() {
     $('auth').classList.add('hidden');
   }
-  function renderGrid(d) {
-    var host = $('grid'), cols = d.cols || 2, rows = d.rows || 2, n = cols * rows, tiles = d.tiles || [];
-    host.style.gridTemplateColumns = 'repeat(' + cols + ',1fr)';
-    host.style.gridTemplateRows = 'repeat(' + rows + ',1fr)';
-    var html = '';
-    for (var i = 0; i < n; i++) {
-      var t = tiles[i];
-      if (t && t.type && t.cover == null) {
-        var ic = t.iconSrc ? '<div class="ic"><img src="' + esc(t.iconSrc) + '"></div>' : '<div class="ic">' + esc(t.icon || '□') + '</div>';
-        html += '<div class="tile" data-i="' + i + '">' + ic + '<div class="lb">' + esc(t.label || '') + '</div></div>';
-      } else {
-        html += '<div class="tile empty"></div>';
-      }
-    }
-    host.innerHTML = html;
-    host.querySelectorAll('.tile[data-i]').forEach(function (el) {
-      el.onclick = function () { fetch('/launch?i=' + el.getAttribute('data-i'), { cache: 'no-store' }).catch(function () {}); };
-    });
-  }
-  function pollGrid() {
-    fetch('/grid-tiles', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(renderGrid).catch(function () {});
-  }
-  function handleAction(action) {
-    if (action === 'teams') openAction('https://teams.microsoft.com');
-    else if (action === 'chat') openAction('https://teams.microsoft.com/l/chat/0/0');
-    else if (action === 'activity') openAction('https://www.office.com/');
-    else if (action === 'calendar') openAction('https://outlook.office.com/calendar');
-    else if (action === 'meet') openAction('https://teams.microsoft.com/l/meetup-join');
-    else if (action === 'outlook') openAction('https://outlook.office.com');
-    else openAction('https://www.office.com');
-  }
-  function bindActionButtons() {
-    document.querySelectorAll('.mini-action, .shortcut-item').forEach(function (button) {
-      button.onclick = function () {
-        handleAction(button.getAttribute('data-action'));
-      };
-    });
 
-    var drawerToggle = $('drawerToggle');
-    var drawerClose = $('drawerClose');
-    if (drawerToggle) {
-      drawerToggle.onclick = function () {
-        var wrap = document.getElementById('wrap');
-        var open = wrap.classList.toggle('drawer-open');
-        drawerToggle.setAttribute('aria-expanded', String(open));
-      };
-    }
-    if (drawerClose) {
-      drawerClose.onclick = function () {
-        var wrap = document.getElementById('wrap');
-        wrap.classList.remove('drawer-open');
-        if (drawerToggle) drawerToggle.setAttribute('aria-expanded', 'false');
-      };
-    }
-    document.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape') {
-        var wrap = document.getElementById('wrap');
-        wrap.classList.remove('drawer-open');
-        if (drawerToggle) drawerToggle.setAttribute('aria-expanded', 'false');
-      }
-    });
-  }
   function applyState(data) {
     if (!data || !data.ok) {
-      status('Microsoft connection needed.', true);
-      renderEventError();
-      showAuth(data && data.error ? data.error : '');
+      setStatus('Microsoft connection needed.', true);
+      renderCalendarError();
+      showAuth(data && data.error ? data.error : 'Connect Microsoft 365 to show your schedule.');
       return;
     }
+
     hideAuth();
-    var me = data.profile || {};
-    var presence = data.presence || {};
-    $('name').textContent = me.displayName || me.userPrincipalName || 'Office';
-    renderPresence(presence);
+    var profile = data.profile || {};
+    $('name').textContent = profile.displayName || profile.userPrincipalName || 'Office';
+    $('avatar').textContent = initials(profile);
+    renderPresence(data.presence || null);
+
     var events = Array.isArray(data.events) ? data.events : [];
-    var next = null;
-    var now = Date.now();
-    for (var i = 0; i < events.length; i++) {
-      var ev = events[i];
-      if (!ev || ev.isCancelled) continue;
-      var startMs = ev.start ? new Date(ev.start).getTime() : null;
-      var endMs = ev.end ? new Date(ev.end).getTime() : null;
-      if (Number.isFinite(startMs) && Number.isFinite(endMs) && startMs <= now && endMs > now) {
-        next = ev;
-        break;
-      }
-      if (!next && Number.isFinite(startMs) && startMs > now) next = ev;
-    }
-    if (!next) {
-      renderPrimary(null, presence);
-      renderAgenda(events);
-      status('');
-      lastState = { events: events || [] };
-      return;
-    }
-    renderPrimary(next, presence);
-    renderAgenda(events.filter(function (ev) { return ev && ev.id !== next.id; }));
-    status('');
-    lastState = { events: events || [] };
+    var primary = choosePrimary(events);
+    renderPrimary(primary);
+    renderAgenda(events, primary);
+    setStatus('', false);
   }
+
   function loadOffice() {
     if (officeLoad) return officeLoad;
-    officeLoad = officeFetch('/api/office/data').then(function (data) {
-      applyState(data);
-    }).catch(function (e) {
-      status(e.message || 'Could not reach the Open-Quake Office service.', true);
-      renderEventError();
+    officeLoad = officeFetch('/api/office/data').then(applyState).catch(function (error) {
+      setStatus(error.message || 'Could not reach the Open-Quake Office service.', true);
+      renderCalendarError();
     }).finally(function () {
       officeLoad = null;
     });
     return officeLoad;
   }
-  $('connect').onclick = function () {
-    $('connect').disabled = true;
-    $('authMsg').textContent = 'Opening Microsoft sign-in...';
-    officeFetch('/api/office/connect').then(function (r) {
-      $('authMsg').textContent = r && r.ok ? 'Finish sign-in in the browser, then this deck will refresh.' : ((r && r.error) || 'Could not start sign-in.');
+
+  document.querySelectorAll('[data-action]').forEach(function (button) {
+    button.addEventListener('click', function () { handleAction(button.getAttribute('data-action')); });
+  });
+  document.querySelectorAll('[data-app-index]').forEach(function (button) {
+    button.addEventListener('click', function () { selectOfficeApp(Number(button.getAttribute('data-app-index'))); });
+  });
+  document.querySelectorAll('[data-shortcut-index]').forEach(function (button) {
+    button.addEventListener('click', function () { runOfficeAction('shortcut', selectedAppIndex, Number(button.getAttribute('data-shortcut-index'))); });
+  });
+
+  $('connect').addEventListener('click', function () {
+    var button = $('connect');
+    button.disabled = true;
+    $('authMsg').textContent = 'Opening Microsoft sign-in…';
+    officeFetch('/api/office/connect').then(function (result) {
+      $('authMsg').textContent = result && result.ok
+        ? 'Finish sign-in in the browser; this deck will refresh automatically.'
+        : ((result && result.error) || 'Could not start sign-in.');
       setTimeout(loadOffice, 3000);
     }).catch(function () {
       $('authMsg').textContent = 'Could not start sign-in.';
     }).finally(function () {
-      $('connect').disabled = false;
+      button.disabled = false;
     });
-  };
-  bindActionButtons();
-  pollGrid();
+  });
+
+  loadOfficeConfig();
   loadOffice();
   setInterval(loadOffice, 60000);
-  setInterval(pollGrid, 3000);
 })();

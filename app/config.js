@@ -345,15 +345,16 @@
     const nr = document.getElementById('gShortcutNoRot');
     if (nr) nr.onchange = e => { if (e.target.checked) g.shortcutStopsRotation = true; else delete g.shortcutStopsRotation; markDirty(); };
   }
-  // Build an Electron accelerator from a keydown. Requires a modifier (so we never bind a bare global key).
-  function accelFromEvent(e) {
+  // Build an Electron accelerator from a keydown. Global bindings require a modifier;
+  // focused-app actions may also use bare keys such as F5.
+  function accelFromEvent(e, allowBare) {
     if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return null;   // wait for the non-modifier key
     const mods = [];
     if (e.ctrlKey) mods.push('Ctrl');
     if (e.altKey) mods.push('Alt');
     if (e.shiftKey) mods.push('Shift');
     if (e.metaKey) mods.push('Super');
-    if (!mods.length) return null;
+    if (!mods.length && !allowBare) return null;
     const arrow = { ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right' };
     let key = arrow[e.key] || e.key;
     if (key === ' ') key = 'Space';
@@ -448,6 +449,119 @@
       const inputs = host.querySelectorAll('.scShortcut');
       if (inputs.length) inputs[inputs.length - 1].focus();
     };
+  }
+  function officeOptionDefault(def, key) {
+    const option = (def.options || []).find(item => item.key === key);
+    return option ? option.default : '';
+  }
+  const OFFICE_SHORTCUT_DEFAULTS = {
+    teams: [['Mute', 'Ctrl+Shift+M', '🎙️'], ['Camera', 'Ctrl+Shift+O', '📹'], ['Accept audio', 'Ctrl+Shift+S', '📞'], ['Hang up', 'Ctrl+Shift+H', '📴']],
+    outlook: [['New message', 'Ctrl+N', '✉️'], ['Reply', 'Ctrl+R', '↩️'], ['Forward', 'Ctrl+F', '↪️'], ['Send', 'Alt+S', '🚀']],
+    word: [['New document', 'Ctrl+N', '📄'], ['Save', 'Ctrl+S', '💾'], ['Find', 'Ctrl+F', '🔍'], ['Undo', 'Ctrl+Z', '↶']],
+    excel: [['New workbook', 'Ctrl+N', '📊'], ['Save', 'Ctrl+S', '💾'], ['Find', 'Ctrl+F', '🔍'], ['Undo', 'Ctrl+Z', '↶']],
+    powerpoint: [['New presentation', 'Ctrl+N', '🖥️'], ['Save', 'Ctrl+S', '💾'], ['New slide', 'Ctrl+M', '➕'], ['Start slideshow', 'F5', '▶️']],
+    onenote: [['New page', 'Ctrl+N', '📝'], ['Search', 'Ctrl+E', '🔍'], ['To-do tag', 'Ctrl+1', '☑️'], ['Undo', 'Ctrl+Z', '↶']],
+    onedrive: [['New folder', 'Ctrl+Shift+N', '📁'], ['Copy', 'Ctrl+C', '📋'], ['Paste', 'Ctrl+V', '📥'], ['Refresh', 'F5', '↻']],
+    office: [['New', 'Ctrl+N', '✨'], ['Save', 'Ctrl+S', '💾'], ['Find', 'Ctrl+F', '🔍'], ['Undo', 'Ctrl+Z', '↶']],
+  };
+  function officeShortcutDefault(appId, shortcutIndex, suffix) {
+    const set = OFFICE_SHORTCUT_DEFAULTS[appId] || OFFICE_SHORTCUT_DEFAULTS.office;
+    return set[shortcutIndex - 1][suffix === 'Label' ? 0 : suffix === 'Keys' ? 1 : 2];
+  }
+  function officeChoiceHtml(def, key, value) {
+    const option = (def.options || []).find(item => item.key === key);
+    return ((option && option.choices) || []).map(choice => {
+      const val = Array.isArray(choice) ? choice[0] : choice;
+      const label = Array.isArray(choice) ? choice[1] : choice;
+      return `<option value="${esc(val)}" ${String(value) === String(val) ? 'selected' : ''}>${esc(label)}</option>`;
+    }).join('');
+  }
+  function officeOptionsHtml(g, def) {
+    if (!g.options) g.options = {};
+    const value = key => (key in g.options) ? g.options[key] : officeOptionDefault(def, key);
+    const shortcutValue = (appIndex, shortcutIndex, suffix) => {
+      const key = `app${appIndex}Shortcut${shortcutIndex}${suffix}`;
+      return (key in g.options) ? g.options[key] : officeShortcutDefault(value('app' + appIndex), shortcutIndex, suffix);
+    };
+    const appRows = [1, 2, 3, 4].map(index => {
+      const shortcuts = [1, 2, 3, 4].map(shortcutIndex => `<div class="row" style="margin-top:6px">
+          <input class="officeShortcutIcon" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" list="officeShortcutIcons" value="${esc(shortcutValue(index, shortcutIndex, 'Icon'))}" maxlength="8" aria-label="Shortcut icon" title="Choose or paste an emoji" style="width:58px;font:20px 'Segoe UI Emoji';text-align:center">
+          <input class="officeShortcutLabel" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" value="${esc(shortcutValue(index, shortcutIndex, 'Label'))}" placeholder="button label" style="width:160px">
+          <input class="officeShortcutKeys" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" readonly value="${esc(shortcutValue(index, shortcutIndex, 'Keys'))}" placeholder="click, then press keys" style="width:200px;margin-left:8px">
+          <button class="officeShortcutClear" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" type="button" style="margin-left:8px">Clear</button>
+        </div>`).join('');
+      return `<fieldset style="border:1px solid #2a3a4e;border-radius:8px;padding:8px 12px;margin:8px 0">
+        <legend style="padding:0 6px;color:#9fb3c8;font-size:13px">Header app ${index}</legend>
+        <div class="row"><label>Application</label><select class="officeApp" data-index="${index}">${officeChoiceHtml(def, 'app' + index, value('app' + index))}</select></div>
+        <div class="row"><label>Open with</label><select class="officeMode" data-index="${index}">${officeChoiceHtml(def, 'mode' + index, value('mode' + index))}</select></div>
+        <p class="hint" style="margin:8px 0 4px">Bottom-row shortcuts when this app is selected</p>
+        ${shortcuts}
+      </fieldset>`;
+    }).join('');
+    return `<div id="officeOptions" style="margin-top:10px">
+        <p class="sectitle">Office header applications</p>
+        <p class="hint">These four apps appear in the panel header. Selecting one opens it and changes the four bottom buttons to that app's shortcuts. Changing an application restores sensible defaults for its four shortcuts. <b>Prefer desktop</b> falls back to the web app when needed.</p>
+        ${appRows}
+        <datalist id="officeShortcutIcons">
+          ${['🎙️','📹','📞','📴','✉️','↩️','↪️','🚀','📄','💾','🔍','↶','📊','🖥️','➕','▶️','📝','☑️','📁','📋','📥','↻','✨','⚡','⭐','🔒','🔔','✅'].map(icon => `<option value="${icon}">`).join('')}
+        </datalist>
+      </div>`;
+  }
+  function wireOfficeOptions(g) {
+    if (!g.options) g.options = {};
+    document.querySelectorAll('.officeApp').forEach(select => {
+      select.onchange = event => {
+        const appIndex = event.target.dataset.index;
+        g.options['app' + appIndex] = event.target.value;
+        [1, 2, 3, 4].forEach(shortcutIndex => {
+          ['Icon', 'Label', 'Keys'].forEach(suffix => {
+            const key = `app${appIndex}Shortcut${shortcutIndex}${suffix}`;
+            const next = officeShortcutDefault(event.target.value, shortcutIndex, suffix);
+            g.options[key] = next;
+            const input = document.querySelector(`.officeShortcut${suffix}[data-app-index="${appIndex}"][data-shortcut-index="${shortcutIndex}"]`);
+            if (input) input.value = next;
+          });
+        });
+        markDirty();
+      };
+    });
+    document.querySelectorAll('.officeMode').forEach(select => {
+      select.onchange = event => { g.options['mode' + event.target.dataset.index] = event.target.value; markDirty(); };
+    });
+    document.querySelectorAll('.officeShortcutLabel').forEach(input => {
+      input.oninput = event => {
+        const target = event.target;
+        g.options[`app${target.dataset.appIndex}Shortcut${target.dataset.shortcutIndex}Label`] = target.value;
+        markDirty();
+      };
+    });
+    document.querySelectorAll('.officeShortcutIcon').forEach(input => {
+      input.oninput = event => {
+        const target = event.target;
+        g.options[`app${target.dataset.appIndex}Shortcut${target.dataset.shortcutIndex}Icon`] = target.value;
+        markDirty();
+      };
+    });
+    document.querySelectorAll('.officeShortcutKeys').forEach(input => {
+      input.onkeydown = event => {
+        event.preventDefault();
+        const accelerator = accelFromEvent(event, true);
+        if (!accelerator) return;
+        g.options[`app${event.target.dataset.appIndex}Shortcut${event.target.dataset.shortcutIndex}Keys`] = accelerator;
+        event.target.value = accelerator;
+        markDirty();
+      };
+    });
+    document.querySelectorAll('.officeShortcutClear').forEach(button => {
+      button.onclick = event => {
+        const appIndex = event.currentTarget.dataset.appIndex;
+        const shortcutIndex = event.currentTarget.dataset.shortcutIndex;
+        g.options[`app${appIndex}Shortcut${shortcutIndex}Keys`] = '';
+        const input = document.querySelector(`.officeShortcutKeys[data-app-index="${appIndex}"][data-shortcut-index="${shortcutIndex}"]`);
+        if (input) input.value = '';
+        markDirty();
+      };
+    });
   }
   function wireFocusRow(g) {
     const chips = document.getElementById('gFocusChips');
@@ -1319,7 +1433,7 @@
     const g = curGrid();
     const def = appDefs.find(a => a.id === g.app);
     const builtinGrid = !!(def && def.grid);          // music/agenda/events: in-page grid, always on
-    const canGrid = !!def && !builtinGrid;            // other apps (clocks, …) can opt into a native button strip
+    const canGrid = !!def && !builtinGrid && g.app !== 'office'; // Office owns four configured app controls; no unrelated generic grid
     const onButtons = canGrid && g.gridOn && dashTab === 'buttons';
     // Tile editor shows for a built-in grid, or on the Buttons tab of an opted-in grid; clear it otherwise.
     if (!builtinGrid && !onButtons) ['tilegrid', 'mergebar', 'tileform', 'iconpane'].forEach(id => { document.getElementById(id).innerHTML = ''; });
@@ -1341,6 +1455,7 @@
     const isMusic = g.app === 'music';
     const isHaDash = g.app === 'ha-dashboard';
     const isKeyShortcuts = g.app === 'keyshortcuts';
+    const isOffice = g.app === 'office';
     const musicBox = `<fieldset style="border:1px solid #2a3a4e; border-radius:8px; padding:6px 14px 10px; margin:10px 0">
         <legend style="padding:0 6px; color:#9fb3c8; font-size:13px">Panels</legend>
         <div><label class="iconopt" style="width:auto"><input type="checkbox" id="pArt" ${optVal(g, 'art', true) ? 'checked' : ''}> Show album art</label></div>
@@ -1374,7 +1489,7 @@
       </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
-    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : isKeyShortcuts ? keyShortcutsBox : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : isKeyShortcuts ? keyShortcutsBox : isOffice ? officeOptionsHtml(g, def) : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : ''));
     el.innerHTML = tabBar + `
@@ -1434,6 +1549,8 @@
       const hideSidebar = document.getElementById('haHideSidebar'); if (hideSidebar) hideSidebar.onchange = e => { if (!g.options) g.options = {}; g.options.hideSidebar = e.target.checked; markDirty(); };
     } else if (isKeyShortcuts) {
       wireShortcutRows();
+    } else if (isOffice) {
+      wireOfficeOptions(g);
     } else {
       renderAppOpts(g, def);
     }

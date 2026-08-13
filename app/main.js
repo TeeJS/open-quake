@@ -40,6 +40,7 @@ const { OAuthHandler } = require('../src/auth/oauth-handler');
 const { TokenStorage } = require('../src/auth/token-storage');
 const { providers: oauthProviders } = require('../src/auth/providers');
 const { createOfficeGraph } = require('./officeGraph');
+const { createOfficeActions } = require('./officeActions');
 const { configForRenderer } = require('./oauthConfigBoundary');
 const nowplaying = require('./nowplaying');   // same singleton sysserver polls — read its snapshot to target transport
 const haschedule = require('./haschedule');   // HA Schedule dev app — fed HA creds from .env, polled while shown
@@ -144,6 +145,16 @@ function migrateConfig(c) {
     if (g.kind === 'web') {
       if (!g.auth) g.auth = g.haToken ? { type: 'ha', token: g.haToken } : { type: 'none' };
       delete g.haToken;
+    }
+    if (g.kind === 'app' && g.app === 'office' && g.options) {
+      for (let index = 1; index <= 4; index += 1) {
+        for (const suffix of ['Label', 'Keys']) {
+          const legacyKey = 'shortcut' + index + suffix;
+          const appKey = 'app1Shortcut' + index + suffix;
+          if (!(appKey in g.options) && legacyKey in g.options) g.options[appKey] = g.options[legacyKey];
+          delete g.options[legacyKey];
+        }
+      }
     }
   });
   return c;
@@ -433,6 +444,24 @@ const officeGraph = createOfficeGraph({
   getAccessToken: (provider, scopes) => oauthHandler.getValidAccessToken(provider, scopes),
   connectOAuth: (provider, scopes) => oauthHandler.connect(provider, scopes),
 });
+const officeActions = createOfficeActions({
+  getOptions: () => {
+    const active = activeServedAppConfig('office');
+    return active ? active.options : {};
+  },
+  launchApp: value => actionRunner.launchApp(value, actionDeps),
+  openExternal: value => {
+    if (value === 'msteams://teams.microsoft.com') {
+      shell.openExternal(value).catch(e => console.log('Teams protocol launch error:', e.message));
+      return true;
+    }
+    return openExternalUrl(value);
+  },
+  focusTeams: () => meetingControl.focusTeamsWindow(),
+  focusApp: names => meetingControl.focusProcessWindow(names),
+  tapCombo: combo => mediaKeys.tapCombo(combo),
+  fs,
+});
 
 // Build the file: URL for an app page, encoding its options as a #hash (file:// drops a ?query).
 function appOptionQuery(def, opts, include) {
@@ -473,6 +502,10 @@ function activeServedAppConfig(appId) {
   const opts = g.options || {};
   const options = {};
   (def.options || []).forEach(o => {
+    // Office shortcut defaults depend on the app chosen for that header slot. When a key has
+    // never been saved, leave it absent so both renderer and host action code can select the
+    // chosen app's defaults instead of the manifest's original Teams/Outlook/Word/Excel values.
+    if (appId === 'office' && /^app[1-4]Shortcut[1-4](Icon|Label|Keys)$/.test(o.key) && !(o.key in opts)) return;
     let v = (o.key in opts) ? opts[o.key] : o.default;
     if (o.type === 'bool') v = !!v;
     options[o.key] = v == null ? '' : v;
@@ -1043,6 +1076,15 @@ async function onMeetingActionRequest(platform, action) {
     const combo = opts.zoomUseDefaults === false ? opts[optKey] : meetingControl.ZOOM_DEFAULT_COMBO[action];
     return meetingControl.sendZoomAction(combo, { mediaKeys });
   }
+  if (platform === 'teams' && action === 'focus') {
+    const focused = await meetingControl.focusTeamsWindow();
+    if (focused.ok) return focused;
+    return {
+      ok: openExternalUrl('https://teams.microsoft.com/v2/'),
+      focused: false,
+      focusError: focused.error,
+    };
+  }
   if (platform === 'teams') return meetingControl.sendTeamsAction(action, { mediaKeys });
   return { ok: false, error: 'unknown platform: ' + platform };
 }
@@ -1532,7 +1574,7 @@ app.whenReady().then(async () => {
   // Lazy-required so a metrics/load failure can never crash the rest of the app.
   try {
     sysserver = require('./sysserver');
-    serverPort = await sysserver.start({ onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig, getOfficeData: officeGraph.getData, connectOffice: officeGraph.connect, onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, appFolders: discoveredServedApps(), getShortcuts: keyboardShortcutsSnapshot });
+    serverPort = await sysserver.start({ onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig, getOfficeData: officeGraph.getData, connectOffice: officeGraph.connect, onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, onOfficeAction: officeActions.run, appFolders: discoveredServedApps(), getShortcuts: keyboardShortcutsSnapshot });
     ensureSystemViewPage(serverPort); ensureMusicPage(); ensureDropInDir();
     const haUrl = configureHaSchedule();
     console.log('SystemView + Music on http://127.0.0.1:' + serverPort + (haUrl ? ' · HA Schedule -> ' + haUrl : ''));
