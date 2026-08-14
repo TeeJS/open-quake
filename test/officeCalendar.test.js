@@ -86,6 +86,7 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   assert.match(script, /document\.createElement\('img'\)/);
   assert.match(css, /repeat\(var\(--shortcut-count\), minmax\(0, 1fr\)\)/);
   assert.match(editorHtml, /\.officeShortcutRow\s*{[^}]*display:\s*grid/s);
+  assert.match(editorHtml, /\.officeShortcutIcon\s*{[^}]*width:\s*80px[^}]*padding-right:\s*26px/s);
   assert.match(editor, /configApi\.pickImage\(\)/);
   assert.match(css, /\.meeting-strip\s*{[^}]*position:\s*relative/s);
   assert.match(css, /\.auth\s*{[^}]*position:\s*absolute/s);
