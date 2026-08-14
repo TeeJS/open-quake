@@ -41,6 +41,7 @@ const { TokenStorage } = require('../src/auth/token-storage');
 const { providers: oauthProviders } = require('../src/auth/providers');
 const { createOfficeGraph } = require('./officeGraph');
 const { createOfficeActions } = require('./officeActions');
+const { officeShortcutImageDataUrl } = require('./officeShortcutIcons');
 const { configForRenderer } = require('./oauthConfigBoundary');
 const nowplaying = require('./nowplaying');   // same singleton sysserver polls — read its snapshot to target transport
 const haschedule = require('./haschedule');   // HA Schedule dev app — fed HA creds from .env, polled while shown
@@ -506,9 +507,14 @@ function activeServedAppConfig(appId) {
     // Office shortcut defaults depend on the app chosen for that header slot. When a key has
     // never been saved, leave it absent so both renderer and host action code can select the
     // chosen app's defaults instead of the manifest's original Teams/Outlook/Word/Excel values.
-    if (appId === 'office' && /^app[1-4]Shortcut[1-8](Icon|Label|Keys)$/.test(o.key) && !(o.key in opts)) return;
+    if (appId === 'office' && /^app[1-4]Shortcut[1-8](IconImage|Icon|Label|Keys)$/.test(o.key) && !(o.key in opts)) return;
     let v = (o.key in opts) ? opts[o.key] : o.default;
     if (o.type === 'bool') v = !!v;
+    if (appId === 'office' && /^app[1-4]Shortcut[1-8]IconImage$/.test(o.key)) {
+      options[o.key] = '';
+      options[o.key + 'Src'] = officeShortcutImageDataUrl(v, fs) || '';
+      return;
+    }
     options[o.key] = v == null ? '' : v;
   });
   return { app: appId, options };

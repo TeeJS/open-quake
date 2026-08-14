@@ -66,6 +66,18 @@
         <div class="section-heading"><span>Upcoming</span></div>
         <div id="events" class="agenda"><div class="empty-state">Loading agenda…</div></div>
       </article>
+
+      <div id="auth" class="auth hidden" role="region" aria-label="Optional Microsoft 365 connection">
+        <div class="auth-box">
+          <div class="auth-mark" aria-hidden="true">365</div>
+          <div>
+            <h2>Calendar and presence are optional</h2>
+            <p>Connect Microsoft 365 to show them. App switching and shortcuts work without signing in.</p>
+            <p id="authMsg" class="auth-message"></p>
+          </div>
+          <button id="connect" type="button">Connect</button>
+        </div>
+      </div>
     </section>
 
     <section class="control-deck" aria-label="Keyboard shortcuts for selected Office application">
@@ -112,17 +124,6 @@
     </section>
   </main>
 
-  <div id="auth" class="auth hidden">
-    <div class="auth-box">
-      <div class="auth-mark" aria-hidden="true">365</div>
-      <div>
-        <h2>Connect Microsoft 365</h2>
-        <p>This deck uses the global Open-Quake Microsoft connection for calendar and presence.</p>
-        <p id="authMsg" class="auth-message"></p>
-      </div>
-      <button id="connect" type="button">Connect</button>
-    </div>
-  </div>
 <script src="/officeCalendar.js"></script>
 <script src="/office.js"></script>
 </body>

@@ -223,8 +223,18 @@
       var label = String(officeOptions[prefix + 'Label'] || fallback.label);
       var keys = String(officeOptions[prefix + 'Keys'] == null ? fallback.keys : officeOptions[prefix + 'Keys']);
       var icon = String(officeOptions[prefix + 'Icon'] || fallback.icon);
+      var iconImage = String(officeOptions[prefix + 'IconImageSrc'] || '');
+      var glyph = button.querySelector('.shortcut-glyph');
       button.hidden = index >= count;
-      button.querySelector('.shortcut-glyph').textContent = icon || '⌨';
+      glyph.replaceChildren();
+      if (/^data:image\/(?:png|jpeg|gif|webp|bmp|x-icon|svg\+xml);base64,/i.test(iconImage)) {
+        var image = document.createElement('img');
+        image.src = iconImage;
+        image.alt = '';
+        glyph.appendChild(image);
+      } else {
+        glyph.textContent = icon || '⌨';
+      }
       button.querySelector('strong').textContent = label || 'Shortcut ' + (index + 1);
       button.querySelector('small').textContent = keys || 'Not configured';
       button.disabled = !keys;

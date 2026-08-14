@@ -41,6 +41,24 @@
   input, select { background: #0e141c; color: #dbe5f0; border: 1px solid #2a3a4e; border-radius: 6px; padding: 7px 9px; font-size: 13px; width: 100%; }
   .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
   .row label { width: 70px; color: #91a4ba; font-size: 13px; flex: none; }
+  .officeShortcutHead, .officeShortcutRow { display: grid; grid-template-columns: minmax(150px,.7fr) minmax(180px,1fr) minmax(220px,1.15fr) auto; gap: 12px; align-items: center; }
+  .officeShortcutHead { margin: 10px 0 4px; padding: 0 4px; color: #6f8298; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .officeShortcutRow { margin: 8px 0; }
+  .officeShortcutIconGroup { display: grid; grid-template-columns: 58px minmax(76px,1fr) 32px; gap: 8px; min-width: 0; }
+  .officeShortcutIcon { width: 58px; font: 20px "Segoe UI Emoji"; text-align: center; }
+  .officeShortcutImage { display: grid; min-width: 0; height: 38px; padding: 4px 8px; place-items: center; overflow: hidden; }
+  .officeShortcutImage img { width: 28px; height: 28px; object-fit: contain; }
+  .officeShortcutImageClear { width: 32px; padding: 0; }
+  .officeShortcutLabel, .officeShortcutKeys { min-width: 0; }
+  .officeShortcutClear { white-space: nowrap; }
+  @media (max-width: 760px) {
+    .officeShortcutHead { display: none; }
+    .officeShortcutRow { grid-template-columns: minmax(150px,1fr) minmax(180px,1fr) auto; }
+    .officeShortcutIconGroup { grid-column: 1; }
+    .officeShortcutLabel { grid-column: 2 / 4; grid-row: 1; }
+    .officeShortcutKeys { grid-column: 1 / 3; grid-row: 2; }
+    .officeShortcutClear { grid-column: 3; grid-row: 2; }
+  }
   .secretwrap { display: flex; gap: 6px; align-items: stretch; flex: 1; min-width: 0; }
   .secretwrap input { flex: 1; min-width: 0; width: auto; }
   .reveal { flex: none; width: 34px; padding: 0; font-size: 14px; line-height: 1; }

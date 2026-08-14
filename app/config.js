@@ -465,6 +465,7 @@
     office: [['New', 'Ctrl+N', '✨'], ['Save', 'Ctrl+S', '💾'], ['Find', 'Ctrl+F', '🔍'], ['Undo', 'Ctrl+Z', '↶']],
   };
   function officeShortcutDefault(appId, shortcutIndex, suffix) {
+    if (suffix === 'IconImage') return '';
     const set = OFFICE_SHORTCUT_DEFAULTS[appId] || OFFICE_SHORTCUT_DEFAULTS.office;
     const fallback = [`Shortcut ${shortcutIndex}`, '', '⌨'];
     return (set[shortcutIndex - 1] || fallback)[suffix === 'Label' ? 0 : suffix === 'Keys' ? 1 : 2];
@@ -487,12 +488,20 @@
     const appRows = [1, 2, 3, 4].map(index => {
       const desktopOnly = value('mode' + index) === 'desktop';
       const shortcutCount = Math.max(4, Math.min(8, Number(value('app' + index + 'ShortcutCount')) || 4));
-      const shortcuts = Array.from({ length: shortcutCount }, (_, shortcutOffset) => shortcutOffset + 1).map(shortcutIndex => `<div class="row" style="margin-top:6px">
-          <input class="officeShortcutIcon" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" list="officeShortcutIcons" value="${esc(shortcutValue(index, shortcutIndex, 'Icon'))}" maxlength="8" aria-label="Shortcut icon" title="Choose or paste an emoji" style="width:58px;font:20px 'Segoe UI Emoji';text-align:center">
-          <input class="officeShortcutLabel" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" value="${esc(shortcutValue(index, shortcutIndex, 'Label'))}" placeholder="button label" style="width:160px">
-          <input class="officeShortcutKeys" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" readonly value="${esc(shortcutValue(index, shortcutIndex, 'Keys'))}" placeholder="click, then press keys" style="width:200px;margin-left:8px">
-          <button class="officeShortcutClear" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" type="button" style="margin-left:8px">Clear</button>
-        </div>`).join('');
+      const shortcuts = Array.from({ length: shortcutCount }, (_, shortcutOffset) => shortcutOffset + 1).map(shortcutIndex => {
+        const imagePath = shortcutValue(index, shortcutIndex, 'IconImage');
+        const imageSrc = imagePath ? imgUrl(imagePath) : '';
+        return `<div class="officeShortcutRow">
+          <div class="officeShortcutIconGroup">
+            <input class="officeShortcutIcon" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" list="officeShortcutIcons" value="${esc(shortcutValue(index, shortcutIndex, 'Icon'))}" maxlength="8" aria-label="Shortcut ${shortcutIndex} emoji" title="Emoji fallback when no image is selected">
+            <button class="officeShortcutImage" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" type="button" title="Choose a PNG, JPG, GIF, WebP, BMP, ICO, or SVG">${imageSrc ? `<img src="${esc(imageSrc)}" alt="Shortcut ${shortcutIndex} image preview">` : 'Image…'}</button>
+            <button class="officeShortcutImageClear" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" type="button" title="Remove shortcut image" aria-label="Remove shortcut ${shortcutIndex} image" style="visibility:${imagePath ? 'visible' : 'hidden'}">×</button>
+          </div>
+          <input class="officeShortcutLabel" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" value="${esc(shortcutValue(index, shortcutIndex, 'Label'))}" placeholder="Button label">
+          <input class="officeShortcutKeys" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" readonly value="${esc(shortcutValue(index, shortcutIndex, 'Keys'))}" placeholder="Click, then press keys">
+          <button class="officeShortcutClear" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" type="button">Clear keys</button>
+        </div>`;
+      }).join('');
       return `<fieldset style="border:1px solid #2a3a4e;border-radius:8px;padding:8px 12px;margin:8px 0">
         <legend style="padding:0 6px;color:#9fb3c8;font-size:13px">Header app ${index}</legend>
         <div class="row"><label>Application</label><select class="officeApp" data-index="${index}">${officeChoiceHtml(def, 'app' + index, value('app' + index))}</select></div>
@@ -500,7 +509,8 @@
         ${desktopOnly ? `<div class="row"><label>When already open</label><select class="officeDesktopSwitch" data-index="${index}">${officeChoiceHtml(def, 'desktopSwitch' + index, value('desktopSwitch' + index))}</select></div>
         <p class="hint" style="margin:4px 0 8px"><b>Keep Office panel visible</b> means tapping this header app will not focus or relaunch it when it already has an open window; it only changes the shortcut buttons below. If the app is closed, it still launches. Tapping a shortcut then focuses the app and sends the configured keys.</p>` : ''}
         <div class="row"><label>Shortcuts</label><select class="officeShortcutCount" data-index="${index}">${officeChoiceHtml(def, 'app' + index + 'ShortcutCount', shortcutCount)}</select></div>
-        <p class="hint" style="margin:8px 0 4px">Bottom-row shortcuts when this app is selected</p>
+        <p class="hint" style="margin:8px 0 4px">Bottom-row shortcuts when this app is selected. Use an emoji, or choose a local image/SVG; the emoji remains the fallback if the image is unavailable.</p>
+        <div class="officeShortcutHead"><span>Icon</span><span>Label</span><span>Keys</span><span>Action</span></div>
         ${shortcuts}
       </fieldset>`;
     }).join('');
@@ -520,7 +530,7 @@
         const appIndex = event.target.dataset.index;
         g.options['app' + appIndex] = event.target.value;
         [1, 2, 3, 4, 5, 6, 7, 8].forEach(shortcutIndex => {
-          ['Icon', 'Label', 'Keys'].forEach(suffix => {
+          ['Icon', 'IconImage', 'Label', 'Keys'].forEach(suffix => {
             const key = `app${appIndex}Shortcut${shortcutIndex}${suffix}`;
             const next = officeShortcutDefault(event.target.value, shortcutIndex, suffix);
             g.options[key] = next;
@@ -529,6 +539,7 @@
           });
         });
         markDirty();
+        render();
       };
     });
     document.querySelectorAll('.officeMode').forEach(select => {
@@ -562,6 +573,28 @@
       input.oninput = event => {
         const target = event.target;
         g.options[`app${target.dataset.appIndex}Shortcut${target.dataset.shortcutIndex}Icon`] = target.value;
+        markDirty();
+      };
+    });
+    document.querySelectorAll('.officeShortcutImage').forEach(button => {
+      button.onclick = async event => {
+        const target = event.currentTarget;
+        const imagePath = await configApi.pickImage();
+        if (!imagePath) return;
+        g.options[`app${target.dataset.appIndex}Shortcut${target.dataset.shortcutIndex}IconImage`] = imagePath;
+        target.innerHTML = `<img src="${esc(imgUrl(imagePath))}" alt="Shortcut ${esc(target.dataset.shortcutIndex)} image preview">`;
+        const clear = document.querySelector(`.officeShortcutImageClear[data-app-index="${target.dataset.appIndex}"][data-shortcut-index="${target.dataset.shortcutIndex}"]`);
+        if (clear) clear.style.visibility = 'visible';
+        markDirty();
+      };
+    });
+    document.querySelectorAll('.officeShortcutImageClear').forEach(button => {
+      button.onclick = event => {
+        const target = event.currentTarget;
+        g.options[`app${target.dataset.appIndex}Shortcut${target.dataset.shortcutIndex}IconImage`] = '';
+        const picker = document.querySelector(`.officeShortcutImage[data-app-index="${target.dataset.appIndex}"][data-shortcut-index="${target.dataset.shortcutIndex}"]`);
+        if (picker) picker.textContent = 'Image…';
+        target.style.visibility = 'hidden';
         markDirty();
       };
     });

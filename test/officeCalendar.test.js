@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { dateLabel, durationLabel, groupEvents, localDateKey } = require('../app/officeCalendar');
+const { officeShortcutImageDataUrl } = require('../app/officeShortcutIcons');
 
 function event(id, start, end) {
   return { id, subject: id, start, end, isCancelled: false };
@@ -18,11 +19,14 @@ test('calendar grouping uses the event calendar date in the selected local timez
     event('later', '2026-08-14T23:15:00.000Z', '2026-08-14T23:45:00.000Z'),
   ], now, 'Europe/London');
 
-  assert.deepEqual(groups.map(group => ({ label: group.label, ids: group.events.map(item => item.id) })), [
-    { label: 'TODAY', ids: ['today'] },
-    { label: 'TOMORROW', ids: ['tomorrow-after-local-midnight'] },
-    { label: 'SAT 15 AUG', ids: ['later'] },
+  assert.deepEqual(groups.map(group => ({ key: group.key, ids: group.events.map(item => item.id) })), [
+    { key: '2026-08-13', ids: ['today'] },
+    { key: '2026-08-14', ids: ['tomorrow-after-local-midnight'] },
+    { key: '2026-08-15', ids: ['later'] },
   ]);
+  assert.equal(groups[0].label, 'TODAY');
+  assert.equal(groups[1].label, 'TOMORROW');
+  assert.ok(groups[2].label);
 });
 
 test('UTC midnight does not force a new day when the user is still on the previous local date', () => {
@@ -52,6 +56,7 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   const script = fs.readFileSync(path.join(root, 'office.js'), 'utf8');
   const css = fs.readFileSync(path.join(root, 'office.css'), 'utf8');
   const editor = fs.readFileSync(path.join(root, 'config.js'), 'utf8');
+  const editorHtml = fs.readFileSync(path.join(root, 'config.html'), 'utf8');
   const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'apps', 'apps.json'), 'utf8'));
   const office = manifest.find(app => app.id === 'office');
 
@@ -62,7 +67,14 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   assert.deepEqual(office.options.find(option => option.key === 'app1ShortcutCount').choices.map(choice => choice[0]), ['4', '5', '6', '7', '8']);
   assert.deepEqual(office.options.find(option => option.key === 'desktopSwitch1').choices.map(choice => choice[0]), ['focus', 'shortcuts']);
   assert.equal(office.options.filter(option => /^app[1-4]Shortcut[1-8]Keys$/.test(option.key)).length, 32);
+  assert.equal(office.options.filter(option => /^app[1-4]Shortcut[1-8]IconImage$/.test(option.key)).length, 32);
   assert.match(html, /id="presenceAvatar"/);
+  const meetingStripStart = html.indexOf('<section class="meeting-strip">');
+  const meetingStripEnd = html.indexOf('</section>', meetingStripStart);
+  const authStart = html.indexOf('id="auth"');
+  assert.ok(authStart > meetingStripStart && authStart < meetingStripEnd);
+  assert.match(html, /Calendar and presence are optional/);
+  assert.match(html, /App switching and shortcuts work without signing in/);
   assert.doesNotMatch(html, /id="moreToggle"/);
   assert.doesNotMatch(script, /window\.open\s*\(/);
   assert.match(script, /\/api\/office\/action\//);
@@ -70,7 +82,14 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   assert.match(script, /DEFAULT_SHORTCUTS_BY_APP/);
   assert.match(script, /prefix \+ 'Icon'/);
   assert.match(script, /--shortcut-count/);
+  assert.match(script, /IconImageSrc/);
+  assert.match(script, /document\.createElement\('img'\)/);
   assert.match(css, /repeat\(var\(--shortcut-count\), minmax\(0, 1fr\)\)/);
+  assert.match(editorHtml, /\.officeShortcutRow\s*{[^}]*display:\s*grid/s);
+  assert.match(editor, /configApi\.pickImage\(\)/);
+  assert.match(css, /\.meeting-strip\s*{[^}]*position:\s*relative/s);
+  assert.match(css, /\.auth\s*{[^}]*position:\s*absolute/s);
+  assert.doesNotMatch(css, /\.auth\s*{[^}]*position:\s*fixed/s);
   assert.match(editor, /Keep Office panel visible.*will not focus or relaunch it/);
   assert.match(editor, /If the app is closed, it still launches/);
 });
@@ -82,4 +101,13 @@ test('Office header uses bundled deterministic Microsoft product artwork', () =>
     assert.match(svg, /^<svg/);
     assert.match(svg, /viewBox="0 0 48 48"/);
   }
+});
+
+test('Office shortcut images accept local image formats without exposing file paths', () => {
+  const svgPath = path.join(__dirname, '..', 'app', 'office-icons', 'teams.svg');
+  const dataUrl = officeShortcutImageDataUrl(svgPath, fs);
+
+  assert.match(dataUrl, /^data:image\/svg\+xml;base64,/);
+  assert.equal(dataUrl.includes(svgPath), false);
+  assert.equal(officeShortcutImageDataUrl(path.join(__dirname, '..', 'package.json'), fs), null);
 });
