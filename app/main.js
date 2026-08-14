@@ -51,6 +51,11 @@ const meetingControl = require('./meetingControl');   // Zoom/Teams call-control
 const desktopFocus = require('./desktopFocus');   // tracks the PC's OS-level foreground app; auto-switches the panel to a mapped page
 const ahk = require('./ahk');                  // macro "ahk" step backend (shells out to an installed AutoHotkey.exe)
 const { createReservedDisplay } = require('./reservedDisplay'); // Windows helper that keeps foreign windows off the panel display
+const { createVoicePanelHost } = require('./voicepanel-host'); // generic voice-panel app host (state/SSE/speech/STT-TTS plumbing)
+const { createClaudeVoiceAdapter } = require('./claudevoice-adapter'); // Claude Code session adapter (CLI spawn, events, approval hook)
+const { createCodexVoiceAdapter, findCodexExe } = require('./codexvoice-session'); // OpenAI Codex session adapter (app-server JSON-RPC over stdio)
+const { findClaudeExe } = require('./claudevoice-session'); // CLI presence probe for the editor's voice-app warning
+const claudeVoiceApprovals = require('./claudevoice-approvals'); // required directly ONLY for the boot-time leftover-hook sweep below
 const HA_SCHEDULE_APPS = ['haschedule', 'agenda', 'events'];   // dev apps backed by the shared HA /haschedule-data snapshot
 
 const USER_DIR = app.getPath('userData');
@@ -88,6 +93,55 @@ const reservedDisplay = createReservedDisplay({
   getDisplayState: reservedDisplayState,
   log: message => console.log('[reserved-display] ' + message),
 });
+// The Claude Code voice app = the generic voice-panel host (state/transcript/SSE/speech/STT-TTS,
+// see voicepanel-host.js) driven by the Claude session adapter (CLI spawn, stream-json events,
+// approval hook lifecycle -- see claudevoice-adapter.js). A second agent app (codex-voice) is a
+// second host instance with its own adapter; the deps are shared closures over main.js state.
+const claudeVoiceLog = message => console.log('[claude-voice] ' + message);
+const claudeVoiceHost = createVoicePanelHost({
+  appId: 'claude-voice',
+  storageKey: 'claudeVoice',
+  log: claudeVoiceLog,
+  branding: {
+    title: 'Claude Code',
+    approvalTitle: '⚠ Claude wants to do something',
+    turnFailedText: 'Turn failed to send — no project set, or claude CLI not found.',
+  },
+  adapter: createClaudeVoiceAdapter({
+    getServerPort: () => serverPort,
+    getUserDataPath: () => app.getPath('userData'),
+    log: claudeVoiceLog,
+  }),
+  deps: voicePanelDeps('claude-voice'),
+});
+const codexVoiceLog = message => console.log('[codex-voice] ' + message);
+const codexVoiceHost = createVoicePanelHost({
+  appId: 'codex-voice',
+  storageKey: 'codexVoice',
+  log: codexVoiceLog,
+  branding: {
+    title: 'Codex',
+    approvalTitle: '⚠ Codex wants to do something',
+    turnFailedText: 'Turn failed to send — no folder set, or codex CLI not found.',
+  },
+  adapter: createCodexVoiceAdapter({ log: codexVoiceLog }),
+  deps: voicePanelDeps('codex-voice'),
+});
+// Shared main.js plumbing for a voice-panel host. The ring guards are the two-app arbitration:
+// only the ON-SCREEN voice app may drive (or clear) the ring override -- a background app's
+// session finishing must never repaint the ring under the active page. (Page changes already
+// clear any override via gotoGrid.)
+function voicePanelDeps(appId) {
+  return {
+    activeServedAppConfig: id => activeServedAppConfig(id),
+    activeGrid: () => activeGrid(),
+    getConfig: () => config,
+    saveConfig: () => saveConfig(),
+    setRingState: state => { const g = activeGrid(); if (g && g.kind === 'app' && g.app === appId) setRingState(state); },
+    clearRingOverride: () => { const g = activeGrid(); if (g && g.kind === 'app' && g.app === appId) clearRingOverride(); },
+    getDocumentsPath: () => app.getPath('documents'),
+  };
+}
 function appSettings() { return Object.assign({}, DEFAULT_SETTINGS, config.settings || {}); }
 // ---- theme (global light/dark + accent, with per-card overrides) ----
 function themeGlobal() { return Object.assign({}, THEME_DEFAULT, (config.settings || {}).theme || {}); }
@@ -255,6 +309,9 @@ function isTrustedMediaRequest(wc, details) {
 }
 function handleDashboardPermissionRequest(wc, permission, cb, details) {
   if (permission === 'media' && isTrustedMediaRequest(wc, details)) return cb(true);
+  // setSinkId() -- the speaker picker in the Claude Voice settings -- needs this one; same trust
+  // gate as the mic (our own served pages, or an explicitly trusted dashboard origin).
+  if (permission === 'speaker-selection' && isTrustedMediaRequest(wc, details)) return cb(true);
   return cb(false);
 }
 
@@ -1283,6 +1340,7 @@ function openConfigWindow() {
 // ---- device settings (knob RGB ring, mic) ----
 function lighting() { return Object.assign({}, LED_DEFAULT, (config.settings || {}).lighting || {}); }
 function applyKnobSettings() {
+  if (ringOverrideState) { applyRingOverride(); return; }
   const L = lighting();
   const lig = (config.settings && config.settings.lighting) || {};
   let hue = L.hue, sat = L.sat;
@@ -1293,6 +1351,41 @@ function applyKnobSettings() {
   try { dev.setLedSpeed(L.speed & 0xFF); } catch (e) {}
   try { dev.setLedColor(hue & 0xFF, sat & 0xFF); } catch (e) {}
   if (L.effect) lastRingEffect = L.effect;
+}
+// ---- ring override (Claude Code voice states) ----
+// A served page signals its state via console.log('OQX_RING::<state>') (caught in index.js, funneled
+// through the panelApi.setRingState IPC channel below). While an override is active it wins over the
+// normal theme-driven ring on every applyKnobSettings() call (settings changes, app switches, etc. all
+// route through that one function) so nothing else can silently clobber it mid-conversation. Colors
+// echo the same palette used in claudevoiceview.html's status pill (--accent green / blue / --warn
+// amber) so the on-screen status and the ring always agree. Brightness always follows the user's own
+// lighting setting -- only hue/sat/effect/speed are state-driven.
+const RING_STATES = {
+  listening: { hue: 106, sat: 255, effect: 1, speed: 128 },   // solid green — mirrors the app's --accent
+  thinking: { hue: 106, sat: 255, effect: 5, speed: 180 },    // breathing green — actively working
+  speaking: { hue: 149, sat: 255, effect: 1, speed: 128 },    // solid blue — Claude is talking
+  approval: { hue: 28, sat: 255, effect: 5, speed: 220 },     // breathing amber — needs a touch, mirrors --warn
+};
+let ringOverrideState = null;
+function applyRingOverride() {
+  const s = RING_STATES[ringOverrideState];
+  if (!s) { ringOverrideState = null; applyKnobSettings(); return; }
+  try { dev.setKnobLed(true); } catch (e) {}
+  try { dev.setLedEffect(s.effect & 0xFF); } catch (e) {}
+  try { dev.setLedBrightness(lighting().brightness & 0xFF); } catch (e) {}
+  try { dev.setLedSpeed(s.speed & 0xFF); } catch (e) {}
+  try { dev.setLedColor(s.hue & 0xFF, s.sat & 0xFF); } catch (e) {}
+}
+function setRingState(state) {
+  if (!state || state === 'idle') { clearRingOverride(); return; }
+  if (!RING_STATES[state]) return;   // unrecognized state string — ignore rather than guess at a mapping
+  ringOverrideState = state;
+  applyRingOverride();
+}
+function clearRingOverride() {
+  if (!ringOverrideState) return;
+  ringOverrideState = null;
+  applyKnobSettings();
 }
 function applyMic(on) { try { dev.setMic(on); } catch (e) {} micState = !!on; refreshTray(); }
 function toggleMic() { applyMic(!micState); }
@@ -1318,6 +1411,7 @@ function pageCategory(g) { return g.kind === 'web' ? 'dashboards' : g.kind === '
 function rotationList() { const c = rotationCfg(); return config.grids.filter(g => g.rotate && c.cats[pageCategory(g)] && !g.hidden); }
 function gotoGrid(id, persist) {
   if (!config.grids.some(g => g.id === id)) return;
+  clearRingOverride();   // leaving whatever page set the override (if any) — always restore the normal ring
   config.activeGridId = id; if (persist) saveConfig(); pushToPanel();
 }
 // Force the dashboard webview's cookies to commit to disk. Chromium only lazily flushes (~30s / clean
@@ -1482,7 +1576,7 @@ function applyFocusFollowSettings() {
 function trayMenu() {
   const ringOn = lighting().effect !== 0;
   const items = [
-    { label: 'open-quake', enabled: false },
+    { label: 'open-quake v' + app.getVersion(), enabled: false },
     { type: 'separator' },
     { label: 'Open editor', click: () => openConfigWindow() },
     { label: micState ? 'Mic: on — click to disable' : 'Mic: off — click to enable', click: () => toggleMic() },
@@ -1581,12 +1675,37 @@ app.whenReady().then(async () => {
   // Lazy-required so a metrics/load failure can never crash the rest of the app.
   try {
     sysserver = require('./sysserver');
-    serverPort = await sysserver.start({ onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig, getOfficeData: officeGraph.getData, connectOffice: officeGraph.connect, onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, onOfficeAction: officeActions.run, appFolders: discoveredServedApps(), getShortcuts: keyboardShortcutsSnapshot });
+    serverPort = await sysserver.start({
+      onMedia: mediaKey, onLaunch: onAppLaunch, getGridTiles: getActiveAppTiles, getAppConfig: activeServedAppConfig,
+      getOfficeData: officeGraph.getData, connectOffice: officeGraph.connect, onOfficeAction: officeActions.run,
+      onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, appFolders: discoveredServedApps(),
+      getShortcuts: keyboardShortcutsSnapshot,
+      // Voice-panel app registry: each entry gets the full /<appId>/* route surface (see
+      // sysserver.js). voiceToken gates the claude approval hook's /approval-request long-poll.
+      voiceApps: {
+        'claude-voice': {
+          htmlFile: 'claudevoiceview.html',
+          handlers: claudeVoiceHost.handlers,
+          voiceToken: claudeVoiceHost.adapter.hookToken(),
+        },
+        // Same page, same route surface, codex adapter behind it. No voiceToken: codex approvals
+        // are in-band protocol requests, so the external-hook route doesn't exist for it.
+        'codex-voice': {
+          htmlFile: 'claudevoiceview.html',
+          handlers: codexVoiceHost.handlers,
+        },
+      },
+    });
     ensureSystemViewPage(serverPort); ensureMusicPage(); ensureDropInDir();
     const haUrl = configureHaSchedule();
     console.log('SystemView + Music on http://127.0.0.1:' + serverPort + (haUrl ? ' · HA Schedule -> ' + haUrl : ''));
   } catch (e) { console.log('local panel services failed to start:', e.message); }
   sweepIconCache();   // clean up orphaned URL-icon cache files left by prior sessions
+  // Same idea for the approval hook: a crash (or a force-kill) skips before-quit's removal and strands
+  // our entry in the user's global settings.json, where it would tax every Claude Code session on the
+  // machine until the next panel session happened to clean it up. No voice session can be running this
+  // early in startup, so anything still installed at boot is by definition a leftover.
+  try { claudeVoiceApprovals.ensureHookRemoved(claudeVoiceLog); } catch (e) {}
 
   // Dashboard auth injection for the webview session. The active page's auth config drives it:
   //  - 'header'  -> add custom header(s) to requests to the dashboard host (bearer / Cloudflare Access / …)
@@ -1661,7 +1780,9 @@ app.whenReady().then(async () => {
     console.log('[counter] SAVED: grid', data.gridId, 'tile', data.index, '=', data.value);
   });
   ipcMain.on('openExternal', (e, url) => { if (!isFrom(e, panelWin) && !isFrom(e, configWin)) return; openExternalUrl(url); });
+  ipcMain.on('ringState', (e, state) => { if (!isFrom(e, panelWin)) return; setRingState(state); });
   ipcMain.handle('getConfig', (e) => isFrom(e, configWin) ? configForRenderer(config) : null);
+  ipcMain.handle('getAppVersion', (e) => isFrom(e, configWin) ? app.getVersion() : null);
   ipcMain.handle('listOAuthProviders', (e) => isFrom(e, configWin) ? oauthProviderPayload() : []);
   ipcMain.handle('connectOAuthProvider', async (e, provider, scopes) => {
     if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
@@ -1682,8 +1803,37 @@ app.whenReady().then(async () => {
   });
   // HA cache: editor reads the registries + dashboards for picker UIs; refresh kicks a new fetchAll.
   // fetchHaEntityState is wired now for phase-2 features that assign an entity to a button.
+  // Claude Code voice app: candidate project directories under `root` for the editor's picker
+  // (Phase 3). Directories only (not files); silently returns [] for a missing/unreadable root
+  // rather than throwing, since the field is free-editable and may not exist yet.
+  ipcMain.handle('listProjectDirs', (e, root) => {
+    if (!isFrom(e, configWin)) return [];
+    try {
+      return fs.readdirSync(root, { withFileTypes: true })
+        .filter(d => d.isDirectory())
+        .map(d => path.join(root, d.name))
+        .sort((a, b) => a.localeCompare(b));
+    } catch (err) { return []; }
+  });
   ipcMain.handle('getHaCache', (e) => isFrom(e, configWin) ? haCache : null);
   ipcMain.handle('refreshHaCache', (e) => isFrom(e, configWin) ? refreshHaCache() : null);
+  // Editor voice-app options: is the page's CLI actually installed? Lets the editor warn at
+  // add-time instead of the user discovering a dead page on the panel later.
+  ipcMain.handle('probeVoiceCli', (e, appId) => {
+    if (!isFrom(e, configWin)) return null;
+    try {
+      if (appId === 'claude-voice') return findClaudeExe() || null;
+      if (appId === 'codex-voice') return findCodexExe() || null;
+    } catch (err) {}
+    return null;
+  });
+  // "Edit prompt file" in the Claude Code page options: seed the template if needed, then open the
+  // file in whatever the user's default .md editor is.
+  ipcMain.handle('editClaudeVoicePrompt', (e) => {
+    if (!isFrom(e, configWin)) return null;
+    try { const p = claudeVoiceHost.adapter.ensureUserPromptFile(); shell.openPath(p); return p; }
+    catch (err) { claudeVoiceLog('panel prompt open failed: ' + err.message); return null; }
+  });
   ipcMain.handle('fetchHaEntityState', (e, entityId) => {
     if (!isFrom(e, configWin)) return null;
     return fetchHaEntityState(entityId).catch(err => ({ error: err.message || String(err) }));
@@ -1778,6 +1928,31 @@ app.whenReady().then(async () => {
     return touchSetup.clearAllCalibrations();
   });
 
+  // Knob RGB ring (QMK VIA / Bedrock). The editor's Settings page reads the device's current lighting,
+  // then live-previews edits as the user drags. Both are gated to the config window (isFrom) like every
+  // other device-control channel. (These were dropped by mistake in the b2ae172 security rewrite, which
+  // kept the preload channels + renderer callers but lost the main-process handlers.)
+  ipcMain.handle('getLighting', async (e) => {
+    if (!isFrom(e, configWin)) return null;
+    let cur = null;
+    try { cur = await dev.getLighting(); } catch (er) {}
+    return Object.assign({}, lighting(), cur && Object.keys(cur).length ? cur : {});
+  });
+  ipcMain.on('setLighting', (e, L) => {
+    if (!isFrom(e, configWin)) return;
+    if (!L) return;
+    if (!config.settings) config.settings = {};
+    config.settings.lighting = Object.assign({}, lighting(), L);
+    if (config.settings.lighting.effect) lastRingEffect = config.settings.lighting.effect;
+    saveConfig();
+    try {
+      if (L.effect != null) dev.setLedEffect(L.effect & 0xFF);
+      if (L.brightness != null) dev.setLedBrightness(L.brightness & 0xFF);
+      if (L.speed != null) dev.setLedSpeed(L.speed & 0xFF);
+      if (L.hue != null && L.sat != null) dev.setLedColor(L.hue & 0xFF, L.sat & 0xFF);
+    } catch (er) {}
+    refreshTray();
+  });
   ipcMain.handle('saveLightingToDevice', (e) => { if (!isFrom(e, configWin)) return false; try { return dev.saveLighting(); } catch (er) { return false; } });
   ipcMain.handle('listRunningApps', async (e) => isFrom(e, configWin) ? await desktopFocus.listRunningApps() : []);
 
@@ -1831,6 +2006,9 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {});
 app.on('before-quit', () => {
   try { reservedDisplay.stop(); } catch (e) {}                // release WinEvent hooks and terminate the native helper
+  try { claudeVoiceHost.shutdown(); } catch (e) {}       // terminate the claude CLI child, release held approvals, remove the global hook
+  try { codexVoiceHost.shutdown(); } catch (e) {}        // terminate the codex app-server child
+  try { claudeVoiceApprovals.ensureHookRemoved(claudeVoiceLog); } catch (e) {}    // belt-and-braces: never leave our entry behind in the user's global Claude settings
   try { dev.stop(); } catch (e) {}                       // close HID devices + clear keep-alive/rescan timers — an open node-hid handle blocks process exit (Cmd+Q would hang -> force-quit)
   try { oauthHandler.stop(); } catch (e) {}              // stop OAuth callback server + background refresh timers
   try { if (sysserver) sysserver.stop(); } catch (e) {}  // stop metrics timers + close the local server

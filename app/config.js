@@ -1511,6 +1511,9 @@
     const isMusic = g.app === 'music';
     const isHaDash = g.app === 'ha-dashboard';
     const isKeyShortcuts = g.app === 'keyshortcuts';
+    const isClaudeVoice = g.app === 'claude-voice';
+    const isCodexVoice = g.app === 'codex-voice';
+    const isVoiceApp = isClaudeVoice || isCodexVoice;   // both share the hand-rendered options box below
     const isOffice = g.app === 'office';
     const musicBox = `<fieldset style="border:1px solid #2a3a4e; border-radius:8px; padding:6px 14px 10px; margin:10px 0">
         <legend style="padding:0 6px; color:#9fb3c8; font-size:13px">Panels</legend>
@@ -1545,7 +1548,40 @@
       </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
-    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : isKeyShortcuts ? keyShortcutsBox : isOffice ? officeOptionsHtml(g, def) : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+    // Claude Code voice app: project picker (dynamic dir list -- can't be a static apps.json enum)
+    // plus the rest of the app's options, hand-rendered here same as HA Dashboard's box does for its
+    // own picker + flags rather than delegating to the generic renderAppOpts(). See docs/claude-voice.md
+    // and the plan file for why projectDir specifically needs this (D:\Github\* isn't known at
+    // apps.json-authoring time).
+    const cvOptDef = key => (def && def.options || []).find(o => o.key === key) || {};
+    const cvVal = (key, dflt) => optVal(g, key, dflt);
+    const cvPermChoices = (cvOptDef('permissionMode').choices || []);
+    const claudeVoiceBox = `<div id="cvBox" style="margin-top:10px">
+        <p id="cvCliWarn" class="hint" style="display:none;color:#ff8a8a;font-weight:600"></p>
+        <div class="row"><label>Default folder</label>
+          <input id="cvProjectPath" value="${esc(cvVal('projectDir', ''))}" style="flex:1">
+          <button id="cvProjectPathBrowse" type="button">Browse…</button></div>
+        <p class="hint">Where new sessions start until a folder is picked on the panel (Change folder). The panel's pick updates this. Created automatically if it doesn't exist yet.</p>
+        <div class="row" style="margin-top:10px"><label style="width:auto">Folders root</label>
+          <input id="cvProjectsRoot" value="${esc(cvVal('projectsRoot', ''))}" style="flex:1">
+          <button id="cvProjectsRootBrowse" type="button">Browse…</button></div>
+        <p class="hint">The folder the panel's Change folder list scans.</p>
+        <div class="row"><label>Wyoming host</label><input id="cvWyomingHost" value="${esc(cvVal('wyomingHost', ''))}" style="flex:1"></div>
+        <div class="row"><label>STT / TTS ports</label>
+          <input id="cvSttPort" value="${esc(cvVal('wyomingSttPort', ''))}" style="width:90px">
+          <input id="cvTtsPort" value="${esc(cvVal('wyomingTtsPort', ''))}" style="width:90px;margin-left:8px"></div>
+        <p class="hint">Voice needs Piper (TTS) and Whisper (STT) hosts. Please enter the IP of your server or use <a href="#" id="cvTtsLink">tts-stt-windows</a> to provide both on any Windows machine — install it and set the host to <code>127.0.0.1</code>.</p>
+        <div class="row" style="margin-top:10px"><label>Permission mode</label>
+          <select id="cvPermMode" style="flex:1">${cvPermChoices.map(c => `<option value="${esc(c[0])}" ${cvVal('permissionMode', cvOptDef('permissionMode').default || '') === c[0] ? 'selected' : ''}>${esc(c[1])}</option>`).join('')}</select></div>` + (isClaudeVoice ? `
+        <div class="row"><label>Touch approval</label>
+          <label class="iconopt" style="width:auto"><input type="checkbox" id="cvApprovals" ${cvVal('approvalsEnabled', false) ? 'checked' : ''}> when in Manual mode</label></div>
+        <div class="row" style="margin-top:10px"><label>Panel prompt</label>
+          <button id="cvEditPrompt" type="button">Edit prompt file</button></div>
+        <p class="hint">Your own instructions for panel sessions (claude-panel-prompt.md, opens in your default editor). Appended to the built-in voice prompt; text inside &lt;!-- comment markers --&gt; is ignored. Applies from the next session start. Never affects terminal Claude Code.</p>` : '') + `
+      </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+        <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
+      <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
+    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : isKeyShortcuts ? keyShortcutsBox : isVoiceApp ? claudeVoiceBox : isOffice ? officeOptionsHtml(g, def) : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : ''));
     el.innerHTML = tabBar + `
@@ -1605,6 +1641,33 @@
       const hideSidebar = document.getElementById('haHideSidebar'); if (hideSidebar) hideSidebar.onchange = e => { if (!g.options) g.options = {}; g.options.hideSidebar = e.target.checked; markDirty(); };
     } else if (isKeyShortcuts) {
       wireShortcutRows();
+    } else if (isVoiceApp) {
+      const setOpt = (key, val) => { if (!g.options) g.options = {}; g.options[key] = val; markDirty(); };
+      // Default folder is a plain text box -- actual folder switching happens on the panel
+      // (Change folder), which writes its pick back into this same option.
+      document.getElementById('cvProjectPath').oninput = e => setOpt('projectDir', e.target.value.trim());
+      document.getElementById('cvProjectsRoot').oninput = e => setOpt('projectsRoot', e.target.value.trim());
+      document.getElementById('cvProjectPathBrowse').onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('cvProjectPath').value = p; setOpt('projectDir', p); } };
+      document.getElementById('cvProjectsRootBrowse').onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('cvProjectsRoot').value = p; setOpt('projectsRoot', p); } };
+      document.getElementById('cvWyomingHost').oninput = e => setOpt('wyomingHost', e.target.value.trim());
+      document.getElementById('cvSttPort').oninput = e => setOpt('wyomingSttPort', e.target.value.trim());
+      document.getElementById('cvTtsPort').oninput = e => setOpt('wyomingTtsPort', e.target.value.trim());
+      document.getElementById('cvPermMode').onchange = e => setOpt('permissionMode', e.target.value);
+      const cvApprovals = document.getElementById('cvApprovals');   // claude-only rows
+      if (cvApprovals) cvApprovals.onchange = e => setOpt('approvalsEnabled', e.target.checked);
+      const cvEditPrompt = document.getElementById('cvEditPrompt');
+      if (cvEditPrompt) cvEditPrompt.onclick = () => configApi.editClaudeVoicePrompt();
+      const cvTtsLink = document.getElementById('cvTtsLink');
+      if (cvTtsLink) cvTtsLink.onclick = e => { e.preventDefault(); configApi.openExternal('https://github.com/TeeJS/tts-stt-windows/releases'); };
+      // Warn at add-time if the agent CLI this page drives isn't installed -- otherwise the user
+      // only finds out when the panel page errors on first use.
+      configApi.probeVoiceCli(g.app).then(p => {
+        const warn = document.getElementById('cvCliWarn');
+        if (warn && !p) {
+          warn.textContent = '⚠ The ' + (isCodexVoice ? 'codex' : 'claude') + ' CLI was not found on PATH — this page won\'t work until it is installed.';
+          warn.style.display = '';
+        }
+      }).catch(() => {});
     } else if (isOffice) {
       wireOfficeOptions(g);
     } else {
@@ -2385,6 +2448,7 @@
   (async () => {
     config = await configApi.getConfig(); if (!config.grids) config.grids = [];
     if (!Array.isArray(config.groups)) config.groups = [];
+    try { const v = await configApi.getAppVersion(); const el = document.getElementById('appVer'); if (el && v) el.textContent = 'v' + v; } catch (e) {}
     try { appDefs = await configApi.getApps(); } catch (e) {}
     try { haCacheLocal = await configApi.getHaCache(); } catch (e) {}   // for iconHtml's HA icon resolution
     render(); setState('');

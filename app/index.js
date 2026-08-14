@@ -76,6 +76,9 @@
   });
   web.addEventListener('console-message', (e) => {
     if (webExternalLinks && e.message && e.message.indexOf('OQX_OPEN::') === 0) panelApi.openExternal(e.message.slice(10));
+    // Ring-state signaling (Claude Code app): same host-channel trick as OQX_OPEN, but unconditional —
+    // any served page can drive the ring this way, not gated behind the external-links toggle.
+    if (e.message && e.message.indexOf('OQX_RING::') === 0) panelApi.setRingState(e.message.slice(10));
   });
   web.addEventListener('did-finish-load', () => {
     if (!webExternalLinks) return;
@@ -390,10 +393,14 @@
     if (k.type === 'press') {
       if (selOpen) { confirmSelector(); return; }           // any press picks the highlighted grid
       // Single press -> configured click action; double press -> configured dblclick action.
-      // Defaults preserve prior behavior: click='rotation' (toggle), dblclick='selector'.
+      // Defaults preserve prior behavior: click='rotation' (toggle), dblclick='selector' -- except
+      // the Claude Code app, which defaults its own click to 'enter' (tap-to-talk) so voice works
+      // with zero setup rather than requiring the same manual per-page "Knob Override" that Music's
+      // play/pause needs. An explicit per-page override (Advanced -> Knob) still wins either way.
+      const defaultClick = (cfg && (cfg.app === 'claude-voice' || cfg.app === 'codex-voice')) ? 'enter' : 'rotation';
       const action = (k.index === 2)
         ? ((cfg._knob && cfg._knob.dblclick) || 'selector')
-        : ((cfg._knob && cfg._knob.click) || 'rotation');
+        : ((cfg._knob && cfg._knob.click) || defaultClick);
       doKnobAction(action);
     }
   });
@@ -436,6 +443,10 @@
       return;
     }
     if (cfg && cfg.app === 'music') { panelApi.media('playpause'); return; }   // music: play/pause
+    if (cfg && (cfg.app === 'claude-voice' || cfg.app === 'codex-voice')) {   // voice apps: tap toggles the conversation on/off
+      if (webMode && webReady) web.executeJavaScript('window.oqxToggleConversation && window.oqxToggleConversation()').catch(function () {});
+      return;
+    }
     panelApi.launch({ type: 'key', value: 'enter', label: 'knob enter' });     // else: a real Enter keystroke
   }
   let counterLocked = false;

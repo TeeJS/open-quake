@@ -56,12 +56,12 @@ function createSecretStore({ safeStorage, dpapi, loadApps, log = () => {} }) {
     if (stored.startsWith(MARKER2)) {
       if (!dp) return stored;                                // v2 blob on a non-Windows box: preserve as-is
       const plain = dp.unprotectOne(stored.slice(MARKER2.length));
-      if (plain === null) { log('secret decrypt failed (dpapi)'); return stored; }
+      if (plain === null) { log('secret decrypt failed (DPAPI could not unprotect a v2 blob) — re-enter the secret in the editor'); return stored; }
       return plain;
     }
     if (!stored.startsWith(MARKER)) return stored;
     try { return safeStorage.decryptString(Buffer.from(stored.slice(MARKER.length), 'base64')); }
-    catch (e) { log('secret decrypt failed: ' + e.message); return stored; }
+    catch (e) { log('skipping a legacy (v1) secret whose safeStorage key was rotated away — re-enter it in the editor to re-save it securely'); return stored; }
   }
 
   // The option keys an app declares as type:'secret' in apps.json (e.g. Open WebUI api_key).

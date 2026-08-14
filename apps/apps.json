@@ -6227,5 +6227,66 @@
     "file": "keyshortcutsview.html",
     "served": true,
     "options": []
+  },
+  {
+    "id": "claude-voice",
+    "name": "Claude Code",
+    "file": "claudevoiceview.html",
+    "served": true,
+    "options": [
+      { "key": "projectDir", "label": "Default folder", "type": "text", "default": "" },
+      { "key": "projectsRoot", "label": "Folders root (for the panel picker)", "type": "text", "default": "" },
+      { "key": "wyomingHost", "label": "Wyoming host (STT/TTS)", "type": "text", "default": "127.0.0.1" },
+      { "key": "wyomingSttPort", "label": "Wyoming STT port", "type": "text", "default": "10300" },
+      { "key": "wyomingTtsPort", "label": "Wyoming TTS port", "type": "text", "default": "10200" },
+      {
+        "key": "permissionMode",
+        "label": "Permission mode",
+        "type": "select",
+        "default": "manual",
+        "choices": [
+          ["manual", "Manual — ask before every action (touch approval on the panel)"],
+          ["acceptEdits", "Accept edits — auto-approve file changes"],
+          ["plan", "Plan — describe, don't act, until approved"],
+          ["bypassPermissions", "Full auto — no prompts (use with care)"]
+        ]
+      },
+      { "key": "approvalsEnabled", "label": "Touch approval when in Manual mode", "type": "bool", "default": true },
+    { "key": "chatFontSize", "label": "Chat text size (px)", "type": "text", "default": "16" },
+    { "key": "vadHangoverMs", "label": "Voice pause tolerance (ms)", "type": "text", "default": "800" },
+    { "key": "micDevice", "label": "Microphone (set from the panel Settings)", "type": "text", "default": "" },
+    { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
+    { "key": "modelPick", "label": "Model (set from the panel Settings; blank = account default)", "type": "text", "default": "" }
+    ]
+  },
+  {
+    "id": "codex-voice",
+    "name": "Codex",
+    "file": "claudevoiceview.html",
+    "served": true,
+    "options": [
+      { "key": "projectDir", "label": "Default folder", "type": "text", "default": "" },
+      { "key": "projectsRoot", "label": "Folders root (for the panel picker)", "type": "text", "default": "" },
+      { "key": "wyomingHost", "label": "Wyoming host (STT/TTS)", "type": "text", "default": "127.0.0.1" },
+      { "key": "wyomingSttPort", "label": "Wyoming STT port", "type": "text", "default": "10300" },
+      { "key": "wyomingTtsPort", "label": "Wyoming TTS port", "type": "text", "default": "10200" },
+      {
+        "key": "permissionMode",
+        "label": "Mode",
+        "type": "select",
+        "default": "ask-for-approval",
+        "choices": [
+          ["read-only", "Read Only — Codex can read files in the workspace; approval required to edit files or access the internet"],
+          ["ask-for-approval", "Ask for approval — Codex can read, edit, and run commands in the workspace; approval required for the internet or other files"],
+          ["approve-for-me", "Approve for me — only ask for actions detected as potentially unsafe"],
+          ["full-access", "Full Access — Codex can edit files outside the workspace and use the internet without asking (use with caution)"]
+        ]
+      },
+      { "key": "chatFontSize", "label": "Chat text size (px)", "type": "text", "default": "16" },
+      { "key": "vadHangoverMs", "label": "Voice pause tolerance (ms)", "type": "text", "default": "800" },
+      { "key": "micDevice", "label": "Microphone (set from the panel Settings)", "type": "text", "default": "" },
+      { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
+      { "key": "modelPick", "label": "Model (blank = account default)", "type": "text", "default": "" }
+    ]
   }
 ]

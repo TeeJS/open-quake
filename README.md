@@ -38,8 +38,10 @@ It gives you:
   cities, digital or analog), a **[Music controller](docs/music.md)** (now-playing +
   transport + app grid), a **[Meeting](docs/meeting.md)** app (one-tap mute/video/accept
   /decline/leave for Zoom and Teams), a **[System Monitor](docs/system-monitor.md)** (live
-  CPU/GPU/RAM/disk/network/battery), and an **[Open WebUI chat](docs/ai-chat.md)** you can
-  **talk to by holding the knob**. → [Apps](docs/apps.md)
+  CPU/GPU/RAM/disk/network/battery), an **[Open WebUI chat](docs/ai-chat.md)** you can
+  **talk to by holding the knob**, and a **[Claude Code](docs/claude-voice.md)** app — a real
+  Claude Code session on the panel, tap the knob to start/stop a hands-free conversation, with
+  touch approvals and a full text transcript. → [Apps](docs/apps.md)
 - **Theming** — a global **light / dark / system** mode and an **accent color** (with savable
   presets) that drives the panel, the bundled apps, and the knob's RGB ring; web dashboards
   follow the light/dark mode, and any page can override the theme in its Advanced settings.
@@ -64,7 +66,7 @@ It gives you:
 Detailed guides live in **[docs/](docs/README.md)**:
 
 - [The editor](docs/editor.md) · [Web dashboards](docs/dashboards.md) · [Bundled apps](docs/apps.md)
-- [Music controller](docs/music.md) · [System monitor](docs/system-monitor.md) · [Open WebUI chat + voice](docs/ai-chat.md)
+- [Music controller](docs/music.md) · [System monitor](docs/system-monitor.md) · [Open WebUI chat + voice](docs/ai-chat.md) · [Claude Code voice + text](docs/claude-voice.md)
 - [Home Assistant integration](docs/home-assistant.md) · [Settings & knob lighting](docs/settings.md) · [Reserved Display](docs/reserved-display.md) · [Building & how it works](docs/building.md) · [Device protocol](docs/DEVICE_PROTOCOL.md)
 
 ## Companion project

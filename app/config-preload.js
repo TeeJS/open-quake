@@ -5,6 +5,7 @@ const { pathToFileURL } = require('url');
 
 contextBridge.exposeInMainWorld('openQuakeConfig', {
   getConfig() { return ipcRenderer.invoke('getConfig'); },
+  getAppVersion() { return ipcRenderer.invoke('getAppVersion'); },
   getApps() { return ipcRenderer.invoke('getApps'); },
   saveConfig(config) { return ipcRenderer.invoke('saveConfigFromEditor', config); },
   listOAuthProviders() { return ipcRenderer.invoke('listOAuthProviders'); },
@@ -35,6 +36,12 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   getHaCache() { return ipcRenderer.invoke('getHaCache'); },
   refreshHaCache() { return ipcRenderer.invoke('refreshHaCache'); },
   fetchHaEntityState(entityId) { return ipcRenderer.invoke('fetchHaEntityState', entityId); },
+  // Claude Code voice app: candidate project directories under the configured projects root (Phase 3).
+  listProjectDirs(root) { return ipcRenderer.invoke('listProjectDirs', root); },
+  // Claude Code voice app: open the user-customizable panel prompt file in the default editor.
+  editClaudeVoicePrompt() { return ipcRenderer.invoke('editClaudeVoicePrompt'); },
+  // Voice apps: resolved CLI path for the app's agent (claude/codex), or null if not installed.
+  probeVoiceCli(appId) { return ipcRenderer.invoke('probeVoiceCli', appId); },
   pathToFileURL(filePath) {
     try { return pathToFileURL(filePath).href; }
     catch (e) { return ''; }
