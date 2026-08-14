@@ -459,6 +459,7 @@ const officeActions = createOfficeActions({
   },
   focusTeams: () => meetingControl.focusTeamsWindow(),
   focusApp: names => meetingControl.focusProcessWindow(names),
+  hasAppWindow: names => meetingControl.hasProcessWindow(names),
   tapCombo: combo => mediaKeys.tapCombo(combo),
   fs,
 });
@@ -505,7 +506,7 @@ function activeServedAppConfig(appId) {
     // Office shortcut defaults depend on the app chosen for that header slot. When a key has
     // never been saved, leave it absent so both renderer and host action code can select the
     // chosen app's defaults instead of the manifest's original Teams/Outlook/Word/Excel values.
-    if (appId === 'office' && /^app[1-4]Shortcut[1-4](Icon|Label|Keys)$/.test(o.key) && !(o.key in opts)) return;
+    if (appId === 'office' && /^app[1-4]Shortcut[1-8](Icon|Label|Keys)$/.test(o.key) && !(o.key in opts)) return;
     let v = (o.key in opts) ? opts[o.key] : o.default;
     if (o.type === 'bool') v = !!v;
     options[o.key] = v == null ? '' : v;

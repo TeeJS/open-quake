@@ -190,6 +190,15 @@
     });
   }
 
+  function shortcutCount(value) {
+    var count = Number(value);
+    return Number.isInteger(count) && count >= 4 && count <= 8 ? count : 4;
+  }
+
+  function shortcutDefault(defaults, index) {
+    return defaults[index] || { label: 'Shortcut ' + (index + 1), keys: '', icon: '⌨' };
+  }
+
   function renderConfiguredControls(options) {
     officeOptions = options || {};
     document.querySelectorAll('[data-app-index]').forEach(function (button) {
@@ -205,12 +214,16 @@
     var appNumber = selectedAppIndex + 1;
     var selectedAppId = APP_PRESENTATION[officeOptions['app' + appNumber]] ? officeOptions['app' + appNumber] : DEFAULT_APPS[selectedAppIndex];
     var defaults = DEFAULT_SHORTCUTS_BY_APP[selectedAppId] || DEFAULT_SHORTCUTS_BY_APP.office;
+    var count = shortcutCount(officeOptions['app' + appNumber + 'ShortcutCount']);
+    document.querySelector('.control-deck').style.setProperty('--shortcut-count', count);
     document.querySelectorAll('[data-shortcut-index]').forEach(function (button) {
       var index = Number(button.getAttribute('data-shortcut-index'));
+      var fallback = shortcutDefault(defaults, index);
       var prefix = 'app' + appNumber + 'Shortcut' + (index + 1);
-      var label = String(officeOptions[prefix + 'Label'] || defaults[index].label);
-      var keys = String(officeOptions[prefix + 'Keys'] == null ? defaults[index].keys : officeOptions[prefix + 'Keys']);
-      var icon = String(officeOptions[prefix + 'Icon'] || defaults[index].icon);
+      var label = String(officeOptions[prefix + 'Label'] || fallback.label);
+      var keys = String(officeOptions[prefix + 'Keys'] == null ? fallback.keys : officeOptions[prefix + 'Keys']);
+      var icon = String(officeOptions[prefix + 'Icon'] || fallback.icon);
+      button.hidden = index >= count;
       button.querySelector('.shortcut-glyph').textContent = icon || '⌨';
       button.querySelector('strong').textContent = label || 'Shortcut ' + (index + 1);
       button.querySelector('small').textContent = keys || 'Not configured';

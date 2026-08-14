@@ -120,7 +120,12 @@ function normalizeMode(value) {
   return value === 'web' || value === 'desktop' ? value : 'prefer-desktop';
 }
 
-function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, focusApp, tapCombo, fs, env = process.env }) {
+function normalizeShortcutCount(value) {
+  const count = Number(value);
+  return Number.isInteger(count) && count >= 4 && count <= 8 ? count : 4;
+}
+
+function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, focusApp, hasAppWindow, tapCombo, fs, env = process.env }) {
   if (typeof getOptions !== 'function') throw new TypeError('getOptions is required');
   if (typeof launchApp !== 'function') throw new TypeError('launchApp is required');
   if (typeof openExternal !== 'function') throw new TypeError('openExternal is required');
@@ -128,21 +133,32 @@ function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, 
   if (!fs) throw new TypeError('fs is required');
   const lastMethods = {};
 
-  async function launchDesktop(appId) {
+  async function launchDesktop(appId, focusExisting) {
+    const app = OFFICE_APPS[appId];
+    if (!focusExisting) {
+      const running = typeof hasAppWindow === 'function' ? await hasAppWindow(app.processes) : { ok: false };
+      if (running && running.ok) return { ok: true, method: 'desktop', focused: false, alreadyRunning: true };
+    }
+
     if (appId === 'teams') {
-      const focused = typeof focusTeams === 'function' ? await focusTeams() : { ok: false };
-      if (focused && focused.ok) return { ok: true, method: 'desktop', focused: true };
+      if (focusExisting) {
+        const focused = typeof focusTeams === 'function' ? await focusTeams() : { ok: false };
+        if (focused && focused.ok) return { ok: true, method: 'desktop', focused: true };
+      }
       const opened = await openExternal('msteams://teams.microsoft.com');
       return { ok: !!opened, method: 'desktop', focused: false, error: opened ? undefined : 'Teams desktop app was not found.' };
     }
 
-    const app = OFFICE_APPS[appId];
+    if (focusExisting) {
+      const focused = typeof focusApp === 'function' ? await focusApp(app.processes) : { ok: false };
+      if (focused && focused.ok) return { ok: true, method: 'desktop', focused: true };
+    }
     for (const executable of app.executables) {
       for (const candidate of officeInstallCandidates(executable, env, fs)) {
-        if (await launchApp(candidate)) return { ok: true, method: 'desktop' };
+        if (await launchApp(candidate)) return { ok: true, method: 'desktop', focused: false };
       }
     }
-    return { ok: false, method: 'desktop', error: 'The ' + appId + ' desktop app was not found.' };
+    return { ok: false, method: 'desktop', focused: false, error: 'The ' + appId + ' desktop app was not found.' };
   }
 
   async function runApp(index) {
@@ -151,7 +167,8 @@ function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, 
     const appId = OFFICE_APPS[options['app' + (index + 1)]] ? options['app' + (index + 1)] : DEFAULT_APPS[index];
     const mode = normalizeMode(options['mode' + (index + 1)]);
     if (mode !== 'web') {
-      const local = await launchDesktop(appId);
+      const keepPanelForRunningApp = mode === 'desktop' && options['desktopSwitch' + (index + 1)] === 'shortcuts';
+      const local = await launchDesktop(appId, !keepPanelForRunningApp);
       if (local.ok || mode === 'desktop') {
         if (local.ok) lastMethods[index] = 'desktop';
         return Object.assign({ app: appId }, local);
@@ -164,12 +181,14 @@ function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, 
 
   async function runShortcut(appIndex, shortcutIndex) {
     if (!Number.isInteger(appIndex) || appIndex < 0 || appIndex > 3
-      || !Number.isInteger(shortcutIndex) || shortcutIndex < 0 || shortcutIndex > 3) {
+      || !Number.isInteger(shortcutIndex) || shortcutIndex < 0 || shortcutIndex > 7) {
       return { ok: false, error: 'unknown Office shortcut slot' };
     }
     const options = getOptions() || {};
     const appId = OFFICE_APPS[options['app' + (appIndex + 1)]] ? options['app' + (appIndex + 1)] : DEFAULT_APPS[appIndex];
-    const fallback = DEFAULT_SHORTCUTS_BY_APP[appId][shortcutIndex];
+    const shortcutCount = normalizeShortcutCount(options['app' + (appIndex + 1) + 'ShortcutCount']);
+    if (shortcutIndex >= shortcutCount) return { ok: false, error: 'unknown Office shortcut slot' };
+    const fallback = DEFAULT_SHORTCUTS_BY_APP[appId][shortcutIndex] || { combo: '' };
     const key = 'app' + (appIndex + 1) + 'Shortcut' + (shortcutIndex + 1) + 'Keys';
     const combo = String(Object.prototype.hasOwnProperty.call(options, key) ? options[key] : fallback.combo).trim();
     if (!combo) return { ok: false, error: 'No key combination is configured.' };
@@ -191,4 +210,4 @@ function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, 
   return { run };
 }
 
-module.exports = { DEFAULT_APPS, DEFAULT_SHORTCUTS_BY_APP, OFFICE_APPS, createOfficeActions, normalizeMode, officeInstallCandidates };
+module.exports = { DEFAULT_APPS, DEFAULT_SHORTCUTS_BY_APP, OFFICE_APPS, createOfficeActions, normalizeMode, normalizeShortcutCount, officeInstallCandidates };

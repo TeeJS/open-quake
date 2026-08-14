@@ -50,11 +50,18 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   const root = path.join(__dirname, '..', 'app');
   const html = fs.readFileSync(path.join(root, 'office.html'), 'utf8');
   const script = fs.readFileSync(path.join(root, 'office.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'office.css'), 'utf8');
+  const editor = fs.readFileSync(path.join(root, 'config.js'), 'utf8');
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'apps', 'apps.json'), 'utf8'));
+  const office = manifest.find(app => app.id === 'office');
 
-  assert.equal((html.match(/data-shortcut-index=/g) || []).length, 4);
+  assert.equal((html.match(/data-shortcut-index=/g) || []).length, 8);
   assert.equal((html.match(/data-app-index=/g) || []).length, 4);
   assert.equal((html.match(/class="header-action(?: selected)?"/g) || []).length, 4);
-  assert.equal((html.match(/class="teams-control shortcut-control/g) || []).length, 4);
+  assert.equal((html.match(/class="teams-control shortcut-control/g) || []).length, 8);
+  assert.deepEqual(office.options.find(option => option.key === 'app1ShortcutCount').choices.map(choice => choice[0]), ['4', '5', '6', '7', '8']);
+  assert.deepEqual(office.options.find(option => option.key === 'desktopSwitch1').choices.map(choice => choice[0]), ['focus', 'shortcuts']);
+  assert.equal(office.options.filter(option => /^app[1-4]Shortcut[1-8]Keys$/.test(option.key)).length, 32);
   assert.match(html, /id="presenceAvatar"/);
   assert.doesNotMatch(html, /id="moreToggle"/);
   assert.doesNotMatch(script, /window\.open\s*\(/);
@@ -62,6 +69,10 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   assert.match(script, /\/office-icons\//);
   assert.match(script, /DEFAULT_SHORTCUTS_BY_APP/);
   assert.match(script, /prefix \+ 'Icon'/);
+  assert.match(script, /--shortcut-count/);
+  assert.match(css, /repeat\(var\(--shortcut-count\), minmax\(0, 1fr\)\)/);
+  assert.match(editor, /Keep Office panel visible.*will not focus or relaunch it/);
+  assert.match(editor, /If the app is closed, it still launches/);
 });
 
 test('Office header uses bundled deterministic Microsoft product artwork', () => {

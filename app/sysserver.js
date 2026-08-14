@@ -360,6 +360,8 @@ function allowedOfficeExternalUrl(value) {
     const allowed = host === 'teams.microsoft.com'
       || host === 'teams.live.com'
       || host === 'outlook.office.com'
+      || host === 'outlook.office365.com'
+      || host === 'outlook.live.com'
       || host === 'www.office.com'
       || host === 'office.com';
     return allowed ? parsed.href : null;
@@ -446,7 +448,7 @@ async function handler(req, res) {
   }
   if (url.indexOf('/api/office/action/') === 0) {
     const match = /^\/api\/office\/action\/(app)\/([0-3])$/.exec(url)
-      || /^\/api\/office\/action\/(shortcut)\/([0-3])\/([0-3])$/.exec(url);
+      || /^\/api\/office\/action\/(shortcut)\/([0-3])\/([0-7])$/.exec(url);
     let result = { ok: false, error: 'unknown Office action' };
     if (match && typeof onOfficeAction === 'function') {
       try { result = await onOfficeAction(match[1], Number(match[2]), match[3] == null ? undefined : Number(match[3])); }

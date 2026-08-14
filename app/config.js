@@ -466,7 +466,8 @@
   };
   function officeShortcutDefault(appId, shortcutIndex, suffix) {
     const set = OFFICE_SHORTCUT_DEFAULTS[appId] || OFFICE_SHORTCUT_DEFAULTS.office;
-    return set[shortcutIndex - 1][suffix === 'Label' ? 0 : suffix === 'Keys' ? 1 : 2];
+    const fallback = [`Shortcut ${shortcutIndex}`, '', '⌨'];
+    return (set[shortcutIndex - 1] || fallback)[suffix === 'Label' ? 0 : suffix === 'Keys' ? 1 : 2];
   }
   function officeChoiceHtml(def, key, value) {
     const option = (def.options || []).find(item => item.key === key);
@@ -484,7 +485,9 @@
       return (key in g.options) ? g.options[key] : officeShortcutDefault(value('app' + appIndex), shortcutIndex, suffix);
     };
     const appRows = [1, 2, 3, 4].map(index => {
-      const shortcuts = [1, 2, 3, 4].map(shortcutIndex => `<div class="row" style="margin-top:6px">
+      const desktopOnly = value('mode' + index) === 'desktop';
+      const shortcutCount = Math.max(4, Math.min(8, Number(value('app' + index + 'ShortcutCount')) || 4));
+      const shortcuts = Array.from({ length: shortcutCount }, (_, shortcutOffset) => shortcutOffset + 1).map(shortcutIndex => `<div class="row" style="margin-top:6px">
           <input class="officeShortcutIcon" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" list="officeShortcutIcons" value="${esc(shortcutValue(index, shortcutIndex, 'Icon'))}" maxlength="8" aria-label="Shortcut icon" title="Choose or paste an emoji" style="width:58px;font:20px 'Segoe UI Emoji';text-align:center">
           <input class="officeShortcutLabel" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" value="${esc(shortcutValue(index, shortcutIndex, 'Label'))}" placeholder="button label" style="width:160px">
           <input class="officeShortcutKeys" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" readonly value="${esc(shortcutValue(index, shortcutIndex, 'Keys'))}" placeholder="click, then press keys" style="width:200px;margin-left:8px">
@@ -494,13 +497,16 @@
         <legend style="padding:0 6px;color:#9fb3c8;font-size:13px">Header app ${index}</legend>
         <div class="row"><label>Application</label><select class="officeApp" data-index="${index}">${officeChoiceHtml(def, 'app' + index, value('app' + index))}</select></div>
         <div class="row"><label>Open with</label><select class="officeMode" data-index="${index}">${officeChoiceHtml(def, 'mode' + index, value('mode' + index))}</select></div>
+        ${desktopOnly ? `<div class="row"><label>When already open</label><select class="officeDesktopSwitch" data-index="${index}">${officeChoiceHtml(def, 'desktopSwitch' + index, value('desktopSwitch' + index))}</select></div>
+        <p class="hint" style="margin:4px 0 8px"><b>Keep Office panel visible</b> means tapping this header app will not focus or relaunch it when it already has an open window; it only changes the shortcut buttons below. If the app is closed, it still launches. Tapping a shortcut then focuses the app and sends the configured keys.</p>` : ''}
+        <div class="row"><label>Shortcuts</label><select class="officeShortcutCount" data-index="${index}">${officeChoiceHtml(def, 'app' + index + 'ShortcutCount', shortcutCount)}</select></div>
         <p class="hint" style="margin:8px 0 4px">Bottom-row shortcuts when this app is selected</p>
         ${shortcuts}
       </fieldset>`;
     }).join('');
     return `<div id="officeOptions" style="margin-top:10px">
         <p class="sectitle">Office header applications</p>
-        <p class="hint">These four apps appear in the panel header. Selecting one opens it and changes the four bottom buttons to that app's shortcuts. Changing an application restores sensible defaults for its four shortcuts. <b>Prefer desktop</b> falls back to the web app when needed.</p>
+        <p class="hint">These four apps appear in the panel header. Selecting one opens it and shows 4–8 equally sized shortcut buttons for that app. Changing an application restores its shortcut defaults. <b>Prefer desktop</b> falls back to the web app when needed.</p>
         ${appRows}
         <datalist id="officeShortcutIcons">
           ${['🎙️','📹','📞','📴','✉️','↩️','↪️','🚀','📄','💾','🔍','↶','📊','🖥️','➕','▶️','📝','☑️','📁','📋','📥','↻','✨','⚡','⭐','🔒','🔔','✅'].map(icon => `<option value="${icon}">`).join('')}
@@ -513,7 +519,7 @@
       select.onchange = event => {
         const appIndex = event.target.dataset.index;
         g.options['app' + appIndex] = event.target.value;
-        [1, 2, 3, 4].forEach(shortcutIndex => {
+        [1, 2, 3, 4, 5, 6, 7, 8].forEach(shortcutIndex => {
           ['Icon', 'Label', 'Keys'].forEach(suffix => {
             const key = `app${appIndex}Shortcut${shortcutIndex}${suffix}`;
             const next = officeShortcutDefault(event.target.value, shortcutIndex, suffix);
@@ -526,7 +532,24 @@
       };
     });
     document.querySelectorAll('.officeMode').forEach(select => {
-      select.onchange = event => { g.options['mode' + event.target.dataset.index] = event.target.value; markDirty(); };
+      select.onchange = event => {
+        g.options['mode' + event.target.dataset.index] = event.target.value;
+        markDirty();
+        render();
+      };
+    });
+    document.querySelectorAll('.officeDesktopSwitch').forEach(select => {
+      select.onchange = event => {
+        g.options['desktopSwitch' + event.target.dataset.index] = event.target.value;
+        markDirty();
+      };
+    });
+    document.querySelectorAll('.officeShortcutCount').forEach(select => {
+      select.onchange = event => {
+        g.options['app' + event.target.dataset.index + 'ShortcutCount'] = event.target.value;
+        markDirty();
+        render();
+      };
     });
     document.querySelectorAll('.officeShortcutLabel').forEach(input => {
       input.oninput = event => {

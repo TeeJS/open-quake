@@ -75,11 +75,25 @@ if ([OqFocus]::IsIconic($hWnd)) { [OqFocus]::ShowWindowAsync($hWnd, 9) | Out-Nul
 Write-Output 'OK'
 `.trim();
 
-function focusProcessWindow(processNames) {
-  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: 'Windows only' });
-  const names = (Array.isArray(processNames) ? processNames : [])
+const FIND_WINDOW_PS = names => `
+$names = @(${names.map(name => "'" + name + "'").join(',')})
+foreach ($n in $names) {
+  $p = Get-Process -Name $n -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+  if ($p) { Write-Output 'OK'; exit 0 }
+}
+Write-Output 'NOTFOUND'
+exit 1
+`.trim();
+
+function normalizeProcessNames(processNames) {
+  return (Array.isArray(processNames) ? processNames : [])
     .map(name => String(name || '').replace(/\.exe$/i, ''))
     .filter(name => /^[A-Za-z0-9._-]+$/.test(name));
+}
+
+function focusProcessWindow(processNames) {
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: 'Windows only' });
+  const names = normalizeProcessNames(processNames);
   if (!names.length) return Promise.resolve({ ok: false, error: 'No process names supplied' });
   return new Promise(resolve => {
     let child;
@@ -93,6 +107,26 @@ function focusProcessWindow(processNames) {
       const trimmed = out.trim();
       if (trimmed === 'OK') return resolve({ ok: true });
       resolve({ ok: false, error: trimmed === 'NOTFOUND' ? 'Application window not found.' : (err.trim() || 'unknown focus failure') });
+    });
+  });
+}
+
+function hasProcessWindow(processNames) {
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: 'Windows only' });
+  const names = normalizeProcessNames(processNames);
+  if (!names.length) return Promise.resolve({ ok: false, error: 'No process names supplied' });
+  return new Promise(resolve => {
+    let child;
+    try { child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', FIND_WINDOW_PS(names)], { windowsHide: true }); }
+    catch (e) { return resolve({ ok: false, error: 'spawn: ' + e.message }); }
+    let out = '', err = '';
+    child.stdout.on('data', d => { out += d.toString(); });
+    child.stderr.on('data', d => { err += d.toString(); });
+    child.on('error', e => resolve({ ok: false, error: 'spawn: ' + e.message }));
+    child.on('close', () => {
+      const trimmed = out.trim();
+      if (trimmed === 'OK') return resolve({ ok: true });
+      resolve({ ok: false, error: trimmed === 'NOTFOUND' ? 'Application window not found.' : (err.trim() || 'unknown process check failure') });
     });
   });
 }
@@ -120,4 +154,4 @@ function sendZoomAction(combo, deps) {
   return { ok: sent };
 }
 
-module.exports = { TEAMS_COMBO, ZOOM_DEFAULT_COMBO, focusProcessWindow, focusTeamsWindow, sendTeamsAction, sendZoomAction };
+module.exports = { TEAMS_COMBO, ZOOM_DEFAULT_COMBO, focusProcessWindow, focusTeamsWindow, hasProcessWindow, sendTeamsAction, sendZoomAction };

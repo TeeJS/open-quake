@@ -5,13 +5,16 @@ const assert = require('node:assert/strict');
 const { createOfficeActions } = require('../app/officeActions');
 
 function harness(options, overrides) {
-  const calls = { apps: [], urls: [], combos: [], focus: [] };
+  const calls = { apps: [], urls: [], combos: [], focus: [], running: [] };
+  const focusAppResult = overrides && overrides.focusAppResult;
+  const hasAppWindowResult = overrides && overrides.hasAppWindowResult;
   const deps = Object.assign({
     getOptions: () => options || {},
     launchApp: async value => { calls.apps.push(value); return false; },
     openExternal: async value => { calls.urls.push(value); return true; },
     focusTeams: async () => ({ ok: false, error: 'not running' }),
-    focusApp: async names => { calls.focus.push(names); return { ok: true }; },
+    focusApp: async names => { calls.focus.push(names); return focusAppResult || { ok: false, error: 'not running' }; },
+    hasAppWindow: async names => { calls.running.push(names); return hasAppWindowResult || { ok: false, error: 'not running' }; },
     tapCombo: value => { calls.combos.push(value); return true; },
     fs: { existsSync: () => false },
     env: {},
@@ -51,6 +54,55 @@ test('Office desktop preference opens an installed local app and does not fall b
   assert.deepEqual(calls.urls, []);
 });
 
+test('Office desktop apps focus an existing window instead of launching another copy', async () => {
+  const { actions, calls } = harness({ app1: 'outlook', mode1: 'desktop' }, {
+    focusAppResult: { ok: true },
+  });
+  const result = await actions.run('app', 0);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.method, 'desktop');
+  assert.equal(result.focused, true);
+  assert.deepEqual(calls.focus, [['olk', 'OUTLOOK']]);
+  assert.deepEqual(calls.apps, []);
+  assert.deepEqual(calls.urls, []);
+});
+
+test('Office desktop-only app switch can keep the panel visible when the app is already open', async () => {
+  const { actions, calls } = harness({
+    app1: 'outlook',
+    mode1: 'desktop',
+    desktopSwitch1: 'shortcuts',
+  }, {
+    hasAppWindowResult: { ok: true },
+  });
+  const result = await actions.run('app', 0);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.alreadyRunning, true);
+  assert.equal(result.focused, false);
+  assert.deepEqual(calls.running, [['olk', 'OUTLOOK']]);
+  assert.deepEqual(calls.focus, []);
+  assert.deepEqual(calls.apps, []);
+});
+
+test('Office desktop-only app switch still launches the app when no window is open', async () => {
+  const { actions, calls } = harness({
+    app1: 'word',
+    mode1: 'desktop',
+    desktopSwitch1: 'shortcuts',
+  }, {
+    launchApp: async value => { calls.apps.push(value); return true; },
+  });
+  const result = await actions.run('app', 0);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.focused, false);
+  assert.deepEqual(calls.running, [['WINWORD']]);
+  assert.deepEqual(calls.focus, []);
+  assert.deepEqual(calls.apps, ['WINWORD.EXE']);
+});
+
 test('Office desktop-only mode reports a missing app without opening the web version', async () => {
   const { actions, calls } = harness({ app2: 'powerpoint', mode2: 'desktop' });
   const result = await actions.run('app', 1);
@@ -72,7 +124,9 @@ test('Office web mode skips desktop discovery', async () => {
 });
 
 test('Office shortcut slots send configured key combinations and respect cleared slots', async () => {
-  const { actions, calls } = harness({ app2: 'powerpoint', app2Shortcut1Keys: 'Ctrl+Shift+S', app2Shortcut2Keys: '' });
+  const { actions, calls } = harness({ app2: 'powerpoint', app2Shortcut1Keys: 'Ctrl+Shift+S', app2Shortcut2Keys: '' }, {
+    focusAppResult: { ok: true },
+  });
   const configured = await actions.run('shortcut', 1, 0);
   const cleared = await actions.run('shortcut', 1, 1);
 
@@ -91,6 +145,19 @@ test('Office shortcut defaults follow the app selected in each header slot', asy
   assert.equal(result.ok, true);
   assert.equal(result.combo, 'F5');
   assert.deepEqual(calls.combos, ['F5']);
+});
+
+test('Office app slots support up to eight configured shortcuts and reject hidden slots', async () => {
+  const configured = harness({ app1: 'word', app1ShortcutCount: '8', app1Shortcut8Keys: 'Ctrl+Alt+8' });
+  const eighth = await configured.actions.run('shortcut', 0, 7);
+  const defaultCount = harness({ app1: 'word', app1Shortcut5Keys: 'Ctrl+Alt+5' });
+  const hiddenFifth = await defaultCount.actions.run('shortcut', 0, 4);
+
+  assert.equal(eighth.ok, true);
+  assert.equal(eighth.combo, 'Ctrl+Alt+8');
+  assert.deepEqual(configured.calls.combos, ['Ctrl+Alt+8']);
+  assert.equal(hiddenFifth.ok, false);
+  assert.deepEqual(defaultCount.calls.combos, []);
 });
 
 test('Office web shortcuts focus a browser after a web app is selected', async () => {

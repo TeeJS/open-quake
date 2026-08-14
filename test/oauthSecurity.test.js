@@ -97,6 +97,10 @@ test('Office operations require and rotate a bounded session capability', async 
 
 test('Office external actions use the host launcher without racing the calendar capability', async () => {
   const opened = [];
+  const teamsMeetingUrl = 'https://teams.microsoft.com/l/meetup-join/example';
+  const calendarUrl = 'https://outlook.office.com/calendar';
+  const workEventUrl = 'https://outlook.office365.com/calendar/item/work-event';
+  const personalEventUrl = 'https://outlook.live.com/calendar/item/personal-event';
   const port = await sysserver.start({
     onOpenExternal: value => { opened.push(value); return true; },
     getOfficeData: async () => ({ ok: true, events: [] }),
@@ -122,19 +126,34 @@ test('Office external actions use the host launcher without racing the calendar 
   assert.equal(calendar.body.ok, true);
   assert.deepEqual(opened, ['https://teams.microsoft.com/v2/']);
 
+  for (const target of [teamsMeetingUrl, calendarUrl, workEventUrl, personalEventUrl]) {
+    const result = await request(port, '/api/office/open?url=' + encodeURIComponent(target), {
+      'Sec-Fetch-Site': 'same-origin',
+    });
+    assert.equal(result.status, 200);
+    assert.equal(result.body.ok, true);
+  }
+  assert.deepEqual(opened, [
+    'https://teams.microsoft.com/v2/',
+    teamsMeetingUrl,
+    calendarUrl,
+    workEventUrl,
+    personalEventUrl,
+  ]);
+
   const rejectedScheme = await request(port, '/api/office/open?url=' + encodeURIComponent('file:///C:/Windows/System32/calc.exe'), {
     'Sec-Fetch-Site': 'same-origin',
   });
   assert.equal(rejectedScheme.status, 200);
   assert.equal(rejectedScheme.body.ok, false);
-  assert.equal(opened.length, 1);
+  assert.equal(opened.length, 5);
 
   const rejectedHost = await request(port, '/api/office/open?url=' + encodeURIComponent('https://example.com/'), {
     'Sec-Fetch-Site': 'same-origin',
   });
   assert.equal(rejectedHost.status, 200);
   assert.equal(rejectedHost.body.ok, false);
-  assert.equal(opened.length, 1);
+  assert.equal(opened.length, 5);
 });
 
 test('Office app and keypress actions are fixed host callbacks protected by same-origin checks', async () => {
@@ -145,16 +164,21 @@ test('Office app and keypress actions are fixed host callbacks protected by same
   const crossSite = await request(port, '/api/office/action/app/2', { 'Sec-Fetch-Site': 'cross-site' });
   const appAction = await request(port, '/api/office/action/app/2', { 'Sec-Fetch-Site': 'same-origin' });
   const shortcut = await request(port, '/api/office/action/shortcut/3/1', { 'Sec-Fetch-Site': 'same-origin' });
+  const eighthShortcut = await request(port, '/api/office/action/shortcut/3/7', { 'Sec-Fetch-Site': 'same-origin' });
+  const ninthShortcut = await request(port, '/api/office/action/shortcut/3/8', { 'Sec-Fetch-Site': 'same-origin' });
   const arbitrary = await request(port, '/api/office/action/app/99', { 'Sec-Fetch-Site': 'same-origin' });
 
   assert.equal(crossSite.status, 403);
   assert.equal(appAction.status, 200);
   assert.equal(appAction.body.ok, true);
   assert.equal(shortcut.body.ok, true);
+  assert.equal(eighthShortcut.body.ok, true);
+  assert.equal(ninthShortcut.body.ok, false);
   assert.equal(arbitrary.body.ok, false);
   assert.deepEqual(calls, [
     { kind: 'app', index: 2, shortcutIndex: undefined },
     { kind: 'shortcut', index: 3, shortcutIndex: 1 },
+    { kind: 'shortcut', index: 3, shortcutIndex: 7 },
   ]);
 });
 
