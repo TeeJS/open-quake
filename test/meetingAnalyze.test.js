@@ -1,6 +1,6 @@
 'use strict';
-// meetingAnalyze: AI routing (claude vs codex), one-at-a-time, markdown filed next to the
-// transcript, and clear errors for missing CLIs / failed runs. Fake spawn, real fs in temp dirs.
+// meetingAnalyze: AI routing (claude vs codex vs copilot), one-at-a-time, markdown filed next to
+// the transcript, and clear errors for missing CLIs / failed runs. Fake spawn, real fs in temp dirs.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -51,6 +51,44 @@ function setup(behavior, aiSetting, finders) {
   return { processed, spawns, an };
 }
 function settle() { return new Promise(r => setTimeout(r, 50)); }
+// Fake `copilot --acp`: a minimal ACP JSON-RPC responder over the same PassThrough-based fake
+// process shape as fakeSpawnFactory, but request/response driven (copilot's session/prompt only
+// resolves at end of turn -- see copilotvoice-session.js's runCopilotBatchPrompt) rather than a
+// single canned stdout blob. Reads newline-delimited JSON-RPC off stdin as it arrives and replies
+// to initialize / session/new / session/set_config_option / session/prompt in turn, emitting one
+// agent_message_chunk session/update before the final session/prompt response.
+function fakeCopilotAcpSpawnFactory(spawns, opts) {
+  opts = opts || {};
+  return (cmd, args, spawnOpts) => {
+    const proc = new EventEmitter();
+    proc.stdout = new PassThrough();
+    proc.stderr = new PassThrough();
+    proc.stdin = new PassThrough();
+    proc.kill = () => {};
+    const rec = { cmd, args, opts: spawnOpts, calls: [] };
+    spawns.push(rec);
+    let buf = '';
+    const write = obj => proc.stdout.write(JSON.stringify(obj) + '\n');
+    proc.stdin.on('data', d => {
+      buf += d;
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx); buf = buf.slice(idx + 1);
+        if (!line.trim()) continue;
+        let m; try { m = JSON.parse(line); } catch (e) { continue; }
+        rec.calls.push(m.method);
+        if (m.method === 'initialize') { write({ jsonrpc: '2.0', id: m.id, result: {} }); continue; }
+        if (m.method === 'session/new') { write({ jsonrpc: '2.0', id: m.id, result: { sessionId: 'test-session' } }); continue; }
+        if (m.method === 'session/set_config_option') { write({ jsonrpc: '2.0', id: m.id, result: {} }); continue; }
+        if (m.method === 'session/prompt') {
+          write({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'test-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: opts.text || '' } } } });
+          write({ jsonrpc: '2.0', id: m.id, result: { stopReason: opts.stopReason || 'end_turn' } });
+        }
+      }
+    });
+    return proc;
+  };
+}
 // Wait until the analyzer is fully idle (fixed delays are flaky when the suite runs files in parallel).
 async function drained(an, timeoutMs = 3000) {
   const t0 = Date.now();
@@ -87,6 +125,46 @@ test('codex route: exec with stdin marker + output-last-message file', async () 
   assert.ok(s.spawns[0].args.includes('--skip-git-repo-check'));
   assert.equal(s.spawns[0].opts.shell, true);
   assert.equal(fs.readFileSync(path.join(s.processed, 'm-analysis.md'), 'utf8'), 'codex analysis');
+});
+
+test('copilot route: one-shot ACP session, agent_message_chunk filed as .md', async () => {
+  const processed = fs.mkdtempSync(path.join(os.tmpdir(), 'oqx-an-cop-'));
+  fs.writeFileSync(path.join(processed, 'm.json'), JSON.stringify({ segments: [] }));
+  const spawns = [];
+  const an = createMeetingAnalyzer({
+    resolveFolders: () => ({ unprocessed: processed, processed }),
+    resolveAi: () => 'copilot',
+    spawn: fakeCopilotAcpSpawnFactory(spawns, { text: '# Meeting Analysis\ncopilot notes' }),
+    findClaudeExe: () => null, findCodexExe: () => null, findCopilotExe: () => 'copilot.cmd',
+  });
+  assert.equal(an.start('m.json').ok, true);
+  await drained(an);
+  assert.equal(spawns[0].cmd, 'copilot');
+  assert.deepEqual(spawns[0].args, ['--acp']);
+  assert.equal(spawns[0].opts.shell, true);
+  // allow_all is set (awaited) before the prompt turn, so a batch job never waits on an approval overlay
+  assert.deepEqual(spawns[0].calls, ['initialize', 'session/new', 'session/set_config_option', 'session/prompt']);
+  assert.equal(fs.readFileSync(path.join(processed, 'm-analysis.md'), 'utf8'), '# Meeting Analysis\ncopilot notes');
+  const st = an.getState();
+  assert.equal(st.running, false);
+  assert.equal(st.error, null);
+});
+
+test('missing copilot CLI is a clear error; nothing spawned', async () => {
+  const processed = fs.mkdtempSync(path.join(os.tmpdir(), 'oqx-an-cop2-'));
+  fs.writeFileSync(path.join(processed, 'm.json'), '{}');
+  const spawns = [];
+  const an = createMeetingAnalyzer({
+    resolveFolders: () => ({ unprocessed: processed, processed }),
+    resolveAi: () => 'copilot',
+    spawn: fakeCopilotAcpSpawnFactory(spawns, {}),
+    findClaudeExe: () => null, findCodexExe: () => null, findCopilotExe: () => null,
+  });
+  an.start('m.json');
+  await drained(an);
+  assert.equal(spawns.length, 0);
+  assert.match(an.getState().error.error, /Copilot CLI not found/);
+  assert.equal(fs.existsSync(path.join(processed, 'm-analysis.md')), false);
 });
 
 test('missing CLI is a clear error; nothing spawned', async () => {

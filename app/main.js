@@ -56,6 +56,7 @@ const { createReservedDisplay } = require('./reservedDisplay'); // Windows helpe
 const { createVoicePanelHost } = require('./voicepanel-host'); // generic voice-panel app host (state/SSE/speech/STT-TTS plumbing)
 const { createClaudeVoiceAdapter } = require('./claudevoice-adapter'); // Claude Code session adapter (CLI spawn, events, approval hook)
 const { createCodexVoiceAdapter, findCodexExe } = require('./codexvoice-session'); // OpenAI Codex session adapter (app-server JSON-RPC over stdio)
+const { createCopilotVoiceAdapter, findCopilotExe } = require('./copilotvoice-session'); // GitHub Copilot CLI session adapter (ACP JSON-RPC over stdio)
 const { findClaudeExe } = require('./claudevoice-session'); // CLI presence probe for the editor's voice-app warning
 const claudeVoiceApprovals = require('./claudevoice-approvals'); // required directly ONLY for the boot-time leftover-hook sweep below
 const HA_SCHEDULE_APPS = ['haschedule', 'agenda', 'events'];   // dev apps backed by the shared HA /haschedule-data snapshot
@@ -137,6 +138,19 @@ const codexVoiceHost = createVoicePanelHost({
   },
   adapter: createCodexVoiceAdapter({ log: codexVoiceLog }),
   deps: voicePanelDeps('codex-voice'),
+});
+const copilotVoiceLog = message => console.log('[copilot-voice] ' + message);
+const copilotVoiceHost = createVoicePanelHost({
+  appId: 'copilot-voice',
+  storageKey: 'copilotVoice',
+  log: copilotVoiceLog,
+  branding: {
+    title: 'Copilot',
+    approvalTitle: '⚠ Copilot wants to do something',
+    turnFailedText: 'Turn failed to send — no folder set, or copilot CLI not found.',
+  },
+  adapter: createCopilotVoiceAdapter({ log: copilotVoiceLog }),
+  deps: voicePanelDeps('copilot-voice'),
 });
 // Shared main.js plumbing for a voice-panel host. The ring guards are the two-app arbitration:
 // only the ON-SCREEN voice app may drive (or clear) the ring override -- a background app's
@@ -1201,7 +1215,7 @@ async function onMeetingActionRequest(platform, action) {
 // Settings live under config.settings.meeting (global, like config.settings.monitor) so auto-record
 // works regardless of which app the panel is showing — the meeting page's per-grid options only
 // exist while it's the active app, which is useless for background recording.
-const MEETING_DEFAULTS = { folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false };
+const MEETING_DEFAULTS = { folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false };
 function meetingSettings() { return Object.assign({}, MEETING_DEFAULTS, (config.settings || {}).meeting || {}); }
 function defaultMeetingFolder() { return path.join(app.getPath('documents'), 'OpenQuake Meetings', 'unprocessed'); }
 function defaultProcessedFolder() { return path.join(app.getPath('documents'), 'OpenQuake Meetings', 'processed'); }
@@ -1294,13 +1308,31 @@ function setMeetingMic(label) {
   if (meetingRecorder) meetingRecorder.setMic(label || '');
 }
 
-// Outlook meeting info: when a recording starts (and the Advanced setting is on), ask the
-// outlook-meeting helper which appointment matches "now" and save its details as
+// Meeting info: when a recording starts (and the Advanced setting is on), ask either classic
+// Outlook or Microsoft Graph which appointment matches "now" and save its details as
 // <recording>.json beside the WAV. Ad-hoc calls with nothing scheduled write nothing; any
 // failure is logged and never touches the recording itself.
 function writeOutlookMeetingInfo(wavName) {   // wavName = basename (recorder state exposes no path)
   const m = meetingSettings();
-  if (!m.outlookEnabled || !m.outlookAccount) return;
+  if (!m.outlookEnabled) return;
+  const saveInfo = info => {
+    try {
+      if (!info) { console.log('[meeting] calendar: no meeting scheduled now — no info file'); return; }
+      const dest = path.join(resolveMeetingFolders().unprocessed, wavName.replace(/\.wav$/i, '') + '.json');
+      fs.writeFileSync(dest, JSON.stringify(info, null, 2));
+      console.log('[meeting] meeting info saved: ' + path.basename(dest) + ' (' + (info.subject || '') + ')');
+      // If the lookup completed after a short recording stopped, the normal completion callback
+      // already ran before the sidecar existed. Complete the optional rename now in that case.
+      if (fs.existsSync(path.join(resolveMeetingFolders().unprocessed, wavName))) appendMeetingNameToRecording(wavName);
+    } catch (e) { console.log('[meeting] calendar info write failed: ' + e.message); }
+  };
+  if (m.meetingInfoSource === 'microsoft365') {
+    officeGraph.getMeetingInfo({ skipPrefixes: m.outlookSkipPrefixes || '' })
+      .then(saveInfo)
+      .catch(e => console.log('[meeting] Microsoft 365 lookup failed: ' + (e.message || e)));
+    return;
+  }
+  if (!m.outlookAccount) return;
   if (!fs.existsSync(OUTLOOK_MEETING_EXE)) { console.log('[meeting] outlook-meeting.exe missing — meeting info skipped'); return; }
   execFile(OUTLOOK_MEETING_EXE, ['meeting', m.outlookAccount, m.outlookCalendar || 'Calendar', m.outlookSkipPrefixes || ''],
     { timeout: 30000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
@@ -1311,9 +1343,7 @@ function writeOutlookMeetingInfo(wavName) {   // wavName = basename (recorder st
           console.log('[meeting] outlook: ' + (info.none ? 'no meeting scheduled now — no info file' : info.error));
           return;
         }
-        const dest = path.join(resolveMeetingFolders().unprocessed, wavName.replace(/\.wav$/i, '') + '.json');
-        fs.writeFileSync(dest, JSON.stringify(info, null, 2));
-        console.log('[meeting] meeting info saved: ' + path.basename(dest) + ' (' + (info.subject || '') + ')');
+        saveInfo(info);
       } catch (e) { console.log('[meeting] outlook info write failed: ' + e.message); }
     });
 }
@@ -1940,6 +1970,11 @@ app.whenReady().then(async () => {
           htmlFile: 'claudevoiceview.html',
           handlers: codexVoiceHost.handlers,
         },
+        // Same page again, copilot's ACP adapter behind it. No voiceToken: same in-band posture as codex.
+        'copilot-voice': {
+          htmlFile: 'claudevoiceview.html',
+          handlers: copilotVoiceHost.handlers,
+        },
       },
     });
     ensureSystemViewPage(serverPort); ensureMusicPage(); ensureDropInDir();
@@ -1961,7 +1996,7 @@ app.whenReady().then(async () => {
         return { meetingFolder: m.folder, micDevice: m.micDevice, echoGate: !!m.echoGate, silenceStopMin: m.silenceStopMin, autoRecord: !!m.autoRecord };
       },
       defaultFolder: defaultMeetingFolder,
-      onState: (() => {   // fires on every state change; fetch Outlook info on the idle->recording edge
+      onState: (() => {   // fires on every state change; fetch calendar info on the idle->recording edge
         let wasRecording = false;
         return st => {
           if (st.recording && !wasRecording && st.file) { try { writeOutlookMeetingInfo(st.file); } catch (e) {} }
@@ -2127,6 +2162,7 @@ app.whenReady().then(async () => {
     try {
       if (appId === 'claude-voice') return findClaudeExe() || null;
       if (appId === 'codex-voice') return findCodexExe() || null;
+      if (appId === 'copilot-voice') return findCopilotExe() || null;
     } catch (err) {}
     return null;
   });
@@ -2144,10 +2180,14 @@ app.whenReady().then(async () => {
     try { const p = ensureMeetingPromptFile(); shell.openPath(p); return p; }
     catch (err) { console.log('[meeting] prompt open failed: ' + err.message); return null; }
   });
-  // "Check Connection" on the Meeting tab: enumerate the running classic Outlook's accounts and
-  // their calendar folders via the COM helper, so the account dropdown offers real choices.
-  ipcMain.handle('checkOutlookMeetings', (e) => {
+  // "Check Connection" on the Meeting tab verifies the selected calendar source. Classic Outlook
+  // also enumerates accounts/folders; Microsoft 365 reports the delegated signed-in profile.
+  ipcMain.handle('checkOutlookMeetings', async (e, source) => {
     if (!isFrom(e, configWin)) return null;
+    if (source === 'microsoft365') {
+      try { return await officeGraph.checkConnection(); }
+      catch (err) { return { ok: false, error: err.message || String(err), code: err.code || '' }; }
+    }
     return new Promise(resolve => {
       if (!fs.existsSync(OUTLOOK_MEETING_EXE)) return resolve({ ok: false, error: 'outlook-meeting.exe missing (native helpers not built)' });
       execFile(OUTLOOK_MEETING_EXE, ['check'], { timeout: 20000, windowsHide: true, maxBuffer: 1024 * 1024 }, (err, stdout) => {
@@ -2340,6 +2380,7 @@ app.on('before-quit', () => {
   try { reservedDisplay.stop(); } catch (e) {}                // release WinEvent hooks and terminate the native helper
   try { claudeVoiceHost.shutdown(); } catch (e) {}       // terminate the claude CLI child, release held approvals, remove the global hook
   try { codexVoiceHost.shutdown(); } catch (e) {}        // terminate the codex app-server child
+  try { copilotVoiceHost.shutdown(); } catch (e) {}      // terminate the copilot app-server child
   try { claudeVoiceApprovals.ensureHookRemoved(claudeVoiceLog); } catch (e) {}    // belt-and-braces: never leave our entry behind in the user's global Claude settings
   try { dev.stop(); } catch (e) {}                       // close HID devices + clear keep-alive/rescan timers — an open node-hid handle blocks process exit (Cmd+Q would hang -> force-quit)
   try { oauthHandler.stop(); } catch (e) {}              // stop OAuth callback server + background refresh timers

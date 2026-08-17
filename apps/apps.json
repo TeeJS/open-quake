@@ -6288,5 +6288,35 @@
       { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
       { "key": "modelPick", "label": "Model (blank = account default)", "type": "text", "default": "" }
     ]
+  },
+  {
+    "id": "copilot-voice",
+    "name": "Copilot",
+    "file": "claudevoiceview.html",
+    "served": true,
+    "options": [
+      { "key": "projectDir", "label": "Default folder", "type": "text", "default": "" },
+      { "key": "projectsRoot", "label": "Folders root (for the panel picker)", "type": "text", "default": "" },
+      { "key": "wyomingHost", "label": "Wyoming host (STT/TTS)", "type": "text", "default": "127.0.0.1" },
+      { "key": "wyomingSttPort", "label": "Wyoming STT port", "type": "text", "default": "10300" },
+      { "key": "wyomingTtsPort", "label": "Wyoming TTS port", "type": "text", "default": "10200" },
+      {
+        "key": "permissionMode",
+        "label": "Mode",
+        "type": "select",
+        "default": "manual",
+        "choices": [
+          ["manual", "Manual — ask before every action (touch approval on the panel)"],
+          ["plan", "Plan — describe, don't act, until approved"],
+          ["auto", "Approve for me — file changes and commands run automatically"],
+          ["autopilot", "Full auto — runs until the task is done, no prompts at all"]
+        ]
+      },
+      { "key": "chatFontSize", "label": "Chat text size (px)", "type": "text", "default": "16" },
+      { "key": "vadHangoverMs", "label": "Voice pause tolerance (ms)", "type": "text", "default": "800" },
+      { "key": "micDevice", "label": "Microphone (set from the panel Settings)", "type": "text", "default": "" },
+      { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
+      { "key": "modelPick", "label": "Model (blank = account default)", "type": "text", "default": "" }
+    ]
   }
 ]

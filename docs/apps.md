@@ -34,6 +34,9 @@ Included apps:
 - **[Codex](codex-voice.md)** — the same panel experience driving the OpenAI **Codex** CLI
   (ChatGPT sign-in, no API key). Shares one page, one voice pipeline, and one design with the
   Claude Code app — only the agent differs.
+- **[Copilot](copilot-voice.md)** — the same panel experience again, driving the **GitHub
+  Copilot CLI** (GitHub sign-in, no API key) over the open Agent Client Protocol. Shares the same
+  page, voice pipeline, and design as the Claude Code and Codex apps.
 - **[Meeting](meeting.md)** — one-tap mute/video/accept/decline/leave for Zoom and Teams,
   no keyboard or mouse.
 - **Microsoft 365** — a read-only Microsoft 365 dashboard: your profile, live presence, and

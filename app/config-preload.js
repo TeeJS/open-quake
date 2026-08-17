@@ -42,8 +42,8 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   editClaudeVoicePrompt() { return ipcRenderer.invoke('editClaudeVoicePrompt'); },
   // Meeting analysis: open the user-customizable analysis prompt file in the default editor.
   editMeetingAnalysisPrompt() { return ipcRenderer.invoke('editMeetingAnalysisPrompt'); },
-  // Meeting tab: verify the classic-Outlook COM connection and list accounts/calendars.
-  checkOutlookMeetings() { return ipcRenderer.invoke('checkOutlookMeetings'); },
+  // Meeting tab: verify the selected classic-Outlook or Microsoft 365 calendar source.
+  checkOutlookMeetings(source) { return ipcRenderer.invoke('checkOutlookMeetings', source); },
   // Voice apps: resolved CLI path for the app's agent (claude/codex), or null if not installed.
   probeVoiceCli(appId) { return ipcRenderer.invoke('probeVoiceCli', appId); },
   pathToFileURL(filePath) {

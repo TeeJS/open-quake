@@ -60,16 +60,17 @@ can send them to a diarizing transcription server, then to an AI for meeting not
   error shows on the row (tap **Retry**). A running or queued file can't be deleted.
 - **Analysis** (top row) — browses the Processed folder one directory at a time (tap a
   folder to enter it, **⬆ Up** to go back; no recursive sweep), and runs the chosen
-  **Analysis AI** (Settings → Meeting: Claude or ChatGPT Codex — the locally installed
-  CLI, using its own login) over a transcript, filing the result as
+  **Analysis AI** (Settings → Meeting: Claude, ChatGPT Codex, or GitHub Copilot — the locally
+  installed CLI, using its own login) over a transcript, filing the result as
   `<name>-analysis.md` next to it. **View** renders it on the panel.
 - **Settings** (utility rail, replaces the old Full screen row) — picks the recording
   microphone. It must be the same mic Teams is using; if you switch mics in Teams,
   switch here too.
-- **Outlook meeting info** (optional, Settings → Meeting → Advanced) — when a recording
-  starts, the matching appointment's details are saved from classic Outlook as
-  `<recording>.json` beside the WAV and move with it through transcription. See
-  [settings.md](settings.md).
+- **Calendar meeting info** (optional, Settings → Meeting → Advanced) — choose classic
+  Outlook on this PC or the signed-in Microsoft 365 calendar. When a recording starts,
+  the matching appointment's details are saved as `<recording>.json` beside the WAV and
+  move with it through transcription. The attendee names are sent to the diarizer to
+  improve speaker identification. See [settings.md](settings.md).
 
 ## Honest limits
 

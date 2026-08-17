@@ -1,17 +1,19 @@
 'use strict';
 
 // Transcript analysis: feeds a processed transcript JSON plus the shared prompt
-// (meeting-analysis-prompt.md) to a locally installed AI CLI — Claude (`claude -p`) or ChatGPT
-// Codex (`codex exec`), per the Analysis AI setting — and writes the returned markdown next to
-// the transcript as <basename>.md. One job at a time, no queue: analysis takes seconds-to-minutes
-// and the panel disables the button while running.
+// (meeting-analysis-prompt.md) to a locally installed AI CLI — Claude (`claude -p`), ChatGPT
+// Codex (`codex exec`), or GitHub Copilot (`copilot --acp`, one-shot ACP session — see
+// copilotvoice-session.js's runCopilotBatchPrompt) — per the Analysis AI setting — and writes the
+// returned markdown next to the transcript as <basename>.md. One job at a time, no queue: analysis
+// takes seconds-to-minutes and the panel disables the button while running.
 //
-// Both CLIs authenticate themselves (the app holds no API keys, same story as the voice panels).
-// Deps are injected for tests: resolveFolders, resolveAi, spawn, fs, prompt path, clock.
+// All three CLIs authenticate themselves (the app holds no API keys, same story as the voice
+// panels). Deps are injected for tests: resolveFolders, resolveAi, spawn, fs, prompt path, clock.
 
 const path = require('path');
 const os = require('os');
 const { safeRelPath } = require('./meetingLibrary');
+const { runCopilotBatchPrompt } = require('./copilotvoice-session');
 
 const ANALYZE_TIMEOUT_MS = 10 * 60 * 1000;   // generous; a transcript is small but CLIs cold-start
 
@@ -44,9 +46,10 @@ function createMeetingAnalyzer(deps) {
   const fsp = fsMod.promises;
   const spawnImpl = deps.spawn || require('child_process').spawn;
   const resolveFolders = deps.resolveFolders;        // () => { unprocessed, processed }
-  const resolveAi = deps.resolveAi;                  // () => 'claude' | 'codex'
+  const resolveAi = deps.resolveAi;                  // () => 'claude' | 'codex' | 'copilot'
   const findClaudeExe = deps.findClaudeExe || require('./claudevoice-session').findClaudeExe;
   const findCodexExe = deps.findCodexExe || require('./codexvoice-session').findCodexExe;
+  const findCopilotExe = deps.findCopilotExe || require('./copilotvoice-session').findCopilotExe;
   // promptPath may be a function (main.js prefers the user's editable copy in userData over the
   // bundled template) or a fixed string (tests).
   const promptPath = deps.promptPath || path.join(__dirname, 'meeting-analysis-prompt.md');
@@ -89,7 +92,8 @@ function createMeetingAnalyzer(deps) {
     const n = queue.shift();
     const processed = resolveFolders().processed;
     const jsonPath = path.join(processed, n);
-    const ai = resolveAi() === 'codex' ? 'codex' : 'claude';
+    const aiSetting = resolveAi();
+    const ai = aiSetting === 'codex' ? 'codex' : aiSetting === 'copilot' ? 'copilot' : 'claude';
     running = { name: n, ai, startedAt: now() };
     log('analysis started (' + ai + '): ' + n);
     runJob(n, ai, jsonPath)
@@ -104,7 +108,7 @@ function createMeetingAnalyzer(deps) {
     const prompt = await fsp.readFile(resolvePromptPath(), 'utf8');
     const transcript = await fsp.readFile(jsonPath, 'utf8');
     const input = prompt + '\n\nDiarizer JSON follows:\n\n' + transcript;
-    const markdown = ai === 'codex' ? await runCodex(input) : await runClaude(input);
+    const markdown = ai === 'codex' ? await runCodex(input) : ai === 'copilot' ? await runCopilot(input) : await runClaude(input);
     if (!markdown.trim()) throw new Error('AI returned no output');
 
     // "Separate Clean Transcript": split the AI's output at the ## Transcript heading — notes
@@ -191,6 +195,13 @@ function createMeetingAnalyzer(deps) {
     } finally {
       try { await fsp.unlink(outFile); } catch (e) {}
     }
+  }
+
+  function runCopilot(input) {
+    if (!findCopilotExe()) return Promise.reject(new Error('Copilot CLI not found on PATH'));
+    // Copilot has no plain -p-to-stdout mode -- it's an ACP JSON-RPC session (see
+    // copilotvoice-session.js's runCopilotBatchPrompt), not a runProc-shaped stdin/stdout CLI.
+    return runCopilotBatchPrompt({ text: input, timeoutMs, log, spawn: spawnImpl });
   }
 
   function runProc(cmd, args, stdinText, shell) {

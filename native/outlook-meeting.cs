@@ -67,11 +67,22 @@ static class OutlookMeeting {
         catch { Fail("Classic Outlook is not running (or not in this Windows session). Start OUTLOOK.EXE and try again."); return null; }
     }
 
-    // Split "a; b; c" attendee/category strings into trimmed names.
-    static List<string> SplitNames(string s, char sep) {
+    static string NormalizeName(string value) {
+        string name = (value ?? "").Trim();
+        int comma = name.IndexOf(',');
+        if (comma >= 0) name = (name.Substring(comma + 1).Trim() + " " + name.Substring(0, comma).Trim()).Trim();
+        return name == "TJ Schmitz" ? "T.J. Schmitz" : name;
+    }
+
+    // Split "a; b; c" attendee/category strings into trimmed values. Attendee names use the same
+    // comma-order normalization as the Graph source; category labels remain untouched.
+    static List<string> SplitValues(string s, char sep, bool normalizeNames) {
         var outp = new List<string>();
         if (string.IsNullOrEmpty(s)) return outp;
-        foreach (var p in s.Split(sep)) { var t = p.Trim(); if (t.Length > 0) outp.Add(t); }
+        foreach (var p in s.Split(sep)) {
+            var t = normalizeNames ? NormalizeName(p) : p.Trim();
+            if (t.Length > 0) outp.Add(t);
+        }
         return outp;
     }
 
@@ -80,7 +91,7 @@ static class OutlookMeeting {
     static readonly Dictionary<int, string> IMPORTANCE = new Dictionary<int, string> {
         { 0, "Low" }, { 1, "Normal" }, { 2, "High" } };
     static readonly Dictionary<int, string> MEETING_STATUS = new Dictionary<int, string> {
-        { 0, "Appointment" }, { 1, "Meeting" }, { 3, "MeetingReceived" }, { 5, "MeetingCanceled" }, { 7, "MeetingReceivedAndCanceled" } };
+        { 0, "NonMeeting" }, { 1, "Meeting" }, { 3, "MeetingReceived" }, { 5, "MeetingCanceled" }, { 7, "MeetingCanceled" } };
     static string MapEnum(Dictionary<int, string> map, object v, string fallback) {
         try { int i = Convert.ToInt32(v); return map.ContainsKey(i) ? map[i] : fallback; } catch { return fallback; }
     }
@@ -183,16 +194,18 @@ static class OutlookMeeting {
         object a = appts[chosen];
         string fmt = "yyyy-MM-ddTHH:mm:ss+00:00";
         var sb = new StringBuilder("{");
-        sb.Append("\"subject\":").Append(J(S(Get(a, "Subject"))));
+        string selectedSubject = S(Get(a, "Subject"));
+        selectedSubject = string.IsNullOrEmpty(selectedSubject) ? "Untitled Meeting" : selectedSubject.Trim();
+        sb.Append("\"subject\":").Append(J(selectedSubject));
         sb.Append(",\"start\":").Append(J(starts[chosen].ToUniversalTime().ToString(fmt, CultureInfo.InvariantCulture)));
         sb.Append(",\"end\":").Append(J(ends[chosen].ToUniversalTime().ToString(fmt, CultureInfo.InvariantCulture)));
-        sb.Append(",\"organizer\":").Append(J(S(Get(a, "Organizer"))));
-        sb.Append(",\"required_attendees\":").Append(JList(SplitNames(S(Get(a, "RequiredAttendees")), ';')));
-        sb.Append(",\"optional_attendees\":").Append(JList(SplitNames(S(Get(a, "OptionalAttendees")), ';')));
-        sb.Append(",\"response_status\":").Append(J(MapEnum(RESPONSE, Get(a, "ResponseStatus"), "None")));
+        sb.Append(",\"organizer\":").Append(J(NormalizeName(S(Get(a, "Organizer")))));
+        sb.Append(",\"required_attendees\":").Append(JList(SplitValues(S(Get(a, "RequiredAttendees")), ';', true)));
+        sb.Append(",\"optional_attendees\":").Append(JList(SplitValues(S(Get(a, "OptionalAttendees")), ';', true)));
+        sb.Append(",\"response_status\":").Append(J(MapEnum(RESPONSE, Get(a, "ResponseStatus"), "Unknown")));
         sb.Append(",\"location\":").Append(J(S(Get(a, "Location"))));
         sb.Append(",\"body\":").Append(J(S(Get(a, "Body"))));
-        sb.Append(",\"categories\":").Append(JList(SplitNames(S(Get(a, "Categories")), ',')));
+        sb.Append(",\"categories\":").Append(JList(SplitValues(S(Get(a, "Categories")), ',', false)));
         sb.Append(",\"importance\":").Append(J(MapEnum(IMPORTANCE, Get(a, "Importance"), "Normal")));
         object rec = Get(a, "IsRecurring");
         sb.Append(",\"is_recurring\":").Append(rec != null && Convert.ToBoolean(rec) ? "true" : "false");

@@ -1513,7 +1513,8 @@
     const isKeyShortcuts = g.app === 'keyshortcuts';
     const isClaudeVoice = g.app === 'claude-voice';
     const isCodexVoice = g.app === 'codex-voice';
-    const isVoiceApp = isClaudeVoice || isCodexVoice;   // both share the hand-rendered options box below
+    const isCopilotVoice = g.app === 'copilot-voice';
+    const isVoiceApp = isClaudeVoice || isCodexVoice || isCopilotVoice;   // all three share the hand-rendered options box below
     const isOffice = g.app === 'office';
     const musicBox = `<fieldset style="border:1px solid #2a3a4e; border-radius:8px; padding:6px 14px 10px; margin:10px 0">
         <legend style="padding:0 6px; color:#9fb3c8; font-size:13px">Panels</legend>
@@ -1664,7 +1665,8 @@
       configApi.probeVoiceCli(g.app).then(p => {
         const warn = document.getElementById('cvCliWarn');
         if (warn && !p) {
-          warn.textContent = '⚠ The ' + (isCodexVoice ? 'codex' : 'claude') + ' CLI was not found on PATH — this page won\'t work until it is installed.';
+          const cliName = isCodexVoice ? 'codex' : isCopilotVoice ? 'copilot' : 'claude';
+          warn.textContent = '⚠ The ' + cliName + ' CLI was not found on PATH — this page won\'t work until it is installed.';
           warn.style.display = '';
         }
       }).catch(() => {});
@@ -1874,7 +1876,7 @@
     const th = currentTheme();
     // Meeting recording settings (config.settings.meeting) — global so auto-record works regardless of
     // which app the panel is showing. Same shape as MEETING_DEFAULTS in main.js.
-    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false }, (config.settings || {}).meeting || {});
+    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false }, (config.settings || {}).meeting || {});
     const me = currentMe();
     // ledState = the device's live lighting (loaded when the page opens); fall back to saved config / defaults.
     const L = Object.assign({}, LED_DEFAULT, (config.settings || {}).lighting || {}, ledState || {});
@@ -2018,8 +2020,9 @@
       <p class="hint">The tts-sst or meeting-diarizer endpoint that turns recordings into speaker-labeled transcripts. Edit the host/port to match your server; the panel checks its /health before sending. Remember to Save.</p>
       <div class="row" style="margin-top:12px"><label>Analysis AI</label>
         <select id="meAnalysisAi" style="flex:1">
-          <option value="claude" ${me.analysisAi === 'codex' ? '' : 'selected'}>Claude</option>
+          <option value="claude" ${(me.analysisAi === 'codex' || me.analysisAi === 'copilot') ? '' : 'selected'}>Claude</option>
           <option value="codex" ${me.analysisAi === 'codex' ? 'selected' : ''}>ChatGPT Codex</option>
+          <option value="copilot" ${me.analysisAi === 'copilot' ? 'selected' : ''}>GitHub Copilot</option>
         </select></div>
       <p class="hint">Which locally installed CLI turns a transcript into meeting notes on the Analysis screen. Uses that tool's own login — no API key needed.</p>
       <div class="row" style="margin-top:12px"><label>Analysis prompt</label>
@@ -2042,22 +2045,27 @@
 
       <details class="advsec" style="margin-top:22px">
       <summary style="cursor:pointer;color:#9fb3c8;font-size:13px;user-select:none">Advanced Settings</summary>
-      <div class="row" style="margin-top:10px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meOutlook" ${me.outlookEnabled ? 'checked' : ''}> Pull meeting information from Classic Outlook</label></div>
-      <p class="hint">When a recording starts, looks up the matching appointment in the running classic Outlook (COM, your signed-in profile — no tokens or app registration) and saves its details (subject, attendees, organizer, body…) as <b>&lt;recording&gt;.json</b> beside the WAV; the file travels with the recording through transcription. Ad-hoc calls with nothing on the calendar save nothing.</p>
-      <div class="row"><label>Account</label>
-        <select id="meOutAcct" style="flex:1">${me.outlookAccount ? `<option value="${esc(me.outlookAccount)}" selected>${esc(me.outlookAccount)}</option>` : '<option value="">— click Check Connection —</option>'}</select>
+      <div class="row" style="margin-top:10px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meOutlook" ${me.outlookEnabled ? 'checked' : ''}> Pull meeting information from my calendar</label></div>
+      <p class="hint">When a recording starts, saves the matching appointment (subject, attendees, organizer, body…) as <b>&lt;recording&gt;.json</b> beside the WAV. The file travels through transcription, where its attendee list improves speaker identification. Ad-hoc calls with nothing scheduled save nothing.</p>
+      <div class="row"><label>Calendar source</label>
+        <select id="meInfoSource" style="flex:1"><option value="classic" ${me.meetingInfoSource === 'microsoft365' ? '' : 'selected'}>Classic Outlook (this PC)</option><option value="microsoft365" ${me.meetingInfoSource === 'microsoft365' ? 'selected' : ''}>Microsoft 365 (Graph)</option></select>
         <button id="meOutCheck" type="button">Check Connection</button></div>
       <p class="hint" id="meOutMsg"></p>
+      <div id="meClassicSettings">
+      <div class="row"><label>Account</label>
+        <select id="meOutAcct" style="flex:1">${me.outlookAccount ? `<option value="${esc(me.outlookAccount)}" selected>${esc(me.outlookAccount)}</option>` : '<option value="">— click Check Connection —</option>'}</select>
+      </div>
       <div class="row"><label>Calendar folder</label>
         <input id="meOutCal" value="${esc(me.outlookCalendar)}" style="flex:1"></div>
       <p class="hint">The calendar folder inside that account — almost always "Calendar".</p>
+      </div>
       <div class="row"><label>Skip prefixes</label>
         <input id="meOutSkip" value="${esc(me.outlookSkipPrefixes)}" style="flex:1"></div>
       <p class="hint">Comma-separated subject prefixes to ignore (e.g. Canceled:, Focus time, Lunch) — keeps calendar entries that aren't real meetings out of the lookup.</p>
       <div class="row" style="margin-top:12px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meSepRec" ${me.separateRecurring ? 'checked' : ''}> Separate recurring meetings</label></div>
-      <p class="hint">When a recurring meeting (per its Outlook info) is analyzed, its files move from the date folder to <b>YYYY\\&lt;Meeting-Name&gt;\\</b>. Un-analyzed meetings stay in the date folders, so they're easy to find.</p>
+      <p class="hint">When a recurring meeting (per its calendar info) is analyzed, its files move from the date folder to <b>YYYY\\&lt;Meeting-Name&gt;\\</b>. Un-analyzed meetings stay in the date folders, so they're easy to find.</p>
       <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meAppendName" ${me.appendMeetingName ? 'checked' : ''} ${me.outlookEnabled ? '' : 'disabled'}> Append meeting name to filename</label></div>
-      <p class="hint">Renames a finished recording from &lt;timestamp&gt;.wav to <b>&lt;timestamp&gt;-&lt;Meeting Name&gt;.wav</b> when Outlook matched a meeting; every later file (transcript, analysis…) inherits the name. Requires the Outlook option above.</p>
+      <p class="hint">Renames a finished recording from &lt;timestamp&gt;.wav to <b>&lt;timestamp&gt;-&lt;Meeting Name&gt;.wav</b> when the calendar matched a meeting; every later file (transcript, analysis…) inherits the name. Requires meeting information above.</p>
       <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meSepTx" ${me.separateTranscript ? 'checked' : ''}> Separate Clean Transcript</label></div>
       <p class="hint">Leaves the full transcript out of the analysis .md and saves it as <b>&lt;name&gt;-clean_transcript.txt</b> instead.</p>
       <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meDetails" ${me.useDetailsFolder ? 'checked' : ''}> Use Details Folder</label></div>
@@ -2065,7 +2073,7 @@
       <div class="row" style="margin-top:12px"><label>Speaker threshold</label>
         <input type="number" id="meThreshold" min="0" max="1" step="0.05" value="${esc(me.transcribeThreshold)}" style="width:120px">
         <span class="hint" style="margin:0 0 0 8px">blank = server default</span></div>
-      <p class="hint">Speaker-identification cosine cutoff (e.g. 0.70) sent with each transcription. Attendees from the Outlook meeting info are sent automatically — the diarizer penalizes enrolled speakers who aren't on the list, cutting false matches.</p>
+      <p class="hint">Speaker-identification cosine cutoff (e.g. 0.70) sent with each transcription. Attendees from the calendar meeting info are sent automatically — the diarizer penalizes enrolled speakers who aren't on the list, cutting false matches.</p>
       <div class="row" style="margin-top:12px"><label>My name</label>
         <input id="meMyName" value="${esc(me.myName)}" placeholder="e.g. T.J. Schmitz" style="flex:1"></div>
       <p class="hint">Your enrolled speaker name. When set, it's sent as <b>me_name</b> and the transcription server labels your isolated-mic channel's voice with certainty (channel-guided ID) — no threshold wobble for you. Blank = off. Note: in hybrid meetings, people in the room with you also land on your mic channel and still go through normal identification.</p>
@@ -2468,8 +2476,14 @@
       document.getElementById('meEditPrompt').onclick = () => configApi.editMeetingAnalysisPrompt();
       document.getElementById('meOutlook').onchange = e => {
         saveMe({ outlookEnabled: e.target.checked });
-        document.getElementById('meAppendName').disabled = !e.target.checked;   // name-append needs Outlook info
+        document.getElementById('meAppendName').disabled = !e.target.checked;   // name-append needs calendar info
       };
+      const syncMeetingSource = () => {
+        const graph = document.getElementById('meInfoSource').value === 'microsoft365';
+        document.getElementById('meClassicSettings').style.display = graph ? 'none' : '';
+      };
+      document.getElementById('meInfoSource').onchange = e => { saveMe({ meetingInfoSource: e.target.value }); syncMeetingSource(); };
+      syncMeetingSource();
       document.getElementById('meSepRec').onchange = e => saveMe({ separateRecurring: e.target.checked });
       document.getElementById('meAppendName').onchange = e => saveMe({ appendMeetingName: e.target.checked });
       document.getElementById('meSepTx').onchange = e => saveMe({ separateTranscript: e.target.checked });
@@ -2481,9 +2495,23 @@
       document.getElementById('meMyName').oninput = e => saveMe({ myName: e.target.value.trim() });
       document.getElementById('meOutCheck').onclick = async () => {
         const msg = document.getElementById('meOutMsg');
-        msg.textContent = 'Checking — classic Outlook must be running…'; msg.style.color = '';
-        const r = await configApi.checkOutlookMeetings();
-        if (!r || !r.ok) { msg.textContent = (r && r.error) || 'Check failed'; msg.style.color = '#c98'; return; }
+        const source = document.getElementById('meInfoSource').value;
+        msg.textContent = source === 'microsoft365' ? 'Checking Microsoft 365…' : 'Checking — classic Outlook must be running…'; msg.style.color = '';
+        const r = await configApi.checkOutlookMeetings(source);
+        if (!r || !r.ok) {
+          msg.textContent = (r && r.error) || 'Check failed'; msg.style.color = '#c98';
+          if (source === 'microsoft365' && r && (r.code === 'not_connected' || r.code === 'consent_required')) {
+            const connected = await configApi.connectOAuthProvider('microsoft', ['User.Read', 'Presence.Read', 'Calendars.Read', 'offline_access']);
+            if (!connected || !connected.ok) { msg.textContent = (connected && connected.error) || 'Could not start Microsoft sign-in.'; return; }
+            msg.textContent = 'Complete Microsoft sign-in in your browser, then click Check Connection again.'; msg.style.color = '';
+          }
+          return;
+        }
+        if (source === 'microsoft365') {
+          const profile = r.profile || {};
+          msg.textContent = 'Connected as ' + (profile.displayName || profile.userPrincipalName || 'Microsoft 365 user') + '. Save to use this calendar.';
+          return;
+        }
         const sel = document.getElementById('meOutAcct');
         const saved = currentMe().outlookAccount;
         sel.innerHTML = '<option value="">— choose an account —</option>';

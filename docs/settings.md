@@ -103,29 +103,36 @@ Recording and transcription for the Meeting panel (details in [meeting.md](meeti
   the full `/transcribe` URL works; default `http://127.0.0.1:10301/transcribe`). Wire
   protocol: [meetings-api.md](meetings-api.md). Changes apply when you **Save** (button
   at the top of the settings page and in the footer).
-- **Analysis AI** — **Claude** or **ChatGPT Codex**: which locally installed CLI turns a
+- **Analysis AI** — **Claude**, **ChatGPT Codex**, or **GitHub Copilot**: which locally installed CLI turns a
   transcript into meeting notes. Uses that tool's own login; open-quake stores no API key.
 - **Auto-record / Call apps / Stop after silence / Echo-gate** — unchanged recording
   behavior options.
-- **Advanced → Pull meeting information from Classic Outlook** — off by default. When a
-  recording starts, open-quake asks the **running classic Outlook** (COM, your signed-in
-  MAPI profile — no tokens or app registration) which appointment matches the current
-  time and saves its details (subject, organizer, attendees, body, join link…) as
-  `<recording>.json` beside the WAV; the file travels with the recording through
-  transcription. Meeting choice: if the next :00/:30 boundary is under 5 minutes away,
-  the meeting starting then wins; otherwise the meeting containing the current time. An
-  ad-hoc call with nothing scheduled saves nothing. **Check Connection** verifies
-  Outlook is reachable and fills the **Account** dropdown; set the **Calendar folder**
-  (usually "Calendar") and optional comma-separated **Skip prefixes** (e.g. `Canceled:,
-  Focus time`) to keep non-meetings out of the lookup. Requires classic OUTLOOK.EXE
-  running in your session — the new Outlook (olk.exe) has no COM interface.
+- **Advanced → Pull meeting information from my calendar** — off by default. Choose a
+  **Calendar source**:
+  - **Classic Outlook (this PC)** attaches to the running OUTLOOK.EXE through COM and
+    uses its signed-in MAPI profile; no OAuth or app registration is needed. **Check
+    Connection** fills the Account dropdown. Set the Calendar folder (usually
+    "Calendar"). The new Outlook (olk.exe) has no COM interface.
+  - **Microsoft 365 (Graph)** reads the signed-in user's Microsoft 365 calendar with the
+    existing delegated Microsoft connection and `Calendars.Read`. **Check Connection**
+    starts browser sign-in when needed; complete it and check again. This source does not
+    require classic Outlook to be running. Microsoft sign-in and encrypted token storage
+    are shared with the Office panel and can also be managed on the Auth tab.
+
+  Both sources select the meeting the same way: if the next :00/:30 boundary is under
+  5 minutes away, the meeting starting then wins; otherwise the meeting containing the
+  current time wins. They save subject, organizer, attendees, body, join link, and other
+  metadata as `<recording>.json` beside the WAV. The file travels through transcription,
+  and its attendee names improve speaker identification. An ad-hoc call with nothing
+  scheduled saves nothing. Optional comma-separated **Skip prefixes** (for example
+  `Canceled:, Focus time`) keep non-meetings out of either lookup.
 - **Advanced → Separate recurring meetings** — when a recurring meeting (per its
-  Outlook info) is analyzed, its file set moves from the date folder to
+  calendar info) is analyzed, its file set moves from the date folder to
   `YYYY\<Meeting-Name>\` (name sanitized like the OpenHiNotes pipeline). Un-analyzed
   meetings stay in the date folders so they're easy to find.
 - **Advanced → Append meeting name to filename** — renames a finished recording to
-  `<timestamp>-<Meeting Name>.wav` (sidecar too) when Outlook matched a meeting; all
-  later files inherit the name. Requires the Outlook option; the rename happens when
+  `<timestamp>-<Meeting Name>.wav` (sidecar too) when the calendar matched a meeting; all
+  later files inherit the name. Requires calendar meeting info; the rename happens when
   the recording stops (an open file can't be renamed).
 - **Advanced → Separate Clean Transcript** — the analysis `.md` keeps the notes only;
   the cleaned transcript saves as `<name>-clean_transcript.txt`. (The split keys off
@@ -136,7 +143,7 @@ Recording and transcription for the Meeting panel (details in [meeting.md](meeti
   subfolder of the meeting's folder — date folders and recurring-meeting folders alike.
 - **Advanced → Speaker threshold** — optional speaker-identification cosine cutoff
   (e.g. `0.70`) sent with each transcription; blank = the server's default. When a
-  recording has Outlook meeting info, its attendee list (organizer + required +
+  recording has calendar meeting info, its attendee list (organizer + required +
   optional) is sent along automatically — the diarizer penalizes enrolled speakers not
   on the list, reducing false speaker matches.
 - **Advanced → My name** — your enrolled speaker name. When set, it's sent as
