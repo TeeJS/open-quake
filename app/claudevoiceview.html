@@ -67,7 +67,7 @@
   .msg.user, .msg.assistant { align-self: stretch; max-width: none; }
   .bubble { background: var(--surf2); border: 1px solid var(--tile-bd); border-radius: 12px; padding: 12px 16px;
     font-size: var(--chatFont, 16px); line-height: 1.45; overflow-wrap: break-word; }
-  .msg.user .bubble { background: var(--accent); color: #04120b; border-color: transparent; }
+  .msg.user .bubble { background: var(--accent); color: var(--accent-fg, #04120b); border-color: transparent; }
 
   .codeblock { position: relative; margin: 8px 0; }
   .codeblock pre { margin: 0; background: var(--bg); border: 1px solid var(--tile-bd); border-radius: 8px;
@@ -75,7 +75,7 @@
   .copybtn { position: absolute; top: 6px; right: 6px; min-width: 48px; min-height: 44px; padding: 4px 10px;
     font-size: 12px; border-radius: 6px; border: 1px solid var(--tile-bd); background: var(--surf);
     color: var(--muted); cursor: pointer; user-select: none; }
-  .copybtn:active { background: var(--accent); color: #04120b; }
+  .copybtn:active { background: var(--accent); color: var(--accent-fg, #04120b); }
   .copybtn.copied { color: var(--accent); border-color: var(--accent); }
 
   /* Folder overlay -- the layout the user approved: Recent row up top, then a uniform grid of big
@@ -118,7 +118,7 @@
     font-size: 26px; font-weight: 600; cursor: pointer; text-align: left; padding: 6px 8px 6px 20px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .projRow.current { background: var(--accent); border-color: transparent; }
-  .projRow.current .projName { color: #04120b; }
+  .projRow.current .projName { color: var(--accent-fg, #04120b); }
   /* Single bottom row: new-folder box (short) + Create, then Cancel / Up / Use this folder.
      "Use this folder" is THE commit action now (tapping folders only navigates), so it alone
      carries the accent fill. */
@@ -133,7 +133,7 @@
     background: var(--surf2); color: var(--fg); padding: 6px 16px; }
   #projCancel { margin-left: auto; }   /* Cancel/Up/Use group at the right end */
   #projUp:disabled { opacity: .35; cursor: default; }
-  #projUse { border: none; background: var(--accent); color: #04120b; font-weight: 700; }
+  #projUse { border: none; background: var(--accent); color: var(--accent-fg, #04120b); font-weight: 700; }
 
   /* Mode overlay: one big row per permission mode, current one highlighted with the accent. */
   #modeOverlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
@@ -181,7 +181,7 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pickChevron { flex: 0 0 auto; font-size: 22px; color: var(--dim); }
   #settingsClose { min-height: 48px; min-width: 96px; border-radius: 10px; border: none;
-    background: var(--accent); color: #04120b; font-size: 15px; font-weight: 700; cursor: pointer; }
+    background: var(--accent); color: var(--accent-fg, #04120b); font-size: 15px; font-weight: 700; cursor: pointer; }
 
   /* Device picker overlay (mic or speaker): full-height card, one uniform full-width row per
      device (26px text, 64px rows, selected = solid accent fill), ▲/▼ page buttons for scrolling --
@@ -206,7 +206,7 @@
     background: var(--surf2); color: var(--fg); font-size: 26px; font-weight: 600; cursor: pointer;
     text-align: left; padding: 8px 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .devRow:active { background: var(--tile-bd); }
-  .devRow.current { background: var(--accent); color: #04120b; border-color: transparent; }
+  .devRow.current { background: var(--accent); color: var(--accent-fg, #04120b); border-color: transparent; }
 
   #inputrow { flex: 0 0 auto; display: flex; gap: 10px; }
   #textInput { flex: 1; min-height: 48px; padding: 10px 14px; font-size: 16px; border-radius: 10px;
@@ -214,7 +214,7 @@
     font-family: inherit; }
   #textInput:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
   #sendBtn { flex: 0 0 auto; min-width: 88px; min-height: 48px; border-radius: 10px; border: none;
-    background: var(--accent); color: #04120b; font-size: 16px; font-weight: 700; cursor: pointer; user-select: none; }
+    background: var(--accent); color: var(--accent-fg, #04120b); font-size: 16px; font-weight: 700; cursor: pointer; user-select: none; }
   #sendBtn:disabled { opacity: .5; cursor: default; }
   #ttsTestBtn { flex: 0 0 auto; min-width: 48px; min-height: 48px; border-radius: 10px; border: 1px solid var(--tile-bd);
     background: var(--surf2); color: var(--fg); font-size: 14px; cursor: pointer; user-select: none; }
@@ -243,7 +243,7 @@
      keeps the accent so the primary action stays unmistakable. */
   #approvalAlways { background: var(--surf2); color: var(--fg); border: 1px solid var(--tile-bd); }
   #approvalAlways.hidden { display: none; }
-  #approvalApprove { background: var(--accent); color: #04120b; }
+  #approvalApprove { background: var(--accent); color: var(--accent-fg, #04120b); }
 </style>
 </head>
 <body>

@@ -13,6 +13,14 @@ var BASE = '/' + (location.pathname.split('/')[1] || 'claude-voice');
   document.body.classList.toggle('light', Q.get('_dark') === '0');
   var a = Q.get('_accent') || '';
   if (/^#[0-9a-fA-F]{6}$/.test(a)) document.documentElement.style.setProperty('--accent', a);
+  // Contrast-safe foreground for text/icons sitting on the accent (user bubble, buttons, the
+  // current-row highlights) -- runtime accents vary, and a dark one made the user's own message
+  // unreadable against the fixed near-black text those rules used to hardcode. Same luminance
+  // formula as meetingview.js's --accent-fg.
+  var hex = /^#[0-9a-fA-F]{6}$/.test(a) ? a : '#7CFFB2';
+  var r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
+  var lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  document.documentElement.style.setProperty('--accent-fg', lum > 0.45 ? '#04120b' : '#f2f7fc');
 })();
 
 var projectDir = Q.get('projectDir') || '';
