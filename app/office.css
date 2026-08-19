@@ -691,9 +691,10 @@ h1 {
 }
 
 .shortcut-glyph img {
-  width: 100%;
-  height: 100%;
+  width: 54px;
+  height: 54px;
   object-fit: contain;
+  object-position: center;
 }
 
 .shortcut-control:disabled {

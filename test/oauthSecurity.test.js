@@ -156,15 +156,18 @@ test('Office external actions use the host launcher without racing the calendar 
   assert.equal(opened.length, 5);
 });
 
-test('Office app and keypress actions are fixed host callbacks protected by same-origin checks', async () => {
+test('Office app, meeting, and keypress actions are fixed host callbacks protected by same-origin checks', async () => {
   const calls = [];
   const port = await sysserver.start({
-    onOfficeAction: async (kind, index, shortcutIndex) => { calls.push({ kind, index, shortcutIndex }); return { ok: true }; },
+    onOfficeAction: async (kind, index, shortcutIndex, target) => { calls.push({ kind, index, shortcutIndex, target }); return { ok: true }; },
   });
   const crossSite = await request(port, '/api/office/action/app/2', { 'Sec-Fetch-Site': 'cross-site' });
   const appAction = await request(port, '/api/office/action/app/2', { 'Sec-Fetch-Site': 'same-origin' });
   const shortcut = await request(port, '/api/office/action/shortcut/3/1', { 'Sec-Fetch-Site': 'same-origin' });
   const eighthShortcut = await request(port, '/api/office/action/shortcut/3/7', { 'Sec-Fetch-Site': 'same-origin' });
+  const meetingUrl = 'https://teams.microsoft.com/l/meetup-join/example?tenantId=abc';
+  const meeting = await request(port, '/api/office/action/meeting?url=' + encodeURIComponent(meetingUrl), { 'Sec-Fetch-Site': 'same-origin' });
+  const foreignMeeting = await request(port, '/api/office/action/meeting?url=' + encodeURIComponent('https://example.com/l/meetup-join/example'), { 'Sec-Fetch-Site': 'same-origin' });
   const ninthShortcut = await request(port, '/api/office/action/shortcut/3/8', { 'Sec-Fetch-Site': 'same-origin' });
   const arbitrary = await request(port, '/api/office/action/app/99', { 'Sec-Fetch-Site': 'same-origin' });
 
@@ -173,12 +176,15 @@ test('Office app and keypress actions are fixed host callbacks protected by same
   assert.equal(appAction.body.ok, true);
   assert.equal(shortcut.body.ok, true);
   assert.equal(eighthShortcut.body.ok, true);
+  assert.equal(meeting.body.ok, true);
+  assert.equal(foreignMeeting.body.ok, false);
   assert.equal(ninthShortcut.body.ok, false);
   assert.equal(arbitrary.body.ok, false);
   assert.deepEqual(calls, [
-    { kind: 'app', index: 2, shortcutIndex: undefined },
-    { kind: 'shortcut', index: 3, shortcutIndex: 1 },
-    { kind: 'shortcut', index: 3, shortcutIndex: 7 },
+    { kind: 'app', index: 2, shortcutIndex: undefined, target: undefined },
+    { kind: 'shortcut', index: 3, shortcutIndex: 1, target: undefined },
+    { kind: 'shortcut', index: 3, shortcutIndex: 7, target: undefined },
+    { kind: 'meeting', index: undefined, shortcutIndex: undefined, target: meetingUrl },
   ]);
 });
 

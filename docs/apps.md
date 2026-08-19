@@ -48,6 +48,8 @@ Included apps:
   account (**Settings → Auth**), plus up to **eight** configurable app shortcuts (Teams,
   Outlook, Word, Excel, PowerPoint, OneNote, OneDrive, Microsoft 365) that either focus an
   already-open window or launch it, and a one-tap **Join meeting** for the current/next event.
+  Meeting links follow the configured Teams header app's **Open with** mode: web, desktop, or
+  desktop with web fallback.
 - **[Home Assistant Dashboard](home-assistant.md)** — pick a Lovelace dashboard from your
   HA server in a dropdown, no hand-typed URLs. Requires **Use Home Assistant** in
   **Settings → Auth**; hidden from the App picker otherwise. Uses your global HA token

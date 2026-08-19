@@ -168,3 +168,45 @@ test('Office web shortcuts focus a browser after a web app is selected', async (
   assert.deepEqual(calls.focus, [['msedge', 'chrome', 'firefox', 'brave', 'opera']]);
   assert.deepEqual(calls.combos, ['Ctrl+S']);
 });
+
+test('Teams meeting links follow the configured desktop open mode', async () => {
+  const { actions, calls } = harness({ app2: 'teams', mode2: 'desktop' });
+  const result = await actions.run('meeting', undefined, undefined, 'https://teams.microsoft.com/l/meetup-join/example?tenantId=abc');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.method, 'desktop');
+  assert.deepEqual(calls.urls, ['msteams://teams.microsoft.com/l/meetup-join/example?tenantId=abc']);
+});
+
+test('Teams meeting links follow the configured web open mode', async () => {
+  const { actions, calls } = harness({ app1: 'teams', mode1: 'web' });
+  const result = await actions.run('meeting', undefined, undefined, 'https://teams.microsoft.com/meet/example');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.method, 'web');
+  assert.deepEqual(calls.urls, ['https://teams.microsoft.com/meet/example']);
+});
+
+test('Teams meeting links fall back to web in prefer-desktop mode', async () => {
+  const { actions, calls } = harness({ app1: 'teams', mode1: 'prefer-desktop' }, {
+    openExternal: async value => { calls.urls.push(value); return calls.urls.length > 1; },
+  });
+  const result = await actions.run('meeting', undefined, undefined, 'https://teams.live.com/l/meetup-join/example');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.method, 'web');
+  assert.deepEqual(calls.urls, [
+    'msteams://teams.live.com/l/meetup-join/example',
+    'https://teams.live.com/l/meetup-join/example',
+  ]);
+});
+
+test('Teams meeting action rejects non-Teams and non-meeting URLs', async () => {
+  const { actions, calls } = harness({ app1: 'teams', mode1: 'desktop' });
+  const foreign = await actions.run('meeting', undefined, undefined, 'https://example.com/l/meetup-join/example');
+  const teamsHome = await actions.run('meeting', undefined, undefined, 'https://teams.microsoft.com/v2/');
+
+  assert.equal(foreign.ok, false);
+  assert.equal(teamsHome.ok, false);
+  assert.deepEqual(calls.urls, []);
+});

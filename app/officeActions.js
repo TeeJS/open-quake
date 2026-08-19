@@ -49,7 +49,7 @@ const DEFAULT_APPS = ['teams', 'outlook', 'word', 'excel'];
 const BROWSER_PROCESSES = ['msedge', 'chrome', 'firefox', 'brave', 'opera'];
 const DEFAULT_SHORTCUTS_BY_APP = Object.freeze({
   teams: [
-    { label: 'Mute', combo: 'Ctrl+Shift+M', icon: '🎙️' },
+    { label: 'Mute', combo: 'Alt+Super+k', icon: '🎙️' },
     { label: 'Camera', combo: 'Ctrl+Shift+O', icon: '📹' },
     { label: 'Accept audio', combo: 'Ctrl+Shift+S', icon: '📞' },
     { label: 'Hang up', combo: 'Ctrl+Shift+H', icon: '📴' },
@@ -123,6 +123,22 @@ function normalizeMode(value) {
 function normalizeShortcutCount(value) {
   const count = Number(value);
   return Number.isInteger(count) && count >= 4 && count <= 8 ? count : 4;
+}
+
+function teamsMeetingLinks(value) {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.toLowerCase();
+    if (parsed.protocol !== 'https:' || parsed.port
+      || (host !== 'teams.microsoft.com' && host !== 'teams.live.com')
+      || !/^\/(?:l|meet)\//i.test(parsed.pathname)) return null;
+    return {
+      web: parsed.href,
+      desktop: 'msteams://' + host + parsed.pathname + parsed.search + parsed.hash,
+    };
+  } catch (e) {
+    return null;
+  }
 }
 
 function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, focusApp, hasAppWindow, tapCombo, fs, env = process.env }) {
@@ -203,13 +219,33 @@ function createOfficeActions({ getOptions, launchApp, openExternal, focusTeams, 
     return { ok, combo, focused: !!focus.ok, focusError: focus.ok ? undefined : focus.error, error: ok ? undefined : 'The key combination could not be sent.' };
   }
 
-  async function run(kind, index, shortcutIndex) {
+  async function openMeeting(value) {
+    const links = teamsMeetingLinks(value);
+    if (!links) return { ok: false, error: 'Invalid Microsoft Teams meeting link.' };
+    const options = getOptions() || {};
+    let teamsSlot = -1;
+    for (let index = 0; index < DEFAULT_APPS.length; index++) {
+      const configured = OFFICE_APPS[options['app' + (index + 1)]] ? options['app' + (index + 1)] : DEFAULT_APPS[index];
+      if (configured === 'teams') { teamsSlot = index; break; }
+    }
+    const mode = teamsSlot >= 0 ? normalizeMode(options['mode' + (teamsSlot + 1)]) : 'prefer-desktop';
+    if (mode !== 'web') {
+      const opened = await openExternal(links.desktop);
+      if (opened) return { ok: true, app: 'teams', method: 'desktop' };
+      if (mode === 'desktop') return { ok: false, app: 'teams', method: 'desktop', error: 'Microsoft Teams desktop could not open the meeting.' };
+    }
+    const opened = await openExternal(links.web);
+    return { ok: !!opened, app: 'teams', method: 'web', error: opened ? undefined : 'The Teams meeting could not be opened.' };
+  }
+
+  async function run(kind, index, shortcutIndex, target) {
     if (kind === 'app') return runApp(index);
     if (kind === 'shortcut') return runShortcut(index, shortcutIndex);
+    if (kind === 'meeting') return openMeeting(target);
     return { ok: false, error: 'unknown Office action' };
   }
 
   return { run };
 }
 
-module.exports = { DEFAULT_APPS, DEFAULT_SHORTCUTS_BY_APP, OFFICE_APPS, createOfficeActions, normalizeMode, normalizeShortcutCount, officeInstallCandidates };
+module.exports = { DEFAULT_APPS, DEFAULT_SHORTCUTS_BY_APP, OFFICE_APPS, createOfficeActions, normalizeMode, normalizeShortcutCount, officeInstallCandidates, teamsMeetingLinks };

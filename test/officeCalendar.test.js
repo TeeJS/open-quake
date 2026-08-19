@@ -78,6 +78,7 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   assert.doesNotMatch(html, /id="moreToggle"/);
   assert.doesNotMatch(script, /window\.open\s*\(/);
   assert.match(script, /\/api\/office\/action\//);
+  assert.match(script, /\/api\/office\/action\/meeting\?url=/);
   assert.match(script, /\/office-icons\//);
   assert.match(script, /DEFAULT_SHORTCUTS_BY_APP/);
   assert.match(script, /prefix \+ 'Icon'/);
@@ -85,9 +86,12 @@ test('Office touchscreen controls are host-routed and configurable shortcuts are
   assert.match(script, /IconImageSrc/);
   assert.match(script, /document\.createElement\('img'\)/);
   assert.match(css, /repeat\(var\(--shortcut-count\), minmax\(0, 1fr\)\)/);
+  assert.match(css, /\.shortcut-glyph img\s*{[^}]*width:\s*54px[^}]*height:\s*54px[^}]*object-fit:\s*contain[^}]*object-position:\s*center/s);
   assert.match(editorHtml, /\.officeShortcutRow\s*{[^}]*display:\s*grid/s);
-  assert.match(editorHtml, /\.officeShortcutIcon\s*{[^}]*width:\s*80px[^}]*padding-right:\s*26px/s);
+  assert.match(editorHtml, /\.officeShortcutIcon\s*{[^}]*width:\s*80px/s);
+  assert.doesNotMatch(editorHtml, /\.officeShortcutIcon\s*{[^}]*padding-right/s);
   assert.match(editor, /configApi\.pickImage\(\)/);
+  assert.doesNotMatch(editor, /title="Emoji fallback when no image is selected"/);
   assert.match(css, /\.meeting-strip\s*{[^}]*position:\s*relative/s);
   assert.match(css, /\.auth\s*{[^}]*position:\s*absolute/s);
   assert.doesNotMatch(css, /\.auth\s*{[^}]*position:\s*fixed/s);

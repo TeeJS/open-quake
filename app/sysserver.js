@@ -412,6 +412,17 @@ function allowedOfficeExternalUrl(value) {
     return allowed ? parsed.href : null;
   } catch (e) { return null; }
 }
+function allowedTeamsMeetingUrl(value) {
+  const target = allowedOfficeExternalUrl(value);
+  if (!target) return null;
+  try {
+    const parsed = new URL(target);
+    const host = parsed.hostname.toLowerCase();
+    return !parsed.port
+      && (host === 'teams.microsoft.com' || host === 'teams.live.com')
+      && /^\/(?:l|meet)\//i.test(parsed.pathname) ? parsed.href : null;
+  } catch (e) { return null; }
+}
 
 // Voice-panel apps: the only routes in this server that need a request body (turn text, raw PCM
 // audio) rather than a query string -- so they're the only ones allowed to be POST. Everything
@@ -719,6 +730,15 @@ async function handler(req, res) {
     return;
   }
   if (url.indexOf('/api/office/action/') === 0) {
+    if (url === '/api/office/action/meeting') {
+      const target = allowedTeamsMeetingUrl(queryValue(full, 'url'));
+      let result = { ok: false, error: 'Invalid Microsoft Teams meeting link.' };
+      if (target && typeof onOfficeAction === 'function') {
+        try { result = await onOfficeAction('meeting', undefined, undefined, target); }
+        catch (e) { result = { ok: false, error: e.message || 'Office action failed' }; }
+      }
+      return json(res, result);
+    }
     const match = /^\/api\/office\/action\/(app)\/([0-3])$/.exec(url)
       || /^\/api\/office\/action\/(shortcut)\/([0-3])\/([0-7])$/.exec(url);
     let result = { ok: false, error: 'unknown Office action' };

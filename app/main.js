@@ -565,10 +565,17 @@ const officeActions = createOfficeActions({
   },
   launchApp: value => actionRunner.launchApp(value, actionDeps),
   openExternal: async value => {
+    // A validated Teams meeting deep link deliberately bypasses the browser's client chooser.
+    // Unlike the bare launch protocol below, use shell.openExternal so URL query separators never
+    // pass through cmd.exe.
+    if (/^msteams:\/\/(?:teams\.microsoft\.com|teams\.live\.com)\//i.test(value)) {
+      try { await shell.openExternal(value); return true; }
+      catch (e) { console.log('Teams meeting open error:', e.message); return false; }
+    }
     // Teams desktop: `start ms-teams:` (via cmd, exactly as a Shell-command tile runs it) is the
     // invocation that reliably restores a CLOSED new-Teams window from the tray. shell.openExternal
     // and `start "" ms-teams:` (empty title) do NOT — they leave the window hidden. User-validated.
-    if (value.startsWith('ms-teams:') || value.startsWith('msteams:')) {
+    if (value === 'ms-teams:' || value === 'msteams:') {
       return new Promise(resolve => {
         exec('start ' + value, { windowsHide: true }, err => {
           if (err) console.log('Teams launch error:', err.message);

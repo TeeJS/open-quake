@@ -26,7 +26,7 @@
   };
   var DEFAULT_APPS = ['teams', 'outlook', 'word', 'excel'];
   var DEFAULT_SHORTCUTS_BY_APP = {
-    teams: [{ label: 'Mute', keys: 'Ctrl+Shift+M', icon: '🎙️' }, { label: 'Camera', keys: 'Ctrl+Shift+O', icon: '📹' }, { label: 'Accept audio', keys: 'Ctrl+Shift+S', icon: '📞' }, { label: 'Hang up', keys: 'Ctrl+Shift+H', icon: '📴' }],
+    teams: [{ label: 'Mute', keys: 'Alt+Super+K', icon: '🎙️' }, { label: 'Camera', keys: 'Ctrl+Shift+O', icon: '📹' }, { label: 'Accept audio', keys: 'Ctrl+Shift+S', icon: '📞' }, { label: 'Hang up', keys: 'Ctrl+Shift+H', icon: '📴' }],
     outlook: [{ label: 'New message', keys: 'Ctrl+N', icon: '✉️' }, { label: 'Reply', keys: 'Ctrl+R', icon: '↩️' }, { label: 'Forward', keys: 'Ctrl+F', icon: '↪️' }, { label: 'Send', keys: 'Alt+S', icon: '🚀' }],
     word: [{ label: 'New document', keys: 'Ctrl+N', icon: '📄' }, { label: 'Save', keys: 'Ctrl+S', icon: '💾' }, { label: 'Find', keys: 'Ctrl+F', icon: '🔍' }, { label: 'Undo', keys: 'Ctrl+Z', icon: '↶' }],
     excel: [{ label: 'New workbook', keys: 'Ctrl+N', icon: '📊' }, { label: 'Save', keys: 'Ctrl+S', icon: '💾' }, { label: 'Find', keys: 'Ctrl+F', icon: '🔍' }, { label: 'Undo', keys: 'Ctrl+Z', icon: '↶' }],
@@ -173,9 +173,11 @@
     return openExternal(TEAMS_URLS[action] || TEAMS_URLS.office);
   }
 
-  function runOfficeAction(kind, index, shortcutIndex) {
-    setStatus(kind === 'app' ? 'Opening Office app…' : 'Sending keyboard shortcut…', false);
-    var path = '/api/office/action/' + kind + '/' + index;
+  function runOfficeAction(kind, index, shortcutIndex, target) {
+    setStatus(kind === 'app' ? 'Opening Office app…' : kind === 'meeting' ? 'Opening meeting…' : 'Sending keyboard shortcut…', false);
+    var path = kind === 'meeting'
+      ? '/api/office/action/meeting?url=' + encodeURIComponent(target || '')
+      : '/api/office/action/' + kind + '/' + index;
     if (kind === 'shortcut') path += '/' + shortcutIndex;
     return fetch(path, { cache: 'no-store' }).then(function (response) {
       if (!response.ok) throw new Error('Office action failed.');
@@ -304,7 +306,9 @@
 
     var url = event.joinUrl || event.webLink || TEAMS_URLS.calendar;
     actionLabel.textContent = event.joinUrl ? 'Join meeting' : (event.webLink ? 'Open meeting' : 'Open calendar');
-    actionButton.onclick = function () { openExternal(url); };
+    actionButton.onclick = function () {
+      return event.joinUrl ? runOfficeAction('meeting', null, null, event.joinUrl) : openExternal(url);
+    };
   }
 
   function renderAgenda(events, primary) {

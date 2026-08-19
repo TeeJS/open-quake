@@ -455,7 +455,7 @@
     return option ? option.default : '';
   }
   const OFFICE_SHORTCUT_DEFAULTS = {
-    teams: [['Mute', 'Ctrl+Shift+M', '🎙️'], ['Camera', 'Ctrl+Shift+O', '📹'], ['Accept audio', 'Ctrl+Shift+S', '📞'], ['Hang up', 'Ctrl+Shift+H', '📴']],
+    teams: [['Mute', 'Alt+Super+K', '🎙️'], ['Camera', 'Ctrl+Shift+O', '📹'], ['Accept audio', 'Ctrl+Shift+S', '📞'], ['Hang up', 'Ctrl+Shift+H', '📴']],
     outlook: [['New message', 'Ctrl+N', '✉️'], ['Reply', 'Ctrl+R', '↩️'], ['Forward', 'Ctrl+F', '↪️'], ['Send', 'Alt+S', '🚀']],
     word: [['New document', 'Ctrl+N', '📄'], ['Save', 'Ctrl+S', '💾'], ['Find', 'Ctrl+F', '🔍'], ['Undo', 'Ctrl+Z', '↶']],
     excel: [['New workbook', 'Ctrl+N', '📊'], ['Save', 'Ctrl+S', '💾'], ['Find', 'Ctrl+F', '🔍'], ['Undo', 'Ctrl+Z', '↶']],
@@ -493,7 +493,7 @@
         const imageSrc = imagePath ? imgUrl(imagePath) : '';
         return `<div class="officeShortcutRow">
           <div class="officeShortcutIconGroup">
-            <input class="officeShortcutIcon" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" list="officeShortcutIcons" value="${esc(shortcutValue(index, shortcutIndex, 'Icon'))}" maxlength="8" aria-label="Shortcut ${shortcutIndex} emoji" title="Emoji fallback when no image is selected">
+            <input class="officeShortcutIcon" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" list="officeShortcutIcons" value="${esc(shortcutValue(index, shortcutIndex, 'Icon'))}" maxlength="8" aria-label="Shortcut ${shortcutIndex} emoji">
             <button class="officeShortcutImage" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" type="button" title="Choose a PNG, JPG, GIF, WebP, BMP, ICO, or SVG">${imageSrc ? `<img src="${esc(imageSrc)}" alt="Shortcut ${shortcutIndex} image preview">` : 'Image…'}</button>
             <button class="officeShortcutImageClear" data-app-index="${index}" data-shortcut-index="${shortcutIndex}" type="button" title="Remove shortcut image" aria-label="Remove shortcut ${shortcutIndex} image" style="visibility:${imagePath ? 'visible' : 'hidden'}">×</button>
           </div>
