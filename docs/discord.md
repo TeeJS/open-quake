@@ -44,6 +44,11 @@ the controls and open-quake shows **Connected**.
   stored **encrypted** on your PC and never leaves the app's main process.
 - **Rich Presence** (showing "using open-quake" as your Discord status) needs only the Application ID
   — no authorize step — so it works even without the voice-control connect above.
+- The Activity view reports capabilities as **ready**, **awaiting use**, or **unavailable**. Some
+  features are verified only when they become relevant, such as participant controls after joining
+  a voice channel. Tap the capability summary for the full breakdown.
+- A saved Rich Presence setting is applied automatically whenever Discord reconnects. The panel
+  distinguishes the saved setting from whether Discord has confirmed it in the current session.
 
 ## Troubleshooting
 

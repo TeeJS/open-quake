@@ -68,6 +68,53 @@
     connectionQuality: 'Voice connection quality', messageEvents: 'Live messages', messageHistory: 'Message history',
     notifications: 'Notifications', currentUserEvents: 'Account updates',
   };
+  const CAPABILITY_HINTS = {
+    perUserVoiceControl: 'Use mute or volume on a voice participant.',
+    textChannelSelection: 'Open a text channel in Chat.',
+    activity: 'Applied automatically from your saved setting.',
+    participants: 'Join a voice channel.', speakingEvents: 'Join a voice channel.',
+    messageEvents: 'Open a text channel in Chat.', messageHistory: 'Open a text channel in Chat.',
+  };
+  const CAPABILITY_STATE_LABELS = {
+    available: 'Ready', unverified: 'Awaiting use', 'temporary-error': 'Retry needed',
+    unsupported: 'Unavailable', 'auth-failure': 'Reconnect required',
+  };
+
+  function capabilityDetail(item) {
+    if (item.status === 'available') return 'Confirmed by Discord.';
+    if (item.status === 'unverified') return item.hint;
+    if (item.status === 'temporary-error') return 'Use this feature again to retry.';
+    if (item.status === 'auth-failure') return 'Reconnect Discord to check this feature.';
+    if (item.status === 'unsupported') return 'Discord does not expose this feature.';
+    return 'Not checked in this session.';
+  }
+
+  function capabilitySummary(state, connected) {
+    const entries = Object.entries(CAPABILITY_LABELS).map(([name, label]) => {
+      const status = capabilityState(state, name);
+      return { name, label, status, hint: CAPABILITY_HINTS[name] || 'Verified automatically when Discord connects.' };
+    });
+    const ready = entries.filter(item => item.status === 'available').length;
+    const awaiting = entries.filter(item => item.status === 'unverified').length;
+    const attention = entries.length - ready - awaiting;
+    const secondary = !connected ? 'Connect to verify'
+      : attention ? (entries.length - ready) + ' need attention'
+        : awaiting ? awaiting + ' awaiting use' : 'All capabilities ready';
+    const items = entries.map(item => '<li class="capability-item capability-' + esc(item.status) + '"><div><strong>' + esc(item.label) + '</strong><small>' + esc(capabilityDetail(item)) + '</small></div><span>' + esc(CAPABILITY_STATE_LABELS[item.status] || 'Not checked') + '</span></li>').join('');
+    return '<button type="button" class="capability-count" popovertarget="discord-capabilities" aria-label="Show Discord capability details"><strong>' + ready + ' ready</strong><small>' + esc(secondary) + '</small></button>'
+      + '<div class="capability-popover" id="discord-capabilities" role="dialog" aria-modal="true" aria-labelledby="discord-capabilities-title" popover><header><div><div class="eyebrow">Discord RPC</div><h2 id="discord-capabilities-title">Capabilities</h2></div><button type="button" class="popover-close" popovertarget="discord-capabilities" popovertargetaction="hide" aria-label="Close capability details">Close</button></header><p>Features are marked ready only after Discord confirms them in this session.</p><ul>' + items + '</ul></div>';
+  }
+
+  function richPresenceDisplay(activityState, enabled, connected) {
+    if (activityState === 'available') return enabled
+      ? { label: 'Active', detail: 'Publishing supported open-quake activity.' }
+      : { label: 'Off', detail: 'Discord confirmed that no activity is being published.' };
+    if (activityState === 'temporary-error') return { label: 'Confirmation failed', detail: 'Discord could not confirm the saved setting. Change it to retry.' };
+    if (activityState === 'auth-failure') return { label: 'Reconnect required', detail: 'Reconnect Discord to verify this setting.' };
+    if (activityState === 'unsupported') return { label: 'Unavailable', detail: 'This Discord connection does not support activity updates.' };
+    if (connected) return { label: enabled ? 'Configured on' : 'Configured off', detail: 'Checking the saved setting with Discord…' };
+    return { label: enabled ? 'Configured on' : 'Configured off', detail: 'Connect Discord to verify this setting.' };
+  }
 
   function voiceView(state) {
     if (!state.connection || state.connection.state !== 'connected') return connectionView(state.connection || {});
@@ -110,7 +157,8 @@
     const guild = (state.guilds || []).find(item => String(item.id) === String(channel.guild_id || ''));
     const activityState = capabilityState(state, 'activity');
     const activitySupported = connected && canAttempt(state, 'activity');
-    const available = Object.keys(CAPABILITY_LABELS).filter(name => capability(state, name)).length;
+    const presence = richPresenceDisplay(activityState, !!settings.richPresence, connected);
+    const capabilityDisplay = capabilitySummary(state, connected);
     const events = Array.isArray(state.recentEvents) ? state.recentEvents.slice(0, 8) : [];
     const quality = state.voiceConnection || {}, qualityState = qualityDetails(quality), notifications = Array.isArray(state.notifications) ? state.notifications.slice(0, 6) : [];
     const currentUser = state.currentUser || {};
@@ -118,7 +166,7 @@
     const accountName = accountAvailable ? displayName(currentUser) : 'Identity unavailable';
     const status = { 'not-running': 'Discord not running', connecting: 'Connecting', connected: 'Connected', reconnecting: 'Reconnecting', disconnected: 'Disconnected', error: 'Connection error' }[connection.state] || 'Disconnected';
     return '<section class="activity-view"><article class="card activity-overview"><div class="section-heading"><div><div class="eyebrow">Discord status</div><h2>Connection</h2></div><span class="state-pill ' + (connected ? 'connected' : 'disconnected') + '"><span class="dot ' + (connected ? '' : 'inactive') + '"></span>' + esc(status) + '</span></div><div class="identity-row">' + avatar(accountAvailable ? currentUser : { displayName: 'Account' }, 'identity-avatar') + '<div><span>' + (accountAvailable ? 'Signed in as' : 'Current account') + '</span><strong>' + esc(accountName) + '</strong></div></div><div class="voice-summary"><div><span>Current voice</span><strong title="' + esc(channel.name || 'No voice channel selected') + '">' + esc(channel.name || 'No voice channel selected') + '</strong><small>' + esc(guild && guild.name || channel.guild_name || 'No active server') + '</small></div><div class="quality-tile ' + qualityState.tone + '">' + icon('pulse') + '<span>' + esc(qualityState.label) + '</span><strong>' + esc(qualityState.ping) + '</strong></div></div>' + (connection.error ? '<div class="activity-error" role="status">' + esc(connection.error) + '</div>' : '') + '</article>'
-      + '<article class="card presence-card"><div class="section-heading"><div><div class="eyebrow">Voice &amp; presence</div><h2>Live state</h2></div><span class="capability-count">' + available + ' of ' + Object.keys(CAPABILITY_LABELS).length + '</span></div><dl class="activity-facts"><div><dt>Voice</dt><dd>' + (capability(state, 'voiceSettings') ? esc((voice.mute ? 'Muted' : 'Mic on') + ' · ' + (voice.deaf ? 'Deafened' : 'Audio on')) : 'Unavailable') + '</dd></div><div><dt>Connection</dt><dd>' + esc(quality.state || 'No live status') + '</dd></div><div><dt>Last / average ping</dt><dd>' + (quality.lastPing == null ? 'Unavailable' : esc(quality.lastPing + ' / ' + quality.averagePing + ' ms')) + '</dd></div></dl><div class="presence-control"><div><span>Rich Presence</span><strong>' + (activitySupported ? (settings.richPresence ? 'Enabled' : activityState === 'available' ? 'Disabled' : 'Not yet verified') : 'Unavailable') + '</strong><small>' + (activitySupported ? (activityState === 'available' ? 'Publish supported open-quake activity.' : 'Availability will be verified when you change this setting.') : 'This Discord connection does not support activity updates.') + '</small></div>' + (activitySupported ? '<button class="accent" data-action="rich-presence" data-value="' + (!settings.richPresence) + '">' + (settings.richPresence ? 'Disable' : 'Enable') + '</button>' : '') + '</div></article>'
+      + '<article class="card presence-card"><div class="section-heading"><div><div class="eyebrow">Voice &amp; presence</div><h2>Live state</h2></div>' + capabilityDisplay + '</div><dl class="activity-facts"><div><dt>Discord RPC</dt><dd>' + esc(status) + '</dd></div><div><dt>Voice settings</dt><dd>' + (capability(state, 'voiceSettings') ? esc((voice.mute ? 'Muted' : 'Mic on') + ' · ' + (voice.deaf ? 'Deafened' : 'Audio on')) : 'Unavailable') + '</dd></div><div><dt>Voice channel</dt><dd>' + esc(channel.id ? channel.name || 'Connected' : 'Not connected') + '</dd></div><div><dt>Ping</dt><dd>' + (quality.lastPing == null ? '— No active voice connection' : esc(quality.lastPing + ' / ' + quality.averagePing + ' ms')) + '</dd></div></dl><div class="presence-control"><div><span>Rich Presence</span><strong>' + esc(presence.label) + '</strong><small>' + esc(presence.detail) + '</small></div>' + (activitySupported ? '<button class="accent" data-action="rich-presence" data-value="' + (!settings.richPresence) + '">' + (settings.richPresence ? 'Turn off' : 'Turn on') + '</button>' : '') + '</div></article>'
       + '<article class="card recent-card"><div class="feed-column"><div class="feed-heading">' + icon('bell') + '<div><div class="eyebrow">Inbox</div><h2>Notifications</h2></div><span class="count-pill">' + notifications.length + '</span></div>' + (notifications.length ? '<ol class="event-list notification-list" data-preserve-scroll="activity-notifications">' + notifications.map(item => '<li>' + (item.iconUrl ? '<span class="event-icon"><img src="' + esc(item.iconUrl) + '" alt=""></span>' : '<span class="event-icon">' + icon('bell') + '</span>') + '<span class="event-copy"><strong>' + esc(item.title || 'Discord notification') + '</strong><small>' + esc(item.body || '') + '</small></span><time>' + esc(localTime(item.at)) + '</time></li>').join('') + '</ol>' : '<div class="feed-empty">No recent Discord notifications.</div>') + '</div><div class="feed-column"><div class="feed-heading">' + icon('activity') + '<div><div class="eyebrow">RPC stream</div><h2>Recent events</h2></div><span class="count-pill">' + events.length + '</span></div>' + (events.length ? '<ol class="event-list" data-preserve-scroll="activity-events">' + events.slice(0, 5).map(event => '<li><span class="event-icon">' + icon('spark') + '</span><span class="event-copy"><strong>' + esc(event.label || 'Discord activity received') + '</strong><small>' + esc(event.type || 'Discord event') + '</small></span><time>' + esc(localTime(event.at)) + '</time></li>').join('') + '</ol>' : '<div class="feed-empty">No recent Discord events.</div>') + '</div></article></section>';
   }
 

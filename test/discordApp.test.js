@@ -60,6 +60,28 @@ test('Discord layout is fixed to 1920x480 conventions with large touch controls 
   assert.doesNotMatch(css, /:hover/);
 });
 
+test('Discord dropdown options use explicit contrasting theme colours', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../app/discordview.css'), 'utf8');
+  const options = css.match(/select option,\s*select optgroup\s*{([^}]*)}/)[1];
+  assert.match(options, /background-color:\s*var\(--panel-strong\)/);
+  assert.match(options, /color:\s*var\(--text\)/);
+});
+
+test('Chat gives discovery columns more space than the recent-message surface', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../app/discordview.css'), 'utf8');
+  assert.match(css, /\.chat-view\s*{[\s\S]*?grid-template-columns:\s*minmax\(360px, 1fr\) minmax\(360px, 1fr\) minmax\(480px, 1\.35fr\)/);
+});
+
+test('Chat message cards grow to show complete message text', () => {
+  const css = fs.readFileSync(path.join(__dirname, '../app/discordview.css'), 'utf8');
+  const list = css.match(/\.message-list\s*{([^}]*)}/)[1];
+  const body = css.match(/\.message-copy p\s*{([^}]*)}/)[1];
+  assert.match(list, /grid-auto-rows:\s*max-content/);
+  assert.match(body, /overflow-wrap:\s*anywhere/);
+  assert.match(body, /white-space:\s*pre-wrap/);
+  assert.doesNotMatch(body, /line-clamp|overflow:\s*hidden|display:\s*-webkit-box/);
+});
+
 test('disconnected states render readable status and reconnect where appropriate', () => {
   for (const state of ['not-running', 'disconnected', 'error']) assert.match(view.voiceView({ connection: { state }, capabilities: {} }), /data-action="reconnect"/);
   for (const state of ['connecting', 'reconnecting']) assert.doesNotMatch(view.voiceView({ connection: { state }, capabilities: {} }), /data-action="reconnect"/);
@@ -94,7 +116,7 @@ test('mute, deafen, guild/channel selection, and leaving update through the serv
   assert.equal(host.getSnapshot().channel.name, 'Music');
   await host.action('leave');
   assert.equal(host.getSnapshot().channel, null);
-  assert.deepEqual(service.calls.slice(-5), [['voice', { mute: true }], ['voice', { deaf: true }], ['guild', 'guild'], ['channel', 'music'], ['channel', null]]);
+  assert.deepEqual(service.calls.filter(call => call[0] !== 'activity').slice(-5), [['voice', { mute: true }], ['voice', { deaf: true }], ['guild', 'guild'], ['channel', 'music'], ['channel', null]]);
   host.stop();
 });
 
@@ -118,7 +140,7 @@ test('Voice guild selection is independent of the connected guild and survives u
   assert.equal(snapshot.channel.id, 'lounge');
   assert.equal(snapshot.channel.guild_id, 'other');
   assert.equal(snapshot.voiceSelection.channelId, 'lounge');
-  assert.deepEqual(service.calls.slice(-2), [['guild', 'other'], ['channel', 'lounge']]);
+  assert.deepEqual(service.calls.filter(call => call[0] !== 'activity').slice(-2), [['guild', 'other'], ['channel', 'lounge']]);
   host.stop();
 });
 
@@ -209,7 +231,7 @@ test('voice participant events, speaking state, and per-user controls update san
   assert.equal(participant.localMute, true);
   assert.equal(participant.volume, 175);
   assert.equal(host.getSnapshot().voiceControlLock, true);
-  assert.deepEqual(service.calls.slice(-2), [['participant', '42', { mute: true }], ['participant', '42', { volume: 175 }]]);
+  assert.deepEqual(service.calls.filter(call => call[0] !== 'activity').slice(-2), [['participant', '42', { mute: true }], ['participant', '42', { volume: 175 }]]);
   service.emit('event', { type: 'SPEAKING_STOP', data: { user_id: '42' } });
   service.emit('event', { type: 'VOICE_STATE_DELETE', data: { user: { id: '42' } } });
   assert.deepEqual(host.getSnapshot().participants, []);
@@ -263,11 +285,16 @@ test('Chat filters voice and category channels, then opens a selected text chann
 
 test('Chat consumes historical and live message create/update/delete data with bounded sanitized history', async () => {
   const service = new MockDiscordService();
-  service.selectTextChannel = id => Promise.resolve({ id, name: 'general', type: 0, messages: [{ id: 'old', content: 'history', timestamp: '2026-01-01T00:00:00Z', author: { id: '1', username: 'Alex', email: 'drop' } }] });
+  service.selectTextChannel = id => Promise.resolve({ id, name: 'general', type: 0, messages: [
+    { id: 'middle', content: 'middle history', timestamp: '2026-01-02T00:00:00Z', author: { id: '1', username: 'Alex', email: 'drop' } },
+    { id: 'unknown', content: 'undated history', author: { id: '1', username: 'Alex' } },
+    { id: 'newest', content: 'newest history', timestamp: '2026-01-03T00:00:00Z', author: { id: '1', username: 'Alex' } },
+    { id: 'oldest', content: 'oldest history', timestamp: '2026-01-01T00:00:00Z', author: { id: '1', username: 'Alex' } },
+  ] });
   const host = new DiscordAppHost(service); host.start(); await host.refresh();
   await host.action('chat-guild', 'guild'); await host.action('chat-channel', 'general');
   assert.equal(host.getSnapshot().chat.historyAvailable, true);
-  assert.equal(host.getSnapshot().chat.messages[0].content, 'history');
+  assert.deepEqual(host.getSnapshot().chat.messages.map(message => message.id), ['newest', 'middle', 'oldest', 'unknown']);
   for (let i = 0; i < RECENT_MESSAGE_LIMIT + 3; i += 1) service.emit('event', { type: 'MESSAGE_CREATE', data: { channel_id: 'general', message: { id: 'm' + i, content: 'message ' + i, author: { id: '2', username: 'Casey', token: 'drop' } } } });
   service.emit('event', { type: 'MESSAGE_UPDATE', data: { channel_id: 'general', message: { id: 'm22', content: 'edited', edited_timestamp: '2026-01-01T00:00:01Z' } } });
   service.emit('event', { type: 'MESSAGE_DELETE', data: { channel_id: 'general', message: { id: 'm22' } } });
@@ -412,9 +439,12 @@ test('Activity renders connected account, voice, channel, guild, capabilities, a
   assert.match(html, /Open Quake/);
   assert.match(html, /General/);
   assert.match(html, /Mic on · Audio on/);
-  assert.match(html, /Enabled/);
-  assert.match(html, /14 of 14/);
-  assert.match(html, /No live status/);
+  assert.match(html, /Active/);
+  assert.match(html, /14 ready/);
+  assert.match(html, /All capabilities ready/);
+  assert.match(html, /Discord RPC[\s\S]*Connected/);
+  assert.match(html, /Voice channel[\s\S]*General/);
+  assert.match(html, /No active voice connection/);
   assert.doesNotMatch(html, /fake|sample|demo server/i);
 });
 
@@ -424,8 +454,27 @@ test('Activity degrades cleanly when disconnected or capabilities are unavailabl
   assert.match(html, /No active server/);
   assert.match(html, /No voice channel selected/);
   assert.match(html, /Rich Presence[\s\S]*Unavailable/);
-  assert.match(html, /0 of 14/);
+  assert.match(html, /0 ready/);
+  assert.match(html, /Connect to verify/);
   assert.doesNotMatch(html, /data-action="rich-presence"/);
+});
+
+test('Activity explains capabilities that require user interaction', () => {
+  const service = new MockDiscordService();
+  const state = Object.assign(connected(service), {
+    capabilityStates: service.getCapabilityStates(), settings: DEFAULT_DISCORD_SETTINGS,
+  });
+  for (const name of ['activity', 'participants', 'speakingEvents', 'perUserVoiceControl']) {
+    state.capabilities[name] = false;
+    state.capabilityStates[name] = 'unverified';
+  }
+  const html = view.activityView(state);
+  assert.match(html, /10 ready/);
+  assert.match(html, /4 awaiting use/);
+  assert.match(html, /Show Discord capability details/);
+  assert.match(html, /role="dialog" aria-modal="true"/);
+  assert.match(html, /Activity \/ Rich Presence[\s\S]*Applied automatically from your saved setting[\s\S]*Awaiting use/);
+  assert.match(html, /Voice participants[\s\S]*Join a voice channel[\s\S]*Awaiting use/);
 });
 
 test('Activity recent events are bounded and never expose raw event payloads', async () => {
@@ -450,7 +499,8 @@ test('voice connection quality and bounded notifications expose only useful sani
   assert.deepEqual(snapshot.voiceConnection, { state: 'VOICE_CONNECTED', lastPing: 11, averagePing: 12.5, pings: Array.from({ length: 20 }, (_, i) => i + 5) });
   assert.equal(snapshot.notifications.length, RECENT_NOTIFICATION_LIMIT);
   assert.doesNotMatch(JSON.stringify(snapshot), /private\.discord\.gg|secret|drop/);
-  assert.match(view.activityView(snapshot), /VOICE_CONNECTED/);
+  assert.match(view.activityView(snapshot), /Voice channel[\s\S]*General/);
+  assert.match(view.activityView(snapshot), /11 \/ 12\.5 ms/);
   assert.match(view.activityView(snapshot), /Mention/);
   host.stop();
 });
@@ -466,22 +516,31 @@ test('Discord data sanitizers reject raw secrets and clamp participant controls'
 test('Activity Rich Presence toggle uses the supported service action and persists state', async () => {
   const service = new MockDiscordService(); let saved;
   const host = new DiscordAppHost(service, { saveSettings: value => { saved = value; return true; } });
-  host.start(); await host.refresh(); await host.action('rich-presence', true);
+  host.start(); await new Promise(resolve => setImmediate(resolve)); await host.action('rich-presence', true);
   assert.equal(saved.richPresence, true);
   assert.equal(host.getSnapshot().settings.richPresence, true);
   assert.deepEqual(service.calls.at(-1), ['activity', { details: 'Using open-quake' }]);
   host.stop();
 });
 
-test('Rich Presence remains unverified until the user invokes the non-destructive toggle path', () => {
+test('saved Rich Presence is applied automatically after Discord connects', async () => {
+  const service = new MockDiscordService();
+  const host = new DiscordAppHost(service, { getSettings: () => ({ richPresence: true }) });
+  host.start();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(service.calls.find(call => call[0] === 'activity'), ['activity', { details: 'Using open-quake' }]);
+  host.stop();
+});
+
+test('Rich Presence distinguishes saved configuration from session verification', () => {
   const service = new MockDiscordService();
   const state = Object.assign(connected(service), {
     capabilityStates: Object.assign(service.getCapabilityStates(), { activity: 'unverified' }),
     settings: DEFAULT_DISCORD_SETTINGS,
   });
   const html = view.activityView(state);
-  assert.match(html, /Not yet verified/);
-  assert.match(html, /Availability will be verified/);
+  assert.match(html, /Configured off/);
+  assert.match(html, /Checking the saved setting with Discord/);
   assert.match(html, /data-action="rich-presence"/);
   state.capabilityStates.activity = 'temporary-error';
   assert.match(view.activityView(state), /data-action="rich-presence"/);

@@ -84,6 +84,15 @@ function sanitizeMessage(value, channelId) {
   };
 }
 
+function newestMessageFirst(left, right) {
+  const leftTime = Date.parse(left && left.timestamp);
+  const rightTime = Date.parse(right && right.timestamp);
+  const leftValid = Number.isFinite(leftTime), rightValid = Number.isFinite(rightTime);
+  if (!leftValid) return rightValid ? 1 : 0;
+  if (!rightValid) return -1;
+  return rightTime - leftTime;
+}
+
 function sanitizeNotification(value) {
   if (!value || typeof value !== 'object') return null;
   const icon = cleanString(value.icon_url, 512);
@@ -152,7 +161,7 @@ class DiscordAppHost extends EventEmitter {
       }
       this._recordEvent('connection', 'Connection: ' + (value.state || 'disconnected'));
       this._emit();
-      if (value.state === 'connected') this.refresh();
+      if (value.state === 'connected') this._refreshConnectedState();
     };
     this._onCapabilities = value => {
       this.snapshot.capabilities = value;
@@ -171,7 +180,7 @@ class DiscordAppHost extends EventEmitter {
     this.service.on('state', this._onState);
     this.service.on('capabilities', this._onCapabilities);
     this.service.on('event', this._onEvent);
-    if (this.snapshot.connection.state === 'connected') this.refresh();
+    if (this.snapshot.connection.state === 'connected') this._refreshConnectedState();
   }
 
   stop() {
@@ -190,6 +199,16 @@ class DiscordAppHost extends EventEmitter {
     this.snapshot.settings = this._publicSettings(this.settings);
     this.service.setAutoReconnect(this.settings.autoReconnect);
     this._emit();
+  }
+
+  async _refreshConnectedState() {
+    await this.refresh();
+    if (!this.started || this.snapshot.connection.state !== 'connected' || !canAttemptCapability(this.snapshot, 'activity')) return;
+    try {
+      await this.service.setActivity(this.settings.richPresence ? { details: 'Using open-quake' } : null);
+    } catch (error) {
+      // DiscordService records the capability failure; the remaining Discord controls stay usable.
+    }
   }
 
   async refresh() {
@@ -364,7 +383,8 @@ class DiscordAppHost extends EventEmitter {
       this.snapshot.chat.historyAvailable = false;
       return;
     }
-    this.snapshot.chat.messages = value.map(item => sanitizeMessage(item, channelId)).filter(Boolean).slice(0, RECENT_MESSAGE_LIMIT);
+    this.snapshot.chat.messages = value.map(item => sanitizeMessage(item, channelId)).filter(Boolean)
+      .sort(newestMessageFirst).slice(0, RECENT_MESSAGE_LIMIT);
     this.snapshot.chat.historyAvailable = true;
   }
 
