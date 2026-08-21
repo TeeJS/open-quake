@@ -192,6 +192,16 @@ function createClaudeVoiceSession(options) {
       return true;
     },
     permissionMode() { return permissionMode; },
+    // Same resume-restart trick for the system-prompt append (AI profile switches): the CLI only
+    // reads --append-system-prompt at launch, so swap the child and resume the conversation.
+    setSystemPromptAppend(text) {
+      if (!sessionId) return false;
+      stopping = true; stopChild(); stopping = false;
+      systemPromptAppend = text || '';
+      resumeSessionId = sessionId;
+      launch();
+      return true;
+    },
     // Same resume-restart trick for the model ('' switches back to the account default).
     setModel(pick) {
       if (!sessionId) return false;

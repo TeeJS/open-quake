@@ -4,11 +4,13 @@ function $(id) { return document.getElementById(id); }
 // hardcoded-dark approach — see docs/claude-voice.md). No options here are secret (confirmed in
 // apps.json), so unlike the OWUI chat app there's no /app-config fetch needed at all for config.
 var Q = new URLSearchParams(location.search);
-// This one page serves EVERY voice-panel app: the served path's first segment is the app id, and
-// every server route lives under it (/claude-voice/*, /codex-voice/*, ...). Agent-specific strings
-// (title, modes, models, approval wording) arrive as `meta` on the /state snapshot -- see
-// applyMeta() -- so nothing agent-specific is hardcoded here beyond the claude-shaped fallbacks.
-var BASE = '/' + (location.pathname.split('/')[1] || 'claude-voice');
+// This one page serves EVERY AI Voice backend: the page itself is served at /ai-voice, and every
+// server route carries the page's backend as a sub-prefix (/ai-voice/<backend>/turn, ...), so
+// requests bind to the right backend host no matter which page is on screen. Backend-specific
+// strings (title, modes, models, approval wording) arrive as `meta` on the /state snapshot -- see
+// applyMeta() -- so nothing backend-specific is hardcoded here beyond the claude-shaped fallbacks.
+var BACKEND = Q.get('backend') || 'claude';
+var BASE = '/' + (location.pathname.split('/')[1] || 'ai-voice') + '/' + BACKEND;
 (function () {
   document.body.classList.toggle('light', Q.get('_dark') === '0');
   var a = Q.get('_accent') || '';
@@ -24,7 +26,7 @@ var BASE = '/' + (location.pathname.split('/')[1] || 'claude-voice');
 })();
 
 var projectDir = Q.get('projectDir') || '';
-$('project').textContent = projectDir ? projectDir.split(/[\\/]/).filter(Boolean).pop() : '(no project set)';
+setProjectHeader(projectDir);   // rail label + the Settings overlay's Folder row value
 
 function esc(s) {
   var d = document.createElement('div');
@@ -162,6 +164,13 @@ function connectEvents() {
       showApprovalOverlay(msg.requestId, msg.toolName, msg.toolInput);
     } else if (msg.type === 'approval-decision' || msg.type === 'approval-timeout') {
       if (msg.requestId === pendingApprovalRequestId) hideApprovalOverlay();
+    } else if (msg.type === 'panel-review') {
+      showPanelReview(msg.panel);
+    } else if (msg.type === 'panel-accepted') {
+      setStatus(conversationOpen ? 'listening' : 'idle', 'Added "' + (msg.name || 'panel') + '".');
+    } else if (msg.type === 'profile') {
+      currentProfileId = msg.id || '';
+      syncProfileUI();
     } else if (msg.type === 'permission-mode') {
       currentMode = msg.mode || currentMode;
       syncModeUI();
@@ -179,7 +188,10 @@ function connectEvents() {
     } else if (msg.type === 'turn-speech') {
       // A queued turn just started generating: its speech stream id arrives here rather than on
       // the POST /turn response (that turn was parked behind the previous one -- CLI semantics).
-      if (msg.speech) startTurnAudio(msg.speech);
+      // speakEnabled is re-checked HERE, not just at send time: a turn can be dispatched by a
+      // routine tile (from main, which can't see this page's toggle) or queued behind another and
+      // muted in between. The toggle wins in both cases.
+      if (msg.speech && speakEnabled) startTurnAudio(msg.speech);
     } else if (msg.type === 'user-turn') {
       // A lazily-started session's session-started broadcast just wiped this page's transcript,
       // taking the freshly-drawn user bubble with it -- the host echoes the turn text back so the
@@ -261,6 +273,13 @@ function applyMeta(meta) {
   if (meta.approvalTitle) $('approvalTitle').textContent = meta.approvalTitle;
   if (meta.turnFailedText) turnFailedText = meta.turnFailedText;
   $('approvalAlways').classList.toggle('hidden', !meta.approvalAlways);   // only agents whose protocol supports session-wide approval
+  // Chat-only backends (owui/api) have no working directory and no permission modes -- hide the
+  // buttons instead of leaving dead claude-shaped controls on screen.
+  // Chat backends (owui/api) have no working directory: hide the rail's folder-name line and the
+  // Settings overlay's Folder row.
+  $('project').classList.toggle('hidden', meta.hasProject === false);
+  $('folderPickBtn').style.display = meta.hasProject === false ? 'none' : '';
+  $('vpMode').classList.toggle('hidden', !(meta.modes && meta.modes.length));
   if (meta.modes && meta.modes.length) {
     MODE_LABELS = {};
     var wrap = $('modeOpts');
@@ -286,6 +305,11 @@ function applyMeta(meta) {
     MODEL_PICKS = meta.models.map(function (m) { return [m.id, m.label]; });
     syncPickButtons();
   }
+  if (meta.profiles) {
+    PROFILES = meta.profiles;
+    if (typeof meta.profile === 'string') currentProfileId = meta.profile;
+    syncProfileUI();
+  }
 }
 fetch(BASE + '/state', { cache: 'no-store' }).then(function (r) { return r.json(); })
   .then(function (s) {
@@ -296,6 +320,7 @@ fetch(BASE + '/state', { cache: 'no-store' }).then(function (r) { return r.json(
     if (s.permissionMode) { currentMode = s.permissionMode; syncModeUI(); }
     if (s.model) { liveModel = s.model; syncPickButtons(); }
     if (s.projectDir) setProjectHeader(s.projectDir);   // live truth beats the (possibly stale) page-load query param
+    if (s.panel && s.panel.active) showPanelReview(s.panel);   // rotating away mid-review must not lose the proposal
     setStatus(s.status, s.error);
   }).catch(function () {});
 connectEvents();
@@ -306,6 +331,37 @@ function autoGrow() {
   ta.style.height = Math.min(140, ta.scrollHeight) + 'px';
 }
 $('textInput').addEventListener('input', autoGrow);
+
+// Transient line under the transcript. Shares #err with real errors but drops the danger color for
+// a confirmation, and clears itself -- the next setStatus would clear it anyway.
+var routineNoticeT = null;
+function routineNotice(text, ok) {
+  var el = $('err');
+  el.textContent = text;
+  el.classList.toggle('ok', !!ok);
+  clearTimeout(routineNoticeT);
+  routineNoticeT = setTimeout(function () { el.classList.remove('ok'); el.textContent = speechErrText || ''; }, 4000);
+}
+
+// "+ Routine": keep this request for a tile. Sends the message field if there's anything in it,
+// otherwise the host falls back to the last request that was actually sent -- so "speak it, watch
+// it work, keep it" is one tap. Naming happens on the host (no keyboard here); the generated name
+// comes back for the confirmation.
+$('routineBtn').onclick = function () {
+  var btn = $('routineBtn');
+  btn.disabled = true;
+  fetch(BASE + '/routine-save', {
+    method: 'POST', cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: $('textInput').value.trim() }),
+  }).then(function (r) { return r.json(); })
+    .then(function (r) {
+      if (r && r.ok) routineNotice('Saved routine: ' + r.name, true);
+      else routineNotice((r && r.error) || 'Could not save that routine.', false);
+    })
+    .catch(function () { routineNotice('Could not reach the panel server.', false); })
+    .finally(function () { btn.disabled = false; });
+};
 
 var turnInProgress = false;   // a sent turn hasn't seen its turn-complete yet (drives status after audio ends early)
 var turnFailedText = 'Turn failed to send — no project set, or claude CLI not found.';   // meta can override per agent
@@ -564,7 +620,7 @@ $('devCancel').onclick = function () { $('devOverlay').classList.add('hidden'); 
 // start/end on its own, no holding anything down), a second tap closes it. See the plan's hard
 // constraint #4 -- push-to-talk was explicitly rejected.
 var conversationOpen = false;
-var vadHangoverMs = parseInt(Q.get('vadHangoverMs'), 10) || 800;
+var vadHangoverMs = parseInt(Q.get('vadHangoverMs'), 10) || 400;   // 0.4s default — snappier out of the box (matches LucidType)
 var vad = window.createClaudeVoiceVAD ? window.createClaudeVoiceVAD({ hangoverMs: vadHangoverMs }) : null;
 function onVADSpeechStart() {
   if (suppressVAD) return;
@@ -647,7 +703,10 @@ function onVADLevel(level) {
 // first (accent border), then everything under the root alphabetically; the current folder is the
 // single solid accent-filled pill.
 function baseName(p) { return String(p || '').split(/[\\/]/).filter(Boolean).pop() || p; }
-function setProjectHeader(dir) { $('project').textContent = dir ? baseName(dir) : '(no folder set)'; }
+function setProjectHeader(dir) {
+  $('project').textContent = dir ? baseName(dir) : '(no folder set)';
+  $('folderPickVal').textContent = dir ? baseName(dir) : 'not set';
+}
 var projRoot = '';
 function pickProject(dir) {
   $('projectOverlay').classList.add('hidden');
@@ -723,7 +782,8 @@ function wireScrollButtons(listId, upId, downId) {
 }
 wireScrollButtons('projList', 'projScrollUp', 'projScrollDown');
 wireScrollButtons('devList', 'devScrollUp', 'devScrollDown');
-$('vpProject').onclick = function () { openProjectOverlay(); };
+// Folder lives in Settings (rarely changed) — the row closes Settings and opens the folder picker.
+$('folderPickBtn').onclick = function () { $('settingsOverlay').classList.add('hidden'); openProjectOverlay(); };
 $('projCancel').onclick = function () { $('projectOverlay').classList.add('hidden'); };
 $('projCreate').onclick = function () {
   var name = $('projNewName').value.trim();
@@ -768,6 +828,165 @@ applyPause();
 // Switching restarts the claude process with --resume + the new --permission-mode (mode is a
 // launch-only CLI flag; the mid-session control message is undocumented/unsupported). The
 // conversation itself carries over -- expect a ~2s pause before the next turn responds.
+// ---- AI profile (Smart Profiles): big-card grid picker, list delivered via meta ----
+var PROFILES = [];            // [{id, name}] from meta.profiles
+var currentProfileId = '';
+function syncProfileUI() {
+  var cur = null;
+  for (var i = 0; i < PROFILES.length; i++) if (PROFILES[i].id === currentProfileId) cur = PROFILES[i];
+  $('vpProfile').textContent = cur ? 'Profile: ' + cur.name : 'Profile';
+  $('vpProfile').classList.toggle('hidden', !PROFILES.length);
+  document.querySelectorAll('.profileOpt').forEach(function (b) {
+    b.classList.toggle('current', b.getAttribute('data-profile') === currentProfileId);
+  });
+}
+function renderProfileGrid() {
+  var grid = $('profileGrid');
+  grid.innerHTML = '';
+  PROFILES.forEach(function (p) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'profileOpt';
+    b.setAttribute('data-profile', p.id);
+    b.textContent = p.name;
+    b.onclick = function () {
+      $('profileOverlay').classList.add('hidden');
+      if (p.id === currentProfileId) return;
+      fetch(BASE + '/profile', {
+        method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: p.id }),
+      }).then(function (r) { return r.json(); })
+        .then(function (r) { if (!r || !r.ok) setStatus(conversationOpen ? 'listening' : 'idle', 'Profile switch failed.'); })
+        .catch(function () { setStatus('error', 'Could not reach the panel server.'); });
+    };
+    grid.appendChild(b);
+  });
+  syncProfileUI();
+}
+$('vpProfile').onclick = function () { renderProfileGrid(); $('profileOverlay').classList.remove('hidden'); };
+$('profileCancel').onclick = function () { $('profileOverlay').classList.add('hidden'); };
+
+// ---- Panel Builder review ----
+// The Panel Builder profile makes the AI answer with a page rather than prose. The host validates it
+// and pushes it here; this draws it as real tiles so what the user sees is what gets saved. Nothing
+// reaches the config until Accept — and a panel containing shell/AutoHotkey steps shows the actual
+// commands and needs a second, informed yes.
+var panelRiskyPending = false;   // true once the risky commands are on screen awaiting confirmation
+
+function showPanelReview(p) {
+  var ov = $('panelOverlay');
+  if (!p || !p.active) { ov.classList.add('hidden'); panelRiskyPending = false; return; }
+  panelRiskyPending = false;
+  var warn = $('panelWarn'), risky = $('panelRisky'), grid = $('panelPreview');
+  grid.innerHTML = '';
+
+  if (p.status === 'error' || !p.page) {
+    $('panelTitle').textContent = "That panel didn't work";
+    $('panelNote').textContent = p.error || '';
+    risky.classList.add('hidden');
+    warn.classList.add('hidden');
+    $('panelAccept').style.display = 'none';
+    ov.classList.remove('hidden');
+    return;
+  }
+
+  var page = p.page;
+  var used = 0;
+  for (var i = 0; i < page.tiles.length; i++) if (page.tiles[i].type) used++;
+  $('panelTitle').textContent = page.name;
+  $('panelNote').textContent = used + (used === 1 ? ' button' : ' buttons') + ' · ' + page.cols + '×' + page.rows;
+  // After a panel has been accepted, the next proposal in the same conversation is almost always a
+  // FIX of it ("the tab-1 button does nothing"), so Replace leads and Accept becomes "Add as new".
+  var rep = $('panelReplace');
+  $('panelAccept').style.display = '';
+  if (p.replaces) {
+    rep.classList.remove('hidden');
+    rep.textContent = 'Replace ' + (p.replaces.name.length > 18 ? p.replaces.name.slice(0, 17) + '…' : p.replaces.name);
+    $('panelAccept').textContent = 'Add as new';
+    $('panelAccept').classList.add('secondary');
+  } else {
+    rep.classList.add('hidden');
+    $('panelAccept').textContent = 'Accept';
+    $('panelAccept').classList.remove('secondary');
+  }
+
+  var riskyIdx = {};
+  (p.risky || []).forEach(function (r) { riskyIdx[r.index] = true; });
+  grid.style.gridTemplateColumns = 'repeat(' + page.cols + ', 1fr)';
+  grid.style.gridTemplateRows = 'repeat(' + page.rows + ', 1fr)';
+  grid.style.aspectRatio = page.cols + ' / ' + page.rows;   // square cells, like the real panel
+  page.tiles.forEach(function (t, idx) {
+    var d = document.createElement('div');
+    d.className = 'pvTile' + (t.type ? '' : ' empty') + (riskyIdx[idx] ? ' risk' : '');
+    if (t.type) {
+      var ic = document.createElement('div');
+      ic.className = 'pvIcon';
+      ic.textContent = t.icon || '▫️';
+      var lb = document.createElement('div');
+      lb.className = 'pvLabel';
+      lb.textContent = t.label || '';
+      d.appendChild(ic); d.appendChild(lb);
+    }
+    grid.appendChild(d);
+  });
+
+  if (p.warnings && p.warnings.length) {
+    warn.textContent = '· ' + p.warnings.join('; ');
+    warn.title = p.warnings.join('\n');       // the header truncates; the full list stays reachable
+    warn.classList.remove('hidden');
+  } else warn.classList.add('hidden');
+  risky.classList.add('hidden');
+  ov.classList.remove('hidden');
+}
+
+// Second stage for a panel that would run commands: show exactly what runs before asking again.
+function showPanelRisky(list) {
+  var risky = $('panelRisky');
+  risky.innerHTML = '';
+  var head = document.createElement('div');
+  head.textContent = 'This panel runs commands on your PC. Accept only if you recognize them:';
+  risky.appendChild(head);
+  list.forEach(function (r) {
+    var line = document.createElement('div');
+    line.textContent = '• ' + (r.label || 'unnamed') + ' (' + r.type + ')';
+    var code = document.createElement('code');
+    code.textContent = r.command;
+    line.appendChild(code);
+    risky.appendChild(line);
+  });
+  risky.classList.remove('hidden');
+  $('panelAccept').textContent = 'Run these — Accept';
+  panelRiskyPending = true;
+}
+
+function sendPanelAccept(replace) {
+  fetch(BASE + '/panel-accept', {
+    method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirm: panelRiskyPending, replace: !!replace }),
+  }).then(function (r) { return r.json(); })
+    .then(function (r) {
+      if (r && r.ok) { $('panelOverlay').classList.add('hidden'); panelRiskyPending = false; return; }
+      if (r && r.needsConfirm) { panelReplacePending = !!replace; return showPanelRisky(r.risky || []); }
+      setStatus(conversationOpen ? 'listening' : 'idle', (r && r.error) || 'That panel could not be added.');
+    })
+    .catch(function () { setStatus('error', 'Could not reach the panel server.'); });
+}
+var panelReplacePending = false;   // which button opened the consent stage, so the second yes matches it
+$('panelAccept').onclick = function () { sendPanelAccept(panelRiskyPending ? panelReplacePending : false); };
+$('panelReplace').onclick = function () { panelReplacePending = true; sendPanelAccept(true); };
+$('panelRetry').onclick = function () {
+  // Refinement is just the next thing you say — the session still has the context, so a new reply
+  // supersedes this proposal. Close the overlay and reopen the mic.
+  $('panelOverlay').classList.add('hidden');
+  panelRiskyPending = false;
+  if (!conversationOpen && window.oqxToggleConversation) window.oqxToggleConversation();
+};
+$('panelCancel').onclick = function () {
+  $('panelOverlay').classList.add('hidden');
+  panelRiskyPending = false;
+  fetch(BASE + '/panel-cancel', { method: 'POST', cache: 'no-store' }).catch(function () {});
+};
+
 var MODE_LABELS = { manual: 'Manual', acceptEdits: 'Accept edits', plan: 'Plan', bypassPermissions: 'Full auto' };
 var currentMode = '';
 function syncModeUI() {

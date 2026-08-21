@@ -52,6 +52,7 @@ let SILENT_FRAME = new Float32Array(0);
 class SystemAudioCapture {
   constructor(options) {
     this.state = 'idle';
+    this.gen = 0;              // bumped by stop(); lets an in-flight start() detect it was cancelled
     this.micStream = null;
     this.systemStream = null;
     this.audioCtx = null;
@@ -79,6 +80,7 @@ class SystemAudioCapture {
   async start() {
     if (this.state !== 'idle') return;
     this.state = 'starting';
+    const gen = ++this.gen;
 
     const results = await Promise.allSettled([
       usingHeadphones(),
@@ -111,6 +113,17 @@ class SystemAudioCapture {
       if (systemRes.status === 'fulfilled') systemRes.value.getTracks().forEach(t => t.stop());
       this.state = 'idle';
       throw micRes.status === 'rejected' ? micRes.reason : systemRes.reason;
+    }
+
+    // stop() may have run while the mic/loopback grants were still in flight. It found every
+    // field below still null and tore down nothing, so without this check the capture would go
+    // live AFTER being stopped — unreferenced, unstoppable, and streaming PCM into whatever
+    // recording starts next. Release the streams and stay idle instead.
+    if (gen !== this.gen) {
+      micRes.value.getTracks().forEach(t => t.stop());
+      systemRes.value.getTracks().forEach(t => t.stop());
+      this.state = 'idle';
+      return;
     }
 
     const headphones = headphoneRes.status === 'fulfilled' ? headphoneRes.value : false;
@@ -189,6 +202,7 @@ class SystemAudioCapture {
 
   // Tear down all capture. Safe to call multiple times / from any state.
   stop() {
+    this.gen++;                      // cancels a start() still awaiting its device grants
     if (this.state === 'idle') return;
     this.state = 'stopping';
 

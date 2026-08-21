@@ -1,5 +1,5 @@
   const configApi = window.openQuakeConfig;
-  const VOICE_APPS = ['claude-voice', 'codex-voice', 'copilot-voice', 'owui-voice'];   // apps with STT/TTS voice
+  const VOICE_APPS = ['ai-voice'];   // apps with STT/TTS voice (one app, five backends)
   // Mirrors DEFAULT_CLEANUP_PROMPT + REWRITE_PRESETS in lucidtypeAI.js — pre-filled in the editable prompt boxes.
   const LT_DEFAULT_CLEANUP_PROMPT = "Fix the grammar, spelling, and punctuation in the user's text. Preserve the author's original wording, tone, and voice as much as possible. Remove filler words (uh, er, ah, um, mm, like when unnecessary), combine fragmented or run-on sentences into clear ones, and drop false starts and repeated words, while keeping the original meaning and voice. Output only the corrected text, with no preamble, quotes, or explanation.";
   const LT_REWRITE_PRESETS = {
@@ -9,6 +9,8 @@
   };
   let config = { activeGridId: null, grids: [] };
   let gi = 0, ti = -1, selEnd = -1, dragFrom = -1, dirty = false, appDefs = [], view = 'pages', ledState = null, settingsTab = 'software', dashTab = 'page';
+  let voiceModes = null;   // { claude:[{id,label}], codex:[...], copilot:[...], owui:[], api:[] } — lazy-loaded for the Routines tab's Mode picker
+  let selRoutineId = null, routineQuery = '';   // Routines tab master-detail: selection tracked by stable id, plus the search box text
   // Left sidebar tab (Pages vs Groups list) + which group is currently being edited when view='groups'.
   let leftTab = 'pages', groupIndex = -1;
   // Per-page Advanced <details> open state — persisted across re-renders so toggling an override
@@ -37,7 +39,7 @@
   }
   const appIconCache = {};   // app value -> dataURL | false (failed) | null (in-flight)
   const urlIconPreview = {}; // iconCache path -> dataURL of a just-fetched URL icon (editor preview only; dodges file:// browser-cache staleness on Refresh)
-  const TYPES = [['', 'Empty'], ['app', 'App / Program'], ['url', 'Website (URL)'], ['page', 'Go to open-quake page'], ['cmd', 'Shell command'], ['open', 'Open file/folder'], ['system', 'System (lock/config)'], ['counter', 'Counter'], ['paste_text', 'Paste Text'], ['key', 'Send keystroke'], ['macro', 'Macro / Steps'], ['ha', 'HA entity']];
+  const TYPES = [['', 'Empty'], ['app', 'App / Program'], ['url', 'Website (URL)'], ['page', 'Go to open-quake page'], ['cmd', 'Shell command'], ['open', 'Open file/folder'], ['system', 'System (lock/config)'], ['counter', 'Counter'], ['paste_text', 'Paste Text'], ['key', 'Send keystroke'], ['macro', 'Macro / Steps'], ['ha', 'HA entity'], ['routine', 'AI Routine']];
   // Curated per-domain service catalog for HA entity tiles. Lookup falls back to HA_SERVICES_DEFAULT
   // for any domain we don't have a more specific list for. First entry is the default service when
   // the user picks an entity of that domain.
@@ -58,7 +60,7 @@
   };
   const HA_SERVICES_DEFAULT = [['toggle', 'Toggle'], ['turn_on', 'Turn on'], ['turn_off', 'Turn off']];
   // Step kinds inside a Macro tile (value semantics mirror the matching tile types).
-  const STEP_KINDS = [['key', 'Keystroke'], ['text', 'Type text'], ['delay', 'Delay (ms)'], ['app', 'App / Program'], ['open', 'Open file/folder'], ['url', 'Website (URL)'], ['cmd', 'Shell command'], ['page', 'Go to page'], ['system', 'System'], ['ahk', 'AutoHotkey']];
+  const STEP_KINDS = [['key', 'Keystroke'], ['text', 'Type text'], ['delay', 'Delay (ms)'], ['app', 'App / Program'], ['open', 'Open file/folder'], ['url', 'Website (URL)'], ['cmd', 'Shell command'], ['page', 'Go to page'], ['system', 'System'], ['ahk', 'AutoHotkey'], ['routine', 'AI Routine']];
   // Knob behavior options (per page-type, with per-page override). Defaults: turn=Scroll pages, click=Start/stop rotation.
   const KNOB_TURN_OPTS = [['pages', 'Scroll pages'], ['volume', 'System volume'], ['scroll', 'Scroll in window'], ['select', 'Select button']];
   const KNOB_CLICK_OPTS = [
@@ -221,6 +223,51 @@
     return null;
   }
   function haDomainEmoji(domain) { return HA_DOMAIN_EMOJI[domain] || '🏠'; }
+
+  // ---- Emoji lookup-by-word (the tile editor's emoji search picker) ----
+  // Backed by the real emojilib dataset (main process loads it from node_modules and serves it
+  // over IPC — config.js runs sandboxed and can't require() it directly). Fetched once and cached.
+  let emojiIndexCache = null;
+  async function getEmojiIndex() {
+    if (!emojiIndexCache) {
+      // Tokenize each entry's keyword blob once (split on space AND underscore, since emojilib uses
+      // compound keys like "grinning_face"). Ranked search below matches whole tokens, not the blob.
+      const raw = (await configApi.getEmojiIndex()) || [];
+      emojiIndexCache = raw.map(([em, kw]) => [em, String(kw).split(/[\s_]+/).filter(Boolean)]);
+    }
+    return emojiIndexCache;
+  }
+  // Rank a candidate's keyword TOKENS against the query words: exact token (3) beats a prefix (2)
+  // beats a mid-word substring (1). Every query word must score, or the candidate is out. Matching
+  // whole tokens — not the joined blob — is what keeps "car" off "s-car-ed" and "cat" off
+  // "intoxi-cat-ed"; the exact-first ranking is what floats 🚗 above 🥕/🎠 for "car".
+  function emojiScore(toks, words) {
+    let total = 0;
+    for (const w of words) {
+      let best = 0;
+      for (const t of toks) {
+        if (t === w) { best = 3; break; }
+        if (t.startsWith(w)) best = best < 2 ? 2 : best;
+        else if (t.indexOf(w) !== -1) best = best < 1 ? 1 : best;
+      }
+      if (!best) return 0;
+      total += best;
+    }
+    return total;
+  }
+  // Empty query -> a browsable starter set (emojilib's own order, which is Unicode's canonical
+  // order -- smileys/people first).
+  function emojiSearchIn(index, query) {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return index.slice(0, 40).map(e => e[0]);
+    const words = q.split(/\s+/).filter(Boolean);
+    return index
+      .map(e => [e[0], emojiScore(e[1], words)])
+      .filter(x => x[1] > 0)
+      .sort((a, b) => b[1] - a[1])   // stable sort keeps Unicode order within a score tier
+      .map(x => x[0])
+      .slice(0, 60);
+  }
 
   // HA's frontend domain-default MDI icons (mirror of FIXED_DOMAIN_ICONS in
   // home-assistant/frontend/src/common/const.ts). Used when an entity has no explicit override
@@ -402,7 +449,7 @@
       <div class="row" style="margin-top:8px"><label style="width:auto">Knob</label>
         <label class="iconopt" style="width:auto"><input type="checkbox" id="gKnobOn" ${g.knobOverride ? 'checked' : ''}> Override</label></div>
       ${g.knobOverride ? `<div class="row"><label style="width:auto">Turn / Click / Dbl</label>${knobSelHtml('gKnobTurn', KNOB_TURN_OPTS, (g.knob && g.knob.turn) || 'pages')} ${knobSelHtml('gKnobClick', KNOB_CLICK_OPTS, (g.knob && g.knob.click) || 'rotation')} ${knobSelHtml('gKnobDblclick', KNOB_DBLCLICK_OPTS, (g.knob && g.knob.dblclick) || 'selector')}</div>` : ''}
-      ${(VOICE_APPS.includes(g.app) || g.app === 'lucidtype' || g.app === 'livetranslate') ? `
+      ${(VOICE_APPS.includes(g.app) || g.app === 'lucidtype') ? `
       <div class="row" style="margin-top:8px"><label style="width:auto">STT / TTS</label>
         <label class="iconopt" style="width:auto"><input type="checkbox" id="gVoiceOn" ${g.options && g.options.voiceOverride ? 'checked' : ''}> Override default TTS/STT servers</label></div>
       ${g.options && g.options.voiceOverride ? `
@@ -472,6 +519,248 @@
       const inputs = host.querySelectorAll('.scShortcut');
       if (inputs.length) inputs[inputs.length - 1].focus();
     };
+  }
+  // ---- AI Profiles rows (Settings -> AI Profiles): name + prompt per row, add/remove ----
+  // Same live-edit model as the custom-shortcut rows: mutate config.settings.aiProfiles in place,
+  // markDirty(), Save persists. Ids are stable (never edited); new rows mint one.
+  function aiProfileRowsHtml(list) {
+    const rows = Array.isArray(list) ? list : [];
+    if (!rows.length) return '<p class="hint">No profiles yet — add one below.</p>';
+    return rows.map((p, i) => `<div class="row" data-idx="${i}" style="margin-top:10px;align-items:flex-start">
+        <input class="apName" placeholder="Profile name" value="${esc(p.name || '')}" style="width:200px">
+        <textarea class="apPrompt" placeholder="Instruction for the AI (empty = plain chat)" rows="2" style="flex:1;margin-left:8px;font-family:inherit">${esc(p.prompt || '')}</textarea>
+        <button class="apRemove" type="button" data-rm="${i}" title="Remove" style="margin-left:8px">✕</button>
+      </div>`).join('');
+  }
+  function wireAiProfileRows() {
+    const host = document.getElementById('sAiProfileRows');
+    if (!host) return;
+    const list = () => { if (!config.settings) config.settings = {}; if (!Array.isArray(config.settings.aiProfiles)) config.settings.aiProfiles = []; return config.settings.aiProfiles; };
+    const redraw = () => { host.innerHTML = aiProfileRowsHtml(list()); wireRows(); };
+    function wireRows() {
+      host.querySelectorAll('.apName').forEach((inp, i) => {
+        inp.oninput = e => { const l = list(); if (l[i]) { l[i].name = e.target.value; markDirty(); } };
+      });
+      host.querySelectorAll('.apPrompt').forEach((ta, i) => {
+        ta.oninput = e => { const l = list(); if (l[i]) { l[i].prompt = e.target.value; markDirty(); } };
+      });
+      host.querySelectorAll('.apRemove').forEach(btn => {
+        btn.onclick = () => { list().splice(parseInt(btn.getAttribute('data-rm'), 10), 1); markDirty(); redraw(); };
+      });
+    }
+    wireRows();
+    const addBtn = document.getElementById('sAiProfileAdd');
+    if (addBtn) addBtn.onclick = () => {
+      list().push({ id: 'p' + Date.now().toString(36), name: '', prompt: '' });
+      markDirty(); redraw();
+      const inputs = host.querySelectorAll('.apName');
+      if (inputs.length) inputs[inputs.length - 1].focus();
+    };
+  }
+  // ---- Routines (Settings -> Routines): searchable master-detail editor ----
+  // Presentation only. Storage is unchanged: config.settings.routines, referenced by stable id
+  // from tiles. Everything here selects and binds by routine ID, never array position, so filtering
+  // or reordering the visible list can never write edits into the wrong routine.
+  function aiChatPagesForPicker() {
+    return (config.grids || []).filter(g => g && g.kind === 'app' && g.app === 'ai-voice');
+  }
+  function backendOfPage(page) { return (page && page.options && page.options.backend) || 'claude'; }
+  function routineListArr() { if (!config.settings) config.settings = {}; if (!Array.isArray(config.settings.routines)) config.settings.routines = []; return config.settings.routines; }
+  function routinePlural(n) { return n + ' routine' + (n === 1 ? '' : 's'); }
+
+  // Search matches name, prompt, target page name, and folder. `q` is already lowercased.
+  function routineMatches(r, q, pages) {
+    if (!q) return true;
+    const page = pages.find(g => g.id === r.appPageId);
+    return [r.name, r.prompt, page && page.name, r.folder]
+      .map(x => String(x || '').toLowerCase()).join('  ').indexOf(q) !== -1;
+  }
+  // Keep the selection valid against what's actually visible: if the current pick was filtered out
+  // (or never set), fall to the first visible result -- never a hidden or stale id.
+  function resolveRoutineSel(filtered) {
+    if (!filtered.some(r => r.id === selRoutineId)) selRoutineId = filtered.length ? filtered[0].id : null;
+  }
+  function routineItemHtml(r, pages) {
+    const page = pages.find(g => g.id === r.appPageId);
+    const pageName = page ? (page.name || '(unnamed page)') : '(no page)';
+    const preview = String(r.prompt || '').replace(/\s+/g, ' ').trim() || '(no prompt yet)';
+    return '<div class="rtItem' + (r.id === selRoutineId ? ' sel' : '') + '" data-id="' + esc(r.id) + '">'
+      + '<div class="rtiName">' + esc(r.name || '(unnamed routine)') + '</div>'
+      + '<div class="rtiSub"><span class="rtiPage">' + esc(pageName) + '</span> · <span class="rtiPrev">' + esc(preview) + '</span></div>'
+      + '</div>';
+  }
+  function routineItemsHtml(filtered, rows, pages) {
+    if (filtered.length) return filtered.map(r => routineItemHtml(r, pages)).join('');
+    return '<div class="rtEmpty">' + (rows.length ? 'No routines match your search.' : 'No routines yet — add one, or save one from the panel with <b>+ Routine</b>.') + '</div>';
+  }
+  // Folder + Mode live only on the agent backends (claude/codex/copilot); chat-only pages (owui/api)
+  // get the same explanatory note the AI Chat page shows. Detail widgets carry no data-index -- the
+  // detail edits exactly one routine, looked up by selRoutineId at event time.
+  function routineDetailFolderHtml(r, page) {
+    if (['claude', 'codex', 'copilot'].indexOf(backendOfPage(page)) === -1) {
+      return '<div class="rtField"><span class="hint" style="margin:0">' + esc(page ? (page.name || 'That page') : 'That page') + ' is chat-only — no folder or permission mode.</span></div>';
+    }
+    return '<div class="rtField"><label>Folder</label>'
+      + '<div class="rtFolderRow">'
+      + '<input id="rtdFolder" placeholder="Folder (blank = page’s current)" value="' + esc(r.folder || '') + '">'
+      + '<button id="rtdFolderBrowse" type="button" title="Browse">…</button>'
+      + '</div></div>';
+  }
+  function routineDetailModeHtml(r, page) {
+    const list = (voiceModes && voiceModes[backendOfPage(page)]) || [];
+    if (!list.length) return '';   // chat-only backend, or modes not loaded yet
+    return '<div class="rtField"><label>Mode</label>'
+      + '<select id="rtdMode"><option value="">(page’s current mode)</option>'
+      + list.map(m => '<option value="' + esc(m.id) + '" ' + (m.id === r.mode ? 'selected' : '') + '>' + esc(m.label || m.id) + '</option>').join('')
+      + '</select></div>';
+  }
+  function routineDetailHtml(pages) {
+    const r = routineListArr().find(x => x.id === selRoutineId) || null;
+    if (!r) {
+      return '<div class="rtEmpty">' + (routineQuery.trim() ? 'No routine selected — nothing matches your search.' : 'Select a routine on the left, or add one.') + '</div>';
+    }
+    const page = pages.find(g => g.id === r.appPageId) || pages[0];
+    const profiles = ((config.settings || {}).aiProfiles) || [];
+    return ''
+      + '<div class="rtDetailHead"><div class="sectitle" style="margin:0">Edit routine</div>'
+      + '<div class="rtHeadBtns"><button id="rtdDelete" type="button" class="danger">Delete routine</button>'
+      + '<button id="rtdRun" type="button" class="rtRun">Run routine</button></div></div>'
+      + '<div class="rtField"><label>Name</label><input id="rtdName" placeholder="Routine name" value="' + esc(r.name || '') + '"></div>'
+      + '<div class="rtField"><label>AI Chat page</label>'
+      + '<select id="rtdPage">' + pages.map(g => '<option value="' + g.id + '" ' + (g.id === r.appPageId ? 'selected' : '') + '>' + esc(g.name || '(unnamed page)') + '</option>').join('') + '</select></div>'
+      + '<div class="rtField"><label>Profile</label>'
+      + '<select id="rtdProfile"><option value="">(page’s current profile)</option>' + profiles.map(p => '<option value="' + esc(p.id) + '" ' + (p.id === r.profileId ? 'selected' : '') + '>' + esc(p.name || '(unnamed)') + '</option>').join('') + '</select></div>'
+      + routineDetailFolderHtml(r, page)
+      + routineDetailModeHtml(r, page)
+      + '<div class="rtField"><label>Prompt</label>'
+      + '<textarea id="rtdPrompt" rows="6" placeholder="What to ask the AI, e.g. Summarize my unread email and list anything needing a reply" style="font-family:inherit">' + esc(r.prompt || '') + '</textarea></div>';
+  }
+  function routineEditorHtml() {
+    const pages = aiChatPagesForPicker();
+    if (!pages.length) return '<p class="hint">No AI Chat page yet — add one (Pages → + App page → AI Voice) and a routine will have somewhere to run.</p>';
+    const rows = routineListArr();
+    const q = routineQuery.trim().toLowerCase();
+    const filtered = rows.filter(r => routineMatches(r, q, pages));
+    resolveRoutineSel(filtered);
+    const count = q ? (filtered.length + ' of ' + routinePlural(rows.length)) : routinePlural(rows.length);
+    return '<div class="rtSplit">'
+      + '<div class="rtList">'
+      + '<div class="rtListHead"><span class="rtCount" id="rtCount">' + esc(count) + '</span><button id="sRoutineAdd" type="button">+ Add routine</button></div>'
+      + '<input id="rtSearch" class="rtSearch" placeholder="Search name, prompt, page, folder" value="' + esc(routineQuery) + '">'
+      + '<div class="rtItems" id="rtItems">' + routineItemsHtml(filtered, rows, pages) + '</div>'
+      + '</div>'
+      + '<div class="rtDetail" id="rtDetail">' + routineDetailHtml(pages) + '</div>'
+      + '</div>';
+  }
+  function wireRoutineRows() {
+    const host = document.getElementById('sRoutineRows');
+    if (!host) return;
+    const list = routineListArr;
+    const curRoutine = () => list().find(r => r.id === selRoutineId) || null;
+
+    // Per-backend mode lists come from main; fetch once, then refresh the detail (the only place a
+    // Mode picker shows). Rows render fine before it lands -- chat-only routines never need it.
+    if (!voiceModes && configApi.getVoiceModes) {
+      configApi.getVoiceModes().then(m => { voiceModes = m || {}; if (document.getElementById('sRoutineRows')) renderDetailOnly(); }).catch(() => { voiceModes = {}; });
+    }
+
+    function redraw() { host.innerHTML = routineEditorHtml(); wireAll(); }
+    function renderDetailOnly() {
+      const d = document.getElementById('rtDetail');
+      if (!d) return;
+      d.innerHTML = routineDetailHtml(aiChatPagesForPicker());
+      wireDetail();
+    }
+    // Rebuild the list items + count in place. The #rtSearch box and #rtDetail pane are untouched,
+    // so this is safe to call from a search keystroke, or a name/prompt edit in the detail pane,
+    // without stealing focus from whatever field the user is typing in.
+    function renderListOnly() {
+      const pages = aiChatPagesForPicker();
+      const rows = list();
+      const q = routineQuery.trim().toLowerCase();
+      const filtered = rows.filter(r => routineMatches(r, q, pages));
+      const before = selRoutineId;
+      resolveRoutineSel(filtered);
+      const itemsEl = document.getElementById('rtItems');
+      if (itemsEl) itemsEl.innerHTML = routineItemsHtml(filtered, rows, pages);
+      const countEl = document.getElementById('rtCount');
+      if (countEl) countEl.textContent = q ? (filtered.length + ' of ' + routinePlural(rows.length)) : routinePlural(rows.length);
+      wireItems();
+      if (selRoutineId !== before) renderDetailOnly();   // the search hid the old pick -> show the new one
+    }
+
+    function wireItems() {
+      host.querySelectorAll('.rtItem').forEach(el => {
+        el.onclick = () => {
+          if (el.dataset.id === selRoutineId) return;
+          selRoutineId = el.dataset.id;
+          host.querySelectorAll('.rtItem').forEach(x => x.classList.toggle('sel', x.dataset.id === selRoutineId));
+          renderDetailOnly();
+        };
+      });
+    }
+    function wireDetail() {
+      const name = document.getElementById('rtdName');
+      if (name) name.oninput = e => { const r = curRoutine(); if (r) { r.name = e.target.value; markDirty(); renderListOnly(); } };
+      const prompt = document.getElementById('rtdPrompt');
+      if (prompt) prompt.oninput = e => { const r = curRoutine(); if (r) { r.prompt = e.target.value; markDirty(); renderListOnly(); } };
+      const pagePick = document.getElementById('rtdPage');
+      if (pagePick) pagePick.onchange = e => { const r = curRoutine(); if (r) { r.appPageId = e.target.value; markDirty(); renderDetailOnly(); renderListOnly(); } };
+      const profile = document.getElementById('rtdProfile');
+      if (profile) profile.onchange = e => { const r = curRoutine(); if (r) { r.profileId = e.target.value; markDirty(); } };
+      const folder = document.getElementById('rtdFolder');
+      if (folder) folder.oninput = e => { const r = curRoutine(); if (r) { r.folder = e.target.value; markDirty(); } };
+      const browse = document.getElementById('rtdFolderBrowse');
+      if (browse) browse.onclick = async () => {
+        const picked = await configApi.pickFolder();
+        if (!picked) return;
+        const r = curRoutine(); if (!r) return;
+        r.folder = picked; markDirty();
+        const inp = document.getElementById('rtdFolder'); if (inp) inp.value = picked;
+      };
+      const mode = document.getElementById('rtdMode');
+      if (mode) mode.onchange = e => { const r = curRoutine(); if (r) { r.mode = e.target.value; markDirty(); } };
+      const run = document.getElementById('rtdRun');
+      if (run) run.onclick = async () => {
+        const r = curRoutine(); if (!r) return;
+        if (!String(r.prompt || '').trim()) { setState('add a prompt before running this routine', 'dirty'); return; }
+        // Run what's on screen: the routine runs from main's config, so commit pending edits first.
+        // A brand-new routine only reaches main once saved, so this is required, not just tidy.
+        if (dirty) { const ok = await doSave(); if (!ok) return; }
+        run.disabled = true;
+        try {
+          const res = await configApi.runRoutine(r.id);
+          if (res && res.ok) setState('▶ running “' + (res.name || r.name || 'routine') + '”' + (res.page ? ' on ' + res.page : '') + ' — check the panel', 'saved');
+          else setState((res && res.error) || 'could not run that routine', 'dirty');
+        } catch (e) { setState('could not run that routine', 'dirty'); }
+        finally { run.disabled = false; }
+      };
+      const del = document.getElementById('rtdDelete');
+      if (del) del.onclick = () => {
+        const r = curRoutine(); if (!r) return;
+        if (!window.confirm('Delete routine “' + (r.name || '(unnamed)') + '”?\n\nAny tile or macro that uses it will show “routine not found” until you point it elsewhere. This can’t be undone.')) return;
+        const l = list(); const idx = l.findIndex(x => x.id === r.id);
+        if (idx >= 0) l.splice(idx, 1);
+        selRoutineId = null;   // resolveRoutineSel picks the first still-visible routine on redraw
+        markDirty(); redraw();
+      };
+    }
+    function wireAdd() {
+      const searchEl = document.getElementById('rtSearch');
+      if (searchEl) searchEl.oninput = e => { routineQuery = e.target.value; renderListOnly(); };
+      const addBtn = document.getElementById('sRoutineAdd');
+      if (addBtn) addBtn.onclick = () => {
+        const pages = aiChatPagesForPicker();
+        const r = { id: 'r' + Date.now().toString(36), name: '', prompt: '', appPageId: pages.length ? pages[0].id : '', profileId: '', folder: '', mode: '' };
+        list().push(r);
+        routineQuery = '';       // clear any active search so the new (blank, unmatchable) routine is visible
+        selRoutineId = r.id;     // ...and selected, with its name focused for immediate typing
+        markDirty(); redraw();
+        const nameEl = document.getElementById('rtdName'); if (nameEl) nameEl.focus();
+      };
+    }
+    function wireAll() { wireAdd(); wireItems(); wireDetail(); }
+    wireAll();
   }
   function officeOptionDefault(def, key) {
     const option = (def.options || []).find(item => item.key === key);
@@ -1050,6 +1339,7 @@
     if (t.type === 'macro' && !Array.isArray(t.steps)) t.steps = [];
     let body;
     if (t.type === 'page') body = `<div class="row"><label>Page</label>${pageSelectHtml(t)}</div>`;
+    else if (t.type === 'routine') body = `<div class="row"><label>Routine</label>${routineSelectHtml(t)}</div>`;
     else if (t.type === 'macro') body = `<div class="row"><label>Steps</label></div><div id="macroSteps"></div>`;
     else if (t.type === 'key') body = `<div class="row"><label>Keys</label><input id="tValue" value="${esc(t.value)}" placeholder="${valuePlaceholder('key')}"><button id="tRec" type="button">Record</button></div>`;
     else if (t.type === 'ha') body = haTileBodyHtml(t);
@@ -1069,7 +1359,7 @@
     document.getElementById('tLabel').oninput = e => { t.label = e.target.value; renderTiles(); markDirty(); };
     document.getElementById('tType').onchange = e => {
       const prev = t.type; t.type = e.target.value;
-      if (t.type === 'page' || prev === 'page' || t.type === 'ha' || prev === 'ha') { t.value = ''; t.service = ''; }
+      if (t.type === 'page' || prev === 'page' || t.type === 'ha' || prev === 'ha' || t.type === 'routine' || prev === 'routine') { t.value = ''; t.service = ''; }
       // Default HA entity tiles to the "HA icon" iconType so the resolved icon shows immediately
       // without the user having to flip it manually.
       if (t.type === 'ha' && (!t.iconType || t.iconType === 'emoji')) { t.iconType = 'ha'; t.iconCache = ''; t.iconUrl = ''; }
@@ -1080,6 +1370,8 @@
     if (tv) tv.oninput = e => { t.value = e.target.value; renderTiles(); renderIconPane(); markDirty(); };
     const tp = document.getElementById('tPage');
     if (tp) { if (tp.value && tp.value !== t.value) { t.value = tp.value; markDirty(); } tp.onchange = e => { t.value = e.target.value; renderTiles(); markDirty(); }; }
+    const tr = document.getElementById('tRoutine');
+    if (tr) { if (tr.value && tr.value !== t.value) { t.value = tr.value; markDirty(); } tr.onchange = e => { t.value = e.target.value; renderTiles(); markDirty(); }; }
     document.getElementById('tClear').onclick = () => { flattenAt(g, ti); g.tiles[ti] = blankTile(); render(); markDirty(); };
     const setVal = p => { if (!p) return; t.value = p; if (!t.label) t.label = baseName(p); render(); markDirty(); };
     const br = document.getElementById('tBrowse');
@@ -1106,10 +1398,15 @@
     if (!Array.isArray(t.steps)) t.steps = [];
     const host = document.getElementById('macroSteps'); if (!host) return;
     const others = (config.grids || []).filter(g => g.id !== curGrid().id);
+    const routineList = ((config.settings || {}).routines) || [];
     const rowHtml = (s, i) => {
       const kind = s.kind || 'key';
       const field = kind === 'page'
         ? `<select class="msVal" data-i="${i}" style="flex:1">${others.map(g => `<option value="${esc(g.id)}" ${g.id === s.value ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>`
+        : kind === 'routine'
+        ? (routineList.length
+            ? `<select class="msVal" data-i="${i}" style="flex:1">${routineList.map(r => `<option value="${esc(r.id)}" ${r.id === s.value ? 'selected' : ''}>${esc(r.name || '(unnamed routine)')}</option>`).join('')}</select>`
+            : `<span class="hint" style="flex:1">No routines saved yet — add one on <b>Settings → Routines</b>.</span>`)
         : `<input class="msVal" data-i="${i}" style="flex:1" value="${esc(s.value || '')}" placeholder="${stepValuePlaceholder(kind)}">`;
       const rec = kind === 'key' ? `<button class="msRec" data-i="${i}" type="button" title="Record a key combo">⌨</button>` : '';
       const brow = (kind === 'app' || kind === 'open' || kind === 'ahk') ? `<button class="msBrowse" data-i="${i}" type="button" title="Browse">…</button>` : '';
@@ -1120,6 +1417,9 @@
     host.innerHTML = (t.steps.length ? t.steps.map(rowHtml).join('') : '<p class="hint">No steps yet — add one below.</p>')
       + `<div class="row"><button id="msAdd" type="button">+ add step</button></div>`;
     host.querySelectorAll('.msKind').forEach(el => el.onchange = e => { const i = +e.target.dataset.i; t.steps[i].kind = e.target.value; t.steps[i].value = ''; renderMacroSteps(t); markDirty(); });
+    // A <select> field (page / routine) shows its first option straight away — commit that as the
+    // step's value so a step the user never touched isn't silently blank.
+    host.querySelectorAll('select.msVal').forEach(el => { const i = +el.dataset.i; if (el.value && t.steps[i] && !t.steps[i].value) { t.steps[i].value = el.value; markDirty(); } });
     host.querySelectorAll('.msVal').forEach(el => { const h = e => { t.steps[+e.target.dataset.i].value = e.target.value; markDirty(); }; el.oninput = h; el.onchange = h; });
     host.querySelectorAll('.msRec').forEach(el => el.onclick = e => { const i = +e.currentTarget.dataset.i; const inp = host.querySelector(`.msVal[data-i="${i}"]`); if (inp) captureCombo(inp, c => { t.steps[i].value = c; inp.value = c; markDirty(); }); });
     host.querySelectorAll('.msBrowse').forEach(el => el.onclick = async e => { const i = +e.currentTarget.dataset.i; const k = t.steps[i].kind; const p = k === 'app' ? await configApi.pickProgram() : await configApi.pickFile(); if (p) { t.steps[i].value = p; renderMacroSteps(t); markDirty(); } });
@@ -1193,8 +1493,9 @@
     const el = document.getElementById('icondetail'); if (!el) return;
     const type = iconTypeOf(t);
     if (type === 'emoji') {
-      el.innerHTML = `<input id="tIcon" value="${esc(t.icon)}" placeholder="paste an emoji, e.g. 🌐">`;
-      document.getElementById('tIcon').oninput = e => { t.icon = e.target.value; renderTiles(); renderIconPreview(t); markDirty(); };
+      el.innerHTML = `<input id="tIcon" value="${esc(t.icon)}" placeholder="paste an emoji, or type a word to search — rocket, heart, coffee…">
+        <div class="emoji-grid" id="emojiResults"></div>`;
+      wireEmojiPicker(t);
     } else if (type === 'app') {
       el.innerHTML = `<p class="hint">${t.value ? 'Uses this program’s own icon: <b>' + esc(t.value) + '</b>' : 'Set a program in Value first.'}</p>`;
       if (t.value) ensureAppIcon(t.value);
@@ -1235,6 +1536,35 @@
     }
   }
 
+  // One field does both jobs: paste an emoji directly, or type a word and pick a live match below.
+  async function wireEmojiPicker(t) {
+    const inp = document.getElementById('tIcon');
+    const results = document.getElementById('emojiResults');
+    if (!inp || !results) return;
+    results.innerHTML = '<span class="hint">loading…</span>';
+    const index = await getEmojiIndex();
+    if (!document.body.contains(inp)) return;   // the editor moved on to something else while this loaded
+    const renderResults = () => {
+      const list = emojiSearchIn(index, inp.value);
+      results.innerHTML = list.length
+        ? list.map(em => `<button type="button" class="emoji-btn" title="Use this emoji">${esc(em)}</button>`).join('')
+        : '<span class="hint">no matches</span>';
+      results.querySelectorAll('.emoji-btn').forEach(b => b.onclick = () => {
+        t.icon = b.textContent;
+        inp.value = t.icon;
+        renderResults();
+        renderTiles(); renderIconPreview(t); markDirty();
+      });
+    };
+    inp.oninput = () => {
+      // Letters/digits in the box mean it's a search word, not a pasted emoji -- don't clobber the
+      // tile's actual icon with that text. Only a real paste (no plain ASCII in it) commits directly.
+      if (!/[a-z0-9]/i.test(inp.value)) { t.icon = inp.value; renderTiles(); renderIconPreview(t); markDirty(); }
+      renderResults();
+    };
+    renderResults();
+  }
+
   function renderIconPreview(t) {
     const el = document.getElementById('iconpreview'); if (!el) return;
     const type = iconTypeOf(t);
@@ -1266,10 +1596,16 @@
     if (!others.length) return '<span class="hint">No other pages to link to yet — add one first.</span>';
     return `<select id="tPage">${others.map(g => `<option value="${g.id}" ${g.id === t.value ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>`;
   }
+  function routineSelectHtml(t) {
+    const list = ((config.settings || {}).routines) || [];
+    if (!list.length) return '<span class="hint">No routines saved yet — add one on <b>Settings → Routines</b>, or from the panel with <b>+ Routine</b>.</span>';
+    return `<select id="tRoutine">${list.map(r => `<option value="${esc(r.id)}" ${r.id === t.value ? 'selected' : ''}>${esc(r.name || '(unnamed routine)')}</option>`).join('')}</select>`;
+  }
   function typeHint(type) {
     if (type === 'app') return 'Program name on PATH (chrome, notepad…) or a full .exe path via Browse.';
     if (type === 'url') return 'Opens in your default browser.';
     if (type === 'page') return 'Tapping (or clicking) this tile switches the panel to the chosen page.';
+    if (type === 'routine') return 'Tapping this tile switches the panel to the AI Chat page the routine names and sends its saved request — the agent answers with its normal tools and approvals. Manage routines on Settings → Routines.';
     if (type === 'cmd') return 'Runs a shell command (advanced; only use commands you fully trust).';
     if (type === 'system') return 'lock = lock screen · config = open this editor · mic = toggle the device mic · monitor = hide the panel and use the device as a normal monitor (return via the tray).';
     if (type === 'counter') return 'Tap the left half of the tile to decrement, the right half to increment. The value persists across sessions.';
@@ -1541,11 +1877,32 @@
     const isMusic = g.app === 'music';
     const isHaDash = g.app === 'ha-dashboard';
     const isKeyShortcuts = g.app === 'keyshortcuts';
-    const isClaudeVoice = g.app === 'claude-voice';
-    const isCodexVoice = g.app === 'codex-voice';
-    const isCopilotVoice = g.app === 'copilot-voice';
-    const isOwuiVoice = g.app === 'owui-voice';
-    const isVoiceApp = isClaudeVoice || isCodexVoice || isCopilotVoice || isOwuiVoice;   // all four share the hand-rendered options box below (owui omits the folder/mode rows)
+    const isVoiceApp = g.app === 'ai-voice';   // one app; the hand-rendered box below branches on the page's backend
+    const CV_BACKENDS = ['claude', 'codex', 'copilot', 'owui', 'api'];
+    const cvBackend = CV_BACKENDS.includes(optVal(g, 'backend', 'claude')) ? optVal(g, 'backend', 'claude') : 'claude';
+    const isCliBackend = cvBackend === 'claude' || cvBackend === 'codex' || cvBackend === 'copilot';
+    // Permission-mode choice sets differ per CLI backend (they map to each CLI's own flags), so they
+    // live here rather than in the single ai-voice apps.json entry.
+    const CV_MODES = {
+      claude: { default: 'manual', choices: [
+        ['manual', 'Manual — ask before every action (touch approval on the panel)'],
+        ['acceptEdits', 'Accept edits — auto-approve file changes'],
+        ['plan', "Plan — describe, don't act, until approved"],
+        ['bypassPermissions', 'Full auto — no prompts (use with care)'],
+      ] },
+      codex: { default: 'ask-for-approval', choices: [
+        ['read-only', 'Read Only — Codex can read files in the workspace; approval required to edit files or access the internet'],
+        ['ask-for-approval', 'Ask for approval — Codex can read, edit, and run commands in the workspace; approval required for the internet or other files'],
+        ['approve-for-me', 'Approve for me — only ask for actions detected as potentially unsafe'],
+        ['full-access', 'Full Access — Codex can edit files outside the workspace and use the internet without asking (use with caution)'],
+      ] },
+      copilot: { default: 'manual', choices: [
+        ['manual', 'Manual — ask before every action (touch approval on the panel)'],
+        ['plan', "Plan — describe, don't act, until approved"],
+        ['auto', 'Approve for me — file changes and commands run automatically'],
+        ['autopilot', 'Full auto — runs until the task is done, no prompts at all'],
+      ] },
+    };
     const isOffice = g.app === 'office';
     const isLucidType = g.app === 'lucidtype';
     const isLiveTranslate = g.app === 'livetranslate';
@@ -1587,12 +1944,36 @@
     // own picker + flags rather than delegating to the generic renderAppOpts(). See docs/claude-voice.md
     // and the plan file for why projectDir specifically needs this (D:\Github\* isn't known at
     // apps.json-authoring time).
-    const cvOptDef = key => (def && def.options || []).find(o => o.key === key) || {};
     const cvVal = (key, dflt) => optVal(g, key, dflt);
-    const cvPermChoices = (cvOptDef('permissionMode').choices || []);
+    const cvModes = CV_MODES[cvBackend] || null;
+    const cvMode = (() => {   // stored mode, healed to the backend's default when it isn't one of its choices
+      const v = cvVal('permissionMode', '');
+      return cvModes && cvModes.choices.some(c => c[0] === v) ? v : (cvModes ? cvModes.default : '');
+    })();
     const claudeVoiceBox = `<div id="cvBox" style="margin-top:10px">
-        <p id="cvCliWarn" class="hint" style="display:none;color:#ff8a8a;font-weight:600"></p>` + (isOwuiVoice ? `
-        <p class="hint">Chats against the Open WebUI connection configured on <b>Settings → Auth</b> (URL, API key, default model). No working folder and no permission modes — the chat API can't touch files or run commands.</p>` : `
+        <div class="row"><label>Backend</label>
+          <select id="cvBackend" style="flex:1">
+            <option value="claude" ${cvBackend === 'claude' ? 'selected' : ''}>Claude Code — CLI agent with tools</option>
+            <option value="codex" ${cvBackend === 'codex' ? 'selected' : ''}>Codex — CLI agent with tools</option>
+            <option value="copilot" ${cvBackend === 'copilot' ? 'selected' : ''}>Copilot — CLI agent with tools</option>
+            <option value="owui" ${cvBackend === 'owui' ? 'selected' : ''}>Open WebUI — your server (Auth tab connection)</option>
+            <option value="api" ${cvBackend === 'api' ? 'selected' : ''}>API endpoint — your own key (OpenAI, DeepSeek, OpenRouter, …)</option>
+          </select></div>
+        <p id="cvCliWarn" class="hint" style="display:none;color:#ff8a8a;font-weight:600"></p>` + (cvBackend === 'owui' ? `
+        <p class="hint">Chats against the Open WebUI connection configured on <b>Settings → Auth</b> (URL, API key, default model). No working folder and no permission modes — the chat API can't touch files or run commands.</p>` : cvBackend === 'api' ? `
+        <div class="row"><label>Endpoint</label>
+          <select id="cvApiPreset" style="width:230px">
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="custom">Custom / LiteLLM / Ollama…</option>
+          </select>
+          <input id="cvApiUrl" value="${esc(cvVal('apiBaseUrl', 'https://api.openai.com/v1'))}" placeholder="https://api.openai.com/v1" style="flex:1; margin-left:8px"></div>
+        <div class="row"><label>API key</label>${secretInput(cvVal('apiKey', ''), 'id="cvApiKey" style="flex:1"')}</div>
+        <div class="row"><label>Model</label>
+          <input id="cvApiModel" value="${esc(cvVal('apiModel', ''))}" placeholder="e.g. gpt-4o-mini" style="width:320px" autocomplete="off">
+          <span class="hint" id="cvApiModelHint" style="margin:0 0 0 8px"></span></div>
+        <p class="hint">Any OpenAI-compatible chat endpoint. Plain conversation — no tools, no file access. The key is stored encrypted and never reaches the panel page.</p>` : `
         <div class="row"><label>Default folder</label>
           <input id="cvProjectPath" value="${esc(cvVal('projectDir', ''))}" style="flex:1">
           <button id="cvProjectPathBrowse" type="button">Browse…</button></div>
@@ -1601,9 +1982,12 @@
           <input id="cvProjectsRoot" value="${esc(cvVal('projectsRoot', ''))}" style="flex:1">
           <button id="cvProjectsRootBrowse" type="button">Browse…</button></div>
         <p class="hint">The folder the panel's Change folder list scans.</p>`) + `
-        <p class="hint">Voice STT/TTS servers are set globally under <b>Settings → TTS/STT</b>. Override them for just this page in <b>Advanced settings</b> below.</p>` + (isOwuiVoice ? '' : `
+        <p class="hint">Voice STT/TTS servers are set globally under <b>Settings → TTS/STT</b>. Override them for just this page in <b>Advanced settings</b> below.</p>
+        <div class="row" style="margin-top:10px"><label>Default profile</label>
+          <select id="cvProfile" style="flex:1">${(((config.settings || {}).aiProfiles) || []).map((p, i) => `<option value="${esc(p.id)}" ${(cvVal('profilePick', '') || (((config.settings || {}).aiProfiles) || [{}])[0].id) === p.id ? 'selected' : ''}>${esc(p.name || '(unnamed)')}</option>`).join('')}</select></div>
+        <p class="hint">The AI profile this page starts with — a named instruction that shapes the AI (translate, summarize, write…). Switch live from the panel's <b>Profile</b> button; manage the list under <b>Settings → AI Profiles</b>.</p>` + (!cvModes ? '' : `
         <div class="row" style="margin-top:10px"><label>Permission mode</label>
-          <select id="cvPermMode" style="flex:1">${cvPermChoices.map(c => `<option value="${esc(c[0])}" ${cvVal('permissionMode', cvOptDef('permissionMode').default || '') === c[0] ? 'selected' : ''}>${esc(c[1])}</option>`).join('')}</select></div>`) + (isClaudeVoice ? `
+          <select id="cvPermMode" style="flex:1">${cvModes.choices.map(c => `<option value="${esc(c[0])}" ${cvMode === c[0] ? 'selected' : ''}>${esc(c[1])}</option>`).join('')}</select></div>`) + (cvBackend === 'claude' ? `
         <div class="row"><label>Touch approval</label>
           <label class="iconopt" style="width:auto"><input type="checkbox" id="cvApprovals" ${cvVal('approvalsEnabled', false) ? 'checked' : ''}> when in Manual mode</label></div>
         <div class="row" style="margin-top:10px"><label>Panel prompt</label>
@@ -1696,12 +2080,12 @@
       </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
-    const xlProvider = optVal(g, 'provider', 'soniox');
+    const xlProvider = optVal(g, 'provider', 'soniox') === 'ai' ? 'ai' : 'soniox';
     const liveTranslateBox = `<div style="margin-top:10px">
         <div class="row"><label>Provider</label>
           <select id="xlProvider" style="flex:1">
             <option value="soniox" ${xlProvider === 'soniox' ? 'selected' : ''}>Soniox — cloud real-time translation (recommended)</option>
-            <option value="wyoming" ${xlProvider === 'wyoming' ? 'selected' : ''}>Wyoming STT endpoint (legacy / self-hosted)</option>
+            <option value="ai" ${xlProvider === 'ai' ? 'selected' : ''}>AI translate — your own API key (DeepSeek, OpenAI, …)</option>
           </select></div>
         ${xlProvider === 'soniox' ? `
         <div class="row"><label>Soniox API key</label>${secretInput(optVal(g, 'sonioxApiKey', ''), 'id="xlSoniKey" style="flex:1"')}</div>
@@ -1710,24 +2094,21 @@
           <input id="xlTargetLang" value="${esc(optVal(g, 'targetLanguage', 'en'))}" placeholder="en" style="width:120px"></div>
         <div class="row"><label>Source hint</label>
           <input id="xlSourceHint" value="${esc(optVal(g, 'sourceHint', ''))}" placeholder="blank = auto-detect (e.g. de)" style="width:230px"></div>
-        <p class="hint">Language codes (en, es, de, …) — <a href="#" id="xlLangLink">browse all Soniox languages ↗</a>. Source hint is optional; Soniox auto-detects otherwise (setting it removes the startup delay).</p>` : xlProvider === 'whisperlive' ? `
-        <div class="row"><label>WhisperLive URL</label>
-          <input id="xlWlUrl" value="${esc(optVal(g, 'whisperUrl', ''))}" placeholder="ws://192.168.1.25:19000" style="flex:1"></div>
-        <div class="row"><label>Token (optional)</label>${secretInput(optVal(g, 'whisperToken', ''), 'id="xlWlToken" style="flex:1"')}</div>
-        <div class="row"><label>Whisper model</label>
-          <input id="xlWlModel" value="${esc(optVal(g, 'whisperModel', 'large-v3'))}" placeholder="large-v3" style="width:180px"></div>
+        <p class="hint">Language codes (en, es, de, …) — <a href="#" id="xlLangLink">browse all Soniox languages ↗</a>. Source hint is optional; Soniox auto-detects otherwise (setting it removes the startup delay).</p>` : `
+        <div class="row"><label>Endpoint</label>
+          <select id="xlAiPreset" style="width:230px">
+            <option value="deepseek">DeepSeek</option>
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="custom">Custom / Open WebUI…</option>
+          </select>
+          <input id="xlAiUrl" value="${esc(optVal(g, 'aiBaseUrl', 'https://api.deepseek.com'))}" placeholder="https://api.deepseek.com" style="flex:1; margin-left:8px"></div>
+        <div class="row"><label>API key</label>${secretInput(optVal(g, 'aiApiKey', ''), 'id="xlAiKey" style="flex:1"')}</div>
+        <div class="row"><label>Model</label>
+          <input id="xlAiModel" value="${esc(optVal(g, 'aiModel', 'deepseek-v4-flash'))}" placeholder="deepseek-v4-flash" style="width:230px"></div>
         <div class="row" style="margin-top:10px"><label>Target language</label>
-          <input id="xlTargetLang" value="${esc(optVal(g, 'targetLanguage', 'en'))}" placeholder="en" style="width:120px"></div>
-        <div class="row"><label>Source hint</label>
-          <input id="xlSourceHint" value="${esc(optVal(g, 'sourceHint', ''))}" placeholder="blank = auto-detect (e.g. de)" style="width:230px"></div>
-        <p class="hint">Language codes (en, es, de, …) — <a href="#" id="xlLangLink">browse language codes ↗</a>. Runs Whisper large-v3 + translation on your own GPU.</p>
-        <p class="sectitle" style="margin-top:12px">On-demand GPU (optional)</p>
-        <div class="row"><label>Start command</label>
-          <input id="xlWlStart" value="${esc(optVal(g, 'whisperStartCmd', ''))}" placeholder="ssh root@192.168.1.25 docker start whisper-live" style="flex:1"></div>
-        <div class="row"><label>Stop command</label>
-          <input id="xlWlStop" value="${esc(optVal(g, 'whisperStopCmd', ''))}" placeholder="ssh root@192.168.1.25 docker stop whisper-live" style="flex:1"></div>
-        <p class="hint">Run when you start/stop listening, so the container (and the GPU) only run on demand. Blank = assume it's always up. OQ waits for the WS port after the start command before connecting.</p>` : `
-        <p class="hint">Wyoming: point this page's STT server at a <b>streaming</b> endpoint under <b>Advanced settings</b> below. (Utterance-final STT lags badly on continuous speech — Soniox is recommended for live use.)</p>`}
+          <input id="xlTargetLang" value="${esc(optVal(g, 'targetLanguage', 'en'))}" placeholder="en (or any language name)" style="width:230px"></div>
+        <p class="hint">Any OpenAI-compatible chat endpoint (DeepSeek ≈ $0.10/hr, OpenAI, a local Open WebUI/Ollama…). Utterances are transcribed by your <b>Settings → TTS/STT</b> server first — its model must be <b>multilingual</b> (Parakeet v3 or Whisper small/medium/large; the Distil-Whisper models are English-only) — then translated with recent-line context, so captions arrive per phrase — a beat behind speech, not word-by-word like Soniox. Key stored encrypted, used only from the main process.</p>`}
         <p class="sectitle" style="margin-top:14px">Microphone</p>
         <div class="row"><label>Capture device</label>
           <select id="xlMic" style="flex:1"><option value="">System default</option></select></div>
@@ -1741,10 +2122,6 @@
           <input id="xlSaveFolder" value="${esc(optVal(g, 'saveFolder', ''))}" placeholder="Documents\\OpenQuake Translations" readonly style="flex:1">
           <button id="xlSaveFolderBrowse" type="button">Browse…</button></div>
         <p class="hint">Where saved translations are written. Blank = Documents\\OpenQuake Translations.</p>
-        ${xlProvider === 'wyoming' ? `
-        <div class="row" style="margin-top:10px"><label style="width:auto">Voice pause tolerance</label>
-          <input type="number" id="xlPause" min="400" max="2500" step="100" value="${esc(String(optVal(g, 'vadHangoverMs', 800)))}" style="width:110px">
-          <span class="hint" style="margin:0 0 0 8px">ms of silence before a phrase is sent</span></div>` : ''}
       </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
@@ -1810,9 +2187,19 @@
       wireShortcutRows();
     } else if (isVoiceApp) {
       const setOpt = (key, val) => { if (!g.options) g.options = {}; g.options[key] = val; markDirty(); };
+      // Backend switch re-renders the box so the backend-specific rows swap in (Live Translate's
+      // provider-select pattern). Heal the stored mode to the new backend's default so a stale
+      // claude mode never reaches the codex CLI (and vice versa).
+      document.getElementById('cvBackend').onchange = e => {
+        setOpt('backend', e.target.value);
+        const m = CV_MODES[e.target.value];
+        setOpt('permissionMode', m ? m.default : '');
+        render();
+      };
+      if (cvModes && cvVal('permissionMode', '') !== cvMode) setOpt('permissionMode', cvMode);   // persist the healed mode
       // Default folder is a plain text box -- actual folder switching happens on the panel
       // (Change folder), which writes its pick back into this same option. The folder and
-      // permission-mode rows don't exist for owui-voice, hence the existence guards.
+      // permission-mode rows only exist for CLI backends, hence the existence guards.
       const cvProjectPath = document.getElementById('cvProjectPath');
       if (cvProjectPath) cvProjectPath.oninput = e => setOpt('projectDir', e.target.value.trim());
       const cvProjectsRoot = document.getElementById('cvProjectsRoot');
@@ -1823,21 +2210,77 @@
       if (cvProjectsRootBrowse) cvProjectsRootBrowse.onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('cvProjectsRoot').value = p; setOpt('projectsRoot', p); } };
       const cvPermMode = document.getElementById('cvPermMode');
       if (cvPermMode) cvPermMode.onchange = e => setOpt('permissionMode', e.target.value);
+      const cvProfile = document.getElementById('cvProfile');
+      if (cvProfile) cvProfile.onchange = e => setOpt('profilePick', e.target.value);
       const cvApprovals = document.getElementById('cvApprovals');   // claude-only rows
       if (cvApprovals) cvApprovals.onchange = e => setOpt('approvalsEnabled', e.target.checked);
       const cvEditPrompt = document.getElementById('cvEditPrompt');
       if (cvEditPrompt) cvEditPrompt.onclick = () => configApi.editClaudeVoicePrompt();
-      // Warn at add-time if the agent CLI this page drives isn't installed (or, for owui-voice,
-      // if no connection is configured) -- otherwise the user only finds out when the panel page
-      // errors on first use.
-      configApi.probeVoiceCli(g.app).then(p => {
+      // API backend rows: preset fills URL+model (stored truth is always apiBaseUrl/apiModel).
+      const CV_API_PRESETS = { openai: { url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, deepseek: { url: 'https://api.deepseek.com', model: 'deepseek-v4-flash' }, openrouter: { url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
+      const cvApiUrl = document.getElementById('cvApiUrl');
+      if (cvApiUrl) {
+        const preset = document.getElementById('cvApiPreset');
+        const cur = cvApiUrl.value.trim();
+        preset.value = cur === CV_API_PRESETS.openai.url ? 'openai' : cur === CV_API_PRESETS.deepseek.url ? 'deepseek' : cur === CV_API_PRESETS.openrouter.url ? 'openrouter' : 'custom';
+        preset.onchange = e => { const p = CV_API_PRESETS[e.target.value]; if (p) { cvApiUrl.value = p.url; setOpt('apiBaseUrl', p.url); document.getElementById('cvApiModel').value = p.model; setOpt('apiModel', p.model); } };
+        cvApiUrl.oninput = e => setOpt('apiBaseUrl', e.target.value.trim());
+        document.getElementById('cvApiKey').onchange = e => setOpt('apiKey', e.target.value);
+        document.getElementById('cvApiModel').oninput = e => setOpt('apiModel', e.target.value.trim());
+        // Fill the Model picker from the endpoint's standard /models. On success the text input is
+        // swapped for a real <select> (a datalist filters by the box's current text, so with any
+        // value present it looks broken); "Type a model name…" swaps back for unlisted models.
+        // Typing always works pre-fetch and on failure. Re-fetched when URL or key change.
+        const cvFillModels = () => {
+          const hint = document.getElementById('cvApiModelHint');
+          const inp = document.getElementById('cvApiModel');
+          const url = cvApiUrl.value.trim(), key = document.getElementById('cvApiKey').value;
+          if (!url || !key || !inp) { if (hint) hint.textContent = ''; return; }
+          if (hint) hint.textContent = 'loading models…';
+          configApi.probeApiModels(url, key).then(r => {
+            if (!hint || !inp) return;
+            if (!(r && r.ok && r.models && r.models.length)) {
+              hint.textContent = r && r.error ? 'model list unavailable: ' + r.error : 'model list unavailable';
+              return;
+            }
+            let sel = document.getElementById('cvApiModelSel');
+            if (!sel) {
+              sel = document.createElement('select');
+              sel.id = 'cvApiModelSel';
+              sel.style.width = '320px';
+              inp.parentElement.insertBefore(sel, inp);
+            }
+            const cur = inp.value.trim();
+            sel.innerHTML = '';
+            const add = (v, label) => { const o = document.createElement('option'); o.value = v; o.textContent = label || v; sel.appendChild(o); };
+            if (cur && !r.models.includes(cur)) add(cur, cur + ' (not in the list)');
+            r.models.forEach(m => add(m));
+            add('__custom__', 'Type a model name…');
+            sel.value = cur && !r.models.includes(cur) ? cur : (r.models.includes(cur) ? cur : r.models[0]);
+            inp.style.display = 'none';
+            sel.onchange = e => {
+              if (e.target.value === '__custom__') { sel.remove(); inp.style.display = ''; inp.focus(); inp.select(); return; }
+              inp.value = e.target.value;
+              setOpt('apiModel', e.target.value);
+            };
+            // The select landing on the first model (empty box case) is a real pick — persist it.
+            if (!cur && sel.value) { inp.value = sel.value; setOpt('apiModel', sel.value); }
+            hint.textContent = r.models.length + ' models';
+          }).catch(() => { if (hint) hint.textContent = 'model list unavailable'; });
+        };
+        cvFillModels();
+        cvApiUrl.onchange = cvFillModels;
+        document.getElementById('cvApiKey').addEventListener('change', cvFillModels);
+      }
+      // Warn at add-time if the backend's CLI isn't installed (or, for owui, if no connection is
+      // configured) -- otherwise the user only finds out when the panel page errors on first use.
+      if (cvBackend !== 'api') configApi.probeVoiceCli(cvBackend).then(p => {
         const warn = document.getElementById('cvCliWarn');
         if (warn && !p) {
-          if (isOwuiVoice) {
+          if (cvBackend === 'owui') {
             warn.textContent = '⚠ Open WebUI connection not configured — set the URL on Settings → Auth or this page won\'t work.';
           } else {
-            const cliName = isCodexVoice ? 'codex' : isCopilotVoice ? 'copilot' : 'claude';
-            warn.textContent = '⚠ The ' + cliName + ' CLI was not found on PATH — this page won\'t work until it is installed.';
+            warn.textContent = '⚠ The ' + cvBackend + ' CLI was not found on PATH — this page won\'t work until it is installed.';
           }
           warn.style.display = '';
         }
@@ -1932,17 +2375,23 @@
       const setOpt = (key, val) => { if (!g.options) g.options = {}; g.options[key] = val; markDirty(); };
       document.getElementById('xlProvider').onchange = e => { setOpt('provider', e.target.value); render(); };   // re-render to swap provider-specific fields
       const soniKey = document.getElementById('xlSoniKey'); if (soniKey) soniKey.onchange = e => setOpt('sonioxApiKey', e.target.value);
-      const tl = document.getElementById('xlTargetLang'); if (tl) tl.oninput = e => setOpt('targetLanguage', e.target.value.trim());
       const sh = document.getElementById('xlSourceHint'); if (sh) sh.oninput = e => setOpt('sourceHint', e.target.value.trim());
-      const pause = document.getElementById('xlPause'); if (pause) pause.oninput = e => setOpt('vadHangoverMs', e.target.value);
-      document.getElementById('xlSave').onchange = e => setOpt('saveToFile', e.target.checked);
       const xlLangLink = document.getElementById('xlLangLink'); if (xlLangLink) xlLangLink.onclick = e => { e.preventDefault(); configApi.openExternal('https://soniox.com/docs/stt/concepts/supported-languages'); };
-      const xlSfBrowse = document.getElementById('xlSaveFolderBrowse'); if (xlSfBrowse) xlSfBrowse.onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('xlSaveFolder').value = p; setOpt('saveFolder', p); } };
-      const xlWlUrl = document.getElementById('xlWlUrl'); if (xlWlUrl) xlWlUrl.oninput = e => setOpt('whisperUrl', e.target.value.trim());
-      const xlWlToken = document.getElementById('xlWlToken'); if (xlWlToken) xlWlToken.onchange = e => setOpt('whisperToken', e.target.value);
-      const xlWlStart = document.getElementById('xlWlStart'); if (xlWlStart) xlWlStart.oninput = e => setOpt('whisperStartCmd', e.target.value);
-      const xlWlStop = document.getElementById('xlWlStop'); if (xlWlStop) xlWlStop.oninput = e => setOpt('whisperStopCmd', e.target.value);
-      const xlWlModel = document.getElementById('xlWlModel'); if (xlWlModel) xlWlModel.oninput = e => setOpt('whisperModel', e.target.value.trim());
+      document.getElementById('xlTargetLang').oninput = e => setOpt('targetLanguage', e.target.value.trim());
+      document.getElementById('xlSave').onchange = e => setOpt('saveToFile', e.target.checked);
+      document.getElementById('xlSaveFolderBrowse').onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('xlSaveFolder').value = p; setOpt('saveFolder', p); } };
+      // AI provider fields. The endpoint preset is a convenience that fills URL + model; the stored
+      // truth is always aiBaseUrl/aiModel, so "Custom" covers Open WebUI, Ollama, or anything else.
+      const AI_PRESETS = { deepseek: { url: 'https://api.deepseek.com', model: 'deepseek-v4-flash' }, openai: { url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, openrouter: { url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
+      const xlAiUrl = document.getElementById('xlAiUrl'), xlAiPreset = document.getElementById('xlAiPreset');
+      if (xlAiUrl) {
+        const cur = xlAiUrl.value.trim();
+        xlAiPreset.value = cur === AI_PRESETS.deepseek.url ? 'deepseek' : cur === AI_PRESETS.openai.url ? 'openai' : cur === AI_PRESETS.openrouter.url ? 'openrouter' : 'custom';
+        xlAiPreset.onchange = e => { const p = AI_PRESETS[e.target.value]; if (p) { xlAiUrl.value = p.url; setOpt('aiBaseUrl', p.url); document.getElementById('xlAiModel').value = p.model; setOpt('aiModel', p.model); } };
+        xlAiUrl.oninput = e => { setOpt('aiBaseUrl', e.target.value.trim()); };
+        document.getElementById('xlAiKey').onchange = e => setOpt('aiApiKey', e.target.value);
+        document.getElementById('xlAiModel').oninput = e => setOpt('aiModel', e.target.value.trim());
+      }
       const xlHotkey = document.getElementById('xlHotkey'); if (xlHotkey) { xlHotkey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { xlHotkey.value = acc; setOpt('micHotkey', acc); } }; document.getElementById('xlHotkeyClear').onclick = () => { xlHotkey.value = ''; setOpt('micHotkey', ''); }; }
       // Microphone dropdown — the app's default capture device (same pattern as LucidType/Meeting).
       // enumerateDevices exposes labels only after a getUserMedia grant, so grab-then-release once.
@@ -2004,13 +2453,29 @@
     if (settingDef && (!config.settings[settingDef.key] || typeof config.settings[settingDef.key] !== 'object')) config.settings[settingDef.key] = {};
     const appSettings = settingDef ? config.settings[settingDef.key] : null;
     const valOf = key => (key in g.options) ? g.options[key] : ((def.options || []).find(x => x.key === key) || {}).default;
-    const visible = o => !o.showIf || String(valOf(o.showIf.key)) === String(o.showIf.value);   // conditional option (e.g. city slots only in Cities mode)
-    const renderOptions = (options, values, cssClass) => options.map(o => {
-      const v = (o.key in values) ? values[o.key] : o.default;
+    // Conditional option: equality (city slots only in Cities mode), exclusion ("not": hide the
+    // scene pick when the source is media-only), or an array of either form (AND).
+    const showIfOk = c => {
+      const cur = String(valOf(c.key));
+      return ('not' in c) ? cur !== String(c.not) : cur === String(c.value);
+    };
+    const visible = o => !o.showIf || (Array.isArray(o.showIf) ? o.showIf.every(showIfOk) : showIfOk(o.showIf));
+    el.innerHTML = (def.options || []).filter(o => !o.editorCustom).filter(visible).map(o => {
+      let v = (o.key in g.options) ? g.options[o.key] : o.default;
       let field;
       const attrs = `class="${cssClass}" data-key="${esc(o.key)}"`;
-      if (o.type === 'select') field = `<select ${attrs}>${o.choices.map(ch => { const val = Array.isArray(ch) ? ch[0] : ch, lab = Array.isArray(ch) ? ch[1] : ch; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('')}</select>`;
-      else if (o.type === 'bool') field = `<input type="checkbox" ${attrs} ${v ? 'checked' : ''} style="width:auto">`;
+      if (o.type === 'select') {
+        // Heal a stored value that no longer matches any choice (e.g. a removed screensaver scene)
+        // to the manifest default — otherwise the select silently displays something else entirely.
+        if (!o.choices.some(ch => String(Array.isArray(ch) ? ch[0] : ch) === String(v))) {
+          v = o.default;
+          if (o.key in g.options && g.options[o.key] !== o.default) { g.options[o.key] = o.default; markDirty(); }
+        }
+        field = `<select ${attrs}>${o.choices.map(ch => { const val = Array.isArray(ch) ? ch[0] : ch, lab = Array.isArray(ch) ? ch[1] : ch; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('')}</select>`;
+      }
+      else if (o.type === 'bool') field = o.inline
+        ? `<label class="iconopt" style="width:auto"><input type="checkbox" class="aopt" data-key="${esc(o.key)}" ${v ? 'checked' : ''} style="width:auto"> ${esc(o.inline)}</label>`
+        : `<input type="checkbox" ${attrs} ${v ? 'checked' : ''} style="width:auto">`;
       else if (o.type === 'secret') field = secretInput(v, attrs);
       else field = `<input ${attrs} value="${esc(v)}"${o.maxLength ? ` maxlength="${Number(o.maxLength)}"` : ''}>`;
       const help = o.help ? `<p class="hint" style="margin:-2px 0 10px 78px">${esc(o.help)}</p>` : '';
@@ -2028,12 +2493,112 @@
       if (o && (o.type === 'select' || o.type === 'bool')) renderAppOpts(g, def);   // re-evaluate conditional (showIf) options
       enforceMusicCap(g);   // re-apply the 2-of-3 panel cap (grid/art/lyrics)
     });
+    if (def.id === 'screensaver') {
+      // Show: only ever three options, so all three sit as permanent side-by-side checkboxes in
+      // one row. Scenes (five options) stays a collapsed multiselect dropdown under it.
+      const showRow = appendScreensaverShowRow(el, g, def);
+      const scenesOn = (g.options && 'showScenes' in g.options) ? !!g.options.showScenes : true;
+      if (scenesOn) appendScreensaverMultiRow(el, g, def, 'Scenes', ['sceneWaves', 'sceneStarfield', 'sceneLava', 'sceneFireflies', 'sceneFlurry'], showRow);
+      // Browse/Open buttons under each folder text field — always present; hiding folder rows by
+      // mode just hides configuration people are looking for.
+      appendScreensaverFolderButtons(el, g, 'photosDir', 'photos');
+      appendScreensaverFolderButtons(el, g, 'videosDir', 'videos');
+    }
     el.querySelectorAll('.aset').forEach(inp => inp.onchange = e => {
       const o = settingDef.options.find(x => x.key === e.target.dataset.key);
       appSettings[e.target.dataset.key] = o && o.type === 'bool' ? e.target.checked : e.target.value;
       markDirty();
     });
     enforceMusicCap(g);
+  }
+  // Screensaver: the Show group is three permanent side-by-side checkboxes on one row (only ever
+  // three options — no dropdown to hunt through). Toggling re-renders the box because these gate
+  // the style/crop/Scenes rows. The manifest keeps every pick as an ordinary bool option (query
+  // delivery, seeding, panel — all unchanged); `editorCustom` only skips generic rendering here.
+  function appendScreensaverShowRow(el, g, def) {
+    const opts = (def.options || []).filter(o => ['showScenes', 'showPhotos', 'showVideos'].includes(o.key));
+    const on = o => { const go = g.options || {}; return (o.key in go) ? !!go[o.key] : !!o.default; };
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label>Show</label>` + opts.map(o =>
+      `<label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" data-sk="${esc(o.key)}" ${on(o) ? 'checked' : ''}> ${esc(o.label)}</label>`
+    ).join('');
+    el.insertAdjacentElement('afterbegin', row);
+    row.querySelectorAll('input[data-sk]').forEach(cb => cb.onchange = () => {
+      if (!g.options) g.options = {};
+      g.options[cb.dataset.sk] = cb.checked;
+      markDirty();
+      renderAppOpts(g, def);   // these toggles gate the style/crop/Scenes rows
+    });
+    return row;
+  }
+  // Scenes (five options) stays behind ONE collapsed multiselect dropdown — five always-visible
+  // checkbox rows ate the whole box. Stays open across picks; closes on a click anywhere outside.
+  function appendScreensaverMultiRow(el, g, def, rowLabel, keys, afterEl) {
+    const opts = (def.options || []).filter(o => keys.includes(o.key));
+    if (!opts.length) return null;
+    const on = o => { const go = g.options || {}; return (o.key in go) ? !!go[o.key] : !!o.default; };
+    // Collapsed label deliberately does NOT echo the picks — a value there reads like a
+    // single-choice select. Only the all-off footgun still surfaces.
+    const summary = () => opts.some(on) ? `Click to select` : 'None selected — nothing will show';
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.position = 'relative';
+    row.innerHTML = `<label>${esc(rowLabel)}</label>
+      <button type="button" data-ms-btn style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></button>
+      <div data-ms-menu style="display:none;position:absolute;left:78px;right:0;top:100%;z-index:30;background:#121a24;border:1px solid #2a3a4e;border-radius:8px;padding:8px 12px">
+        ${opts.map(o => `<label class="iconopt" style="display:block;width:auto;margin:4px 0"><input type="checkbox" data-sk="${esc(o.key)}" ${on(o) ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
+      </div>`;
+    if (afterEl) afterEl.insertAdjacentElement('afterend', row);
+    else el.insertAdjacentElement('afterbegin', row);
+    const btn = row.querySelector('[data-ms-btn]'), menu = row.querySelector('[data-ms-menu]');
+    const setLabel = () => { btn.textContent = '▾ ' + summary(); };
+    setLabel();
+    btn.onclick = e => {
+      e.stopPropagation();
+      const opening = menu.style.display === 'none';
+      menu.style.display = opening ? '' : 'none';
+      // Close on the next click anywhere outside; clicks inside the menu don't bubble this far.
+      if (opening) setTimeout(() => document.addEventListener('click', () => { menu.style.display = 'none'; }, { once: true }), 0);
+    };
+    menu.onclick = e => e.stopPropagation();
+    menu.querySelectorAll('input[data-sk]').forEach(cb => cb.onchange = () => {
+      if (!g.options) g.options = {};
+      g.options[cb.dataset.sk] = cb.checked;
+      markDirty();
+      setLabel();
+    });
+    return row;
+  }
+  // Screensaver: each media folder needs a real folder picker and an "open in Explorer" shortcut —
+  // dynamic things apps.json can't express. Buttons are inserted right under that folder's own
+  // text field (inside renderAppOpts, so they survive the re-render select/bool changes trigger)
+  // and only when the field itself is visible.
+  function appendScreensaverFolderButtons(el, g, key, kind) {
+    const inp = el.querySelector(`.aopt[data-key="${key}"]`);
+    if (!inp) return;
+    const word = kind === 'videos' ? 'videos' : 'photos';
+    const exts = kind === 'videos' ? 'mp4/webm/mov' : 'jpg/png/gif/webp';
+    // The videos row also links the repo's community-wallpapers folder — ready-made 1920×480
+    // loops live there (kept out of the installer so the app stays small).
+    const community = kind === 'videos'
+      ? `<button type="button" data-ss-community="1">Download wallpapers ↗</button>` : '';
+    const row = document.createElement('div');
+    row.innerHTML = `<div class="row" style="gap:8px"><label></label>
+        <button type="button" data-ss-browse="${key}">Browse…</button>
+        <button type="button" data-ss-open="${key}">Open ${word} folder</button>${community}</div>
+      <p class="hint" style="margin:-2px 0 10px 78px">Drop ${exts} files in and the screensaver plays them.
+      Blank = the app's own screensaver-media\\${word} folder — Open shows whichever folder is in effect.</p>`;
+    inp.closest('.row').insertAdjacentElement('afterend', row);
+    row.querySelector(`[data-ss-browse="${key}"]`).onclick = async () => {
+      const p = await configApi.pickFolder();
+      if (!p) return;
+      g.options[key] = p; markDirty();
+      inp.value = p;
+    };
+    row.querySelector(`[data-ss-open="${key}"]`).onclick = () => configApi.openScreensaverMedia(optVal(g, key, ''), kind);
+    const cb = row.querySelector('[data-ss-community="1"]');
+    if (cb) cb.onclick = () => configApi.openExternal('https://github.com/TeeJS/open-quake/tree/main/community-wallpapers');
   }
 
   function deleteCurrentPage() {
@@ -2185,7 +2750,7 @@
     const th = currentTheme();
     // Meeting recording settings (config.settings.meeting) — global so auto-record works regardless of
     // which app the panel is showing. Same shape as MEETING_DEFAULTS in main.js.
-    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30 }, (config.settings || {}).meeting || {});
+    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', joplinEnabled: false, joplinUrl: '', joplinToken: '', joplinNotebook: 'NW Pipe', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30, highlightEnabled: false, panelsOpen: '' }, (config.settings || {}).meeting || {});
     const me = currentMe();
     // Global TTS/STT (Wyoming) endpoints (config.settings.voice) — same shape as VOICE_DEFAULTS in
     // voiceConfig.js. Each service has its own host+port so STT and TTS can live on different servers.
@@ -2371,6 +2936,9 @@
       <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meEcho" ${me.echoGate ? 'checked' : ''}> Echo-gate your microphone</label></div>
       <p class="hint">Mutes your mic in the recording while the speakers are loud (and you're not on headphones), to stop the far end bleeding back in. Off = faithful capture of everything you say, even when others are talking.</p>
 
+      <div class="row" style="margin-top:16px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meHighlight" ${me.highlightEnabled ? 'checked' : ''}> Enable Meeting Highlights</label></div>
+      <p class="hint">Adds a Highlight column to the meeting panel: tap to start flagging a moment, tap again to end it. The flagged spans are saved with the recording and handed to the analysis AI, which calls them out in a <b>Highlights</b> section of the meeting notes.</p>
+
       <details class="advsec" style="margin-top:22px">
       <summary style="cursor:pointer;color:#9fb3c8;font-size:13px;user-select:none">Meeting Slide Capture</summary>
       <div class="row" style="margin-top:10px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meSlide" ${me.slideCaptureEnabled ? 'checked' : ''}> Enable Meeting Slide Capture</label></div>
@@ -2425,6 +2993,13 @@
       <div class="row"><label>Task-list folder</label>
         <input id="meTaskFolder" value="${esc(me.taskListFolder)}" placeholder="blank = task-list under Processed Recordings" style="flex:1">
         <button id="meTaskFolderBrowse" type="button">Browse…</button></div>
+      <div class="row" style="margin-top:12px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meJoplin" ${me.joplinEnabled ? 'checked' : ''}> Create Joplin notes for analyses</label></div>
+      <p class="hint">After each analysis, creates a note in Joplin via the Web Clipper API of Joplin Desktop (Tools › Options › Web Clipper): title = recording name, body = the analysis, tagged <b>meeting notes</b> + the year + title keywords. Only tags that already exist in Joplin are applied — none are created. Joplin Desktop must be running when the analysis finishes.</p>
+      <div class="row"><label>Joplin API URL</label>
+        <input id="meJoplinUrl" value="${esc(me.joplinUrl)}" placeholder="e.g. http://192.168.1.50:41184" style="flex:1"></div>
+      <div class="row"><label>API token</label>${secretInput(me.joplinToken || '', 'id="meJoplinToken" placeholder="Joplin › Tools › Options › Web Clipper"', 'flex:1')}</div>
+      <div class="row"><label>Notebook</label>
+        <input id="meJoplinNb" value="${esc(me.joplinNotebook)}" style="width:230px"></div>
       <div class="row" style="margin-top:12px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meDetails" ${me.useDetailsFolder ? 'checked' : ''}> Use Details Folder</label></div>
       <p class="hint">At analysis, everything except the notes .md (WAV, transcript, meeting info, clean transcript) moves into a <b>details\\</b> subfolder of the meeting's folder.</p>
       <div class="row" style="margin-top:12px"><label>Speaker threshold</label>
@@ -2535,6 +3110,19 @@
 
       <p class="hint">The default STT (Whisper) and TTS (Piper) servers for every voice app and meeting dictation. Each service has its own host + port, so they can run on different machines. Enter your server's IP, or run <a href="#" id="ttsHelperLink">tts-stt-windows</a> on any Windows box to provide both and set the host to <code>127.0.0.1</code>. A page can override these in its <b>Advanced settings</b>. Remember to Save.</p>`;
 
+    // AI Profiles (Smart Profiles): the global library the AI Voice app's Profile picker offers.
+    const apHtml = `
+      <p class="sectitle">AI Profiles</p>
+      <p class="hint">Named instructions for the <b>AI Voice</b> app — pick one on the panel (the Profile button) and the AI behaves accordingly: translate, summarize, write, and so on. The instruction is sent to the AI as its role for the conversation. An empty instruction (General Chat) means plain, unmodified chat. Every AI Voice page remembers its own current profile. Remember to Save.</p>
+      <div id="sAiProfileRows">${aiProfileRowsHtml((config.settings || {}).aiProfiles)}</div>
+      <button id="sAiProfileAdd" type="button" style="margin-top:10px">+ Add profile</button>`;
+
+    // Routines: saved prompts an "AI Routine" tile re-runs with one tap. Its own tab rather than a
+    // second list under AI Profiles -- that tab is already full.
+    const rtHtml = `
+      <p class="sectitle">Routines</p>
+      <p class="hint">A routine is a saved request plus which <b>AI Chat</b> page — and, for the agent backends, which <b>folder</b> — runs it. Put one on a tile (tile type <b>AI Routine</b>) and tapping it switches the panel to that page and sends the request, with the agent's normal tools and approvals. You can also save one straight from the panel: the <b>+ Routine</b> button beside Send on any AI Chat page keeps whatever you just typed or asked for. Remember to Save.</p>
+      <div id="sRoutineRows">${routineEditorHtml()}</div>`;
     el.innerHTML = `
       <p class="sectitle">Settings</p>
       <div class="tabbar">
@@ -2544,11 +3132,13 @@
         <button id="tabApps" class="tab${tab === 'apps' ? ' on' : ''}">Apps</button>
         <button id="tabDi" class="tab${tab === 'dropin' ? ' on' : ''}">Drop-In Apps</button>
         <button id="tabAuth" class="tab${tab === 'auth' ? ' on' : ''}">Auth</button>
+        <button id="tabAp" class="tab${tab === 'aiprofiles' ? ' on' : ''}">AI Profiles</button>
+        <button id="tabRt" class="tab${tab === 'routines' ? ' on' : ''}">Routines</button>
         <button id="tabMe" class="tab${tab === 'meeting' ? ' on' : ''}">Meeting</button>
         <button id="tabTts" class="tab${tab === 'ttsstt' ? ' on' : ''}">TTS/STT</button>
         <button id="tabMon" class="tab${tab === 'monitor' ? ' on' : ''}">Monitor</button>
       </div>
-      ${tab === 'software' ? swHtml : tab === 'hardware' ? hwHtml : tab === 'theme' ? thHtml : tab === 'apps' ? appsHtml : tab === 'dropin' ? diHtml : tab === 'auth' ? authHtml : tab === 'meeting' ? meHtml : tab === 'ttsstt' ? ttsHtml : monHtml}
+      ${tab === 'software' ? swHtml : tab === 'hardware' ? hwHtml : tab === 'theme' ? thHtml : tab === 'apps' ? appsHtml : tab === 'dropin' ? diHtml : tab === 'auth' ? authHtml : tab === 'aiprofiles' ? apHtml : tab === 'routines' ? rtHtml : tab === 'meeting' ? meHtml : tab === 'ttsstt' ? ttsHtml : monHtml}
       <div class="row" style="margin-top:22px"><button id="sBack">← Back to pages</button></div>`;
 
     document.getElementById('tabSw').onclick = () => { settingsTab = 'software'; renderSettings(); };
@@ -2557,6 +3147,10 @@
     document.getElementById('tabApps').onclick = () => { settingsTab = 'apps'; renderSettings(); };
     document.getElementById('tabDi').onclick = () => { settingsTab = 'dropin'; renderSettings(); };
     document.getElementById('tabAuth').onclick = () => { settingsTab = 'auth'; renderSettings(); };
+    document.getElementById('tabAp').onclick = () => { settingsTab = 'aiprofiles'; renderSettings(); };
+    wireAiProfileRows();   // no-op unless the AI Profiles tab is showing
+    document.getElementById('tabRt').onclick = () => { settingsTab = 'routines'; renderSettings(); };
+    wireRoutineRows();     // no-op unless the Routines tab is showing
     document.getElementById('tabMe').onclick = () => { settingsTab = 'meeting'; renderSettings(); };
     document.getElementById('tabTts').onclick = () => { settingsTab = 'ttsstt'; renderSettings(); };
     document.getElementById('tabMon').onclick = () => { settingsTab = 'monitor'; renderSettings(); };
@@ -2939,9 +3533,14 @@
         const p = await configApi.pickFolder();
         if (p) { document.getElementById('meTaskFolder').value = p; saveMe({ taskListFolder: p }); }
       };
+      document.getElementById('meJoplin').onchange = e => saveMe({ joplinEnabled: e.target.checked });
+      document.getElementById('meJoplinUrl').oninput = e => saveMe({ joplinUrl: e.target.value.trim() });
+      document.getElementById('meJoplinToken').oninput = e => saveMe({ joplinToken: e.target.value.trim() });
+      document.getElementById('meJoplinNb').oninput = e => saveMe({ joplinNotebook: e.target.value.trim() });
       document.getElementById('meHooks').onchange = e => saveMe({ transcribeHooksEnabled: e.target.checked });
       document.getElementById('meHookPre').oninput = e => saveMe({ preTranscribeCmd: e.target.value });
       document.getElementById('meHookPost').oninput = e => saveMe({ postTranscribeCmd: e.target.value });
+      document.getElementById('meHighlight').onchange = e => saveMe({ highlightEnabled: e.target.checked });
       // ---- Meeting Slide Capture ----
       const slideCfgBox = document.querySelector('.slidecfg');
       const syncSlideEnabled = on => { if (slideCfgBox) { slideCfgBox.style.opacity = on ? '' : '0.45'; slideCfgBox.style.pointerEvents = on ? '' : 'none'; } };
@@ -3135,4 +3734,21 @@
     try { appDefs = await configApi.getApps(); } catch (e) {}
     try { haCacheLocal = await configApi.getHaCache(); } catch (e) {}   // for iconHtml's HA icon resolution
     render(); setState('');
+
+    // Pages can arrive while the editor is open — an accepted AI panel is added by the main process,
+    // not by this window. Re-read so it shows up (and so this window's next Save doesn't write a
+    // stale copy back over it). With unsaved edits we must not clobber them, so say so instead.
+    if (configApi.onConfigChangedExternally) {
+      configApi.onConfigChangedExternally(async () => {
+        if (dirty) { setState('● unsaved changes — the panel added a page; save or reload to see it', 'dirty'); return; }
+        const fresh = await configApi.getConfig();
+        if (!fresh) return;
+        config = fresh;
+        if (!config.grids) config.grids = [];
+        if (!Array.isArray(config.groups)) config.groups = [];
+        if (gi >= config.grids.length) { gi = Math.max(0, config.grids.length - 1); ti = -1; }
+        render();
+        setState('updated from the panel');
+      });
+    }
   })();

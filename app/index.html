@@ -50,6 +50,9 @@
   #vol { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); font-size: 44px;
     color: var(--accent); background: var(--overlay); padding: 18px 30px; border-radius: 16px;
     opacity: 0; transition: opacity .12s; pointer-events: none; }
+  /* Same overlay, sentence mode: main sends short notices here (e.g. a routine tile whose target
+     page is gone). 44px is right for a volume glyph, far too big for a sentence. */
+  #vol.notice { font-size: 26px; max-width: 62%; line-height: 1.35; text-align: center; }
   /* dial selector */
   #selector { position: absolute; inset: 0; background: var(--overlay); display: none;
     flex-direction: column; align-items: center; justify-content: center; color: var(--txt); }

@@ -41,16 +41,18 @@ It gives you:
   CPU/GPU/RAM/disk/network/battery), an **[Open WebUI chat](docs/ai-chat.md)** you can
   **talk to by holding the knob**, a **[Microsoft 365](docs/apps.md)** panel (sign in with
   your Microsoft account for live profile, presence, and upcoming-calendar view, plus up to
-  eight configurable app shortcuts and one-tap **Join meeting**), and four agent apps that put
-  a real session on the panel — **[Claude Code](docs/claude-voice.md)**,
-  **[Codex](docs/codex-voice.md)**, **[Copilot](docs/copilot-voice.md)**, and
-  **[Open WebUI Voice](docs/owui-voice.md)** (your own local models over HTTP, no CLI) — tap the
-  knob to start/stop a hands-free conversation, with touch approvals and a full text transcript. → [Apps](docs/apps.md)
+  eight configurable app shortcuts and one-tap **Join meeting**), and **[AI Voice](docs/ai-voice.md)**
+  — one app, five backends: a real **Claude Code**, **Codex**, or **Copilot** agent session on the
+  panel, or plain chat against your **Open WebUI** server or **any OpenAI-compatible API**
+  (OpenAI, DeepSeek, OpenRouter, LiteLLM/Ollama — your own key) — tap the knob to start/stop a
+  hands-free conversation, with touch approvals, a full text transcript, and switchable **AI
+  profiles** (Translator, Summarizer, Writer, … — editable instructions that reshape the AI in one
+  tap). → [Apps](docs/apps.md)
 - **Meeting recording → transcript → meeting notes** — the Meeting app **records your
   calls** (your mic on the left channel, everyone else on the right; can auto-start with
   Zoom/Teams calls and auto-stop on silence), then — right from the panel — sends
   recordings to a **diarizing transcription server** ([tts-sst](https://github.com/TeeJS/tts-stt-windows)
-  or meeting-diarizer) for a **speaker-labeled transcript**, and turns transcripts into
+  or [meeting-diarizer](https://github.com/TeeJS/meeting-diarizer)) for a **speaker-labeled transcript**, and turns transcripts into
   **AI meeting notes** (summary, attendees, decisions, action items, cleaned transcript)
   with your locally installed **Claude Code, Codex, or Copilot CLI** — no API key — or your
   own **Open WebUI** server (local models). With the
@@ -69,6 +71,18 @@ It gives you:
   or **Open WebUI** — no API key — or a direct **OpenAI-compatible endpoint**, and show a
   full-screen **word-diff review** you can refine before applying. Uses the same
   Wyoming/Whisper transcription server as the Meeting app.
+- **Live Translate** — real-time speech **translation captions on the panel**: point the mic at a
+  conversation, film, or meeting and watch it translated into your language, live, word by word (not
+  after a pause). Powered by **[Soniox](https://soniox.com)** (cloud, ~$0.18/hr while translating) —
+  paste an API key, pick a target language, done — or bring your own AI key (**DeepSeek, OpenAI, or
+  any OpenAI-compatible endpoint**) paired with your local Whisper STT for per-phrase captions with
+  cross-sentence context. Optional save-to-file and a global **toggle hotkey**.
+  → [Live Translate](docs/live-translate.md)
+- **Screensaver** — a screensaver page with **built-in animated scenes** (Waves, Starfield,
+  Lava lamp, Fireflies, Flurry — drawn live, no downloads) or **your own photos and videos**
+  (separate folders; photos as a crossfading slideshow or a scrapbook **collage**). Starts **by itself** after a configurable idle time and wakes back to
+  exactly the page you left on any touch or knob input; also selectable manually or in the page
+  rotation like any other page. → [Screensaver](docs/screensaver.md)
 - **Theming** — a global **light / dark / system** mode and an **accent color** (with savable
   presets) that drives the panel, the bundled apps, and the knob's RGB ring; web dashboards
   follow the light/dark mode, and any page can override the theme in its Advanced settings.
@@ -89,7 +103,7 @@ It gives you:
 
 > **Status:** early but capable. Touch, knob (incl. RGB ring + hold-to-talk), grids, merged
 > buttons, web dashboards, the bundled apps (clock / world clock / music / meeting / system
-> monitor / AI chat / Microsoft 365 / Claude Code / Codex / Copilot / Open WebUI Voice / LucidType),
+> monitor / AI chat / Microsoft 365 / AI Voice (Claude Code · Codex · Copilot · Open WebUI · API) / LucidType / Live Translate / Screensaver),
 > the three run modes (panel / software / monitor), light/dark + accent theming, the
 > on-board mic, and the editor are working and validated against real hardware. The panel is
 > driven as a normal external monitor (Windows sees a 480×1920 / 1920×480 display); pushing
@@ -100,7 +114,7 @@ It gives you:
 Detailed guides live in **[docs/](docs/README.md)**:
 
 - [The editor](docs/editor.md) · [Web dashboards](docs/dashboards.md) · [Bundled apps](docs/apps.md)
-- [Music controller](docs/music.md) · [System monitor](docs/system-monitor.md) · [Open WebUI chat + voice](docs/ai-chat.md) · [Claude Code voice + text](docs/claude-voice.md) · [Codex voice + text](docs/codex-voice.md) · [Copilot voice + text](docs/copilot-voice.md) · [Open WebUI Voice](docs/owui-voice.md)
+- [Music controller](docs/music.md) · [System monitor](docs/system-monitor.md) · [Open WebUI chat + voice](docs/ai-chat.md) · [AI Voice](docs/ai-voice.md) · [Live Translate](docs/live-translate.md) · [Screensaver](docs/screensaver.md)
 - [Home Assistant integration](docs/home-assistant.md) · [Settings & knob lighting](docs/settings.md) · [Reserved Display](docs/reserved-display.md) · [Building & how it works](docs/building.md) · [Device protocol](docs/DEVICE_PROTOCOL.md)
 
 ## Companion project

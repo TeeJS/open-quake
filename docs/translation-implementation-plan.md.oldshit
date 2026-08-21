@@ -1,0 +1,501 @@
+# Translation for open-quake — implementation handoff
+
+## Objective
+
+Add opt-in translation without changing raw transcripts. open-quake talks to a translation
+service over localhost HTTP, using a documented subset of the LibreTranslate API. The preferred
+backend is a small CTranslate2 + OPUS-MT service; a stock LibreTranslate instance remains a
+drop-in alternative. An existing configured LLM backend may be used only when the user explicitly
+enables that fallback.
+
+This is a phased feature:
+
+1. Translate completed meeting transcripts to a new Markdown file.
+2. Add a general Translate action to LucidType.
+3. Add ordered live translation of finalized LucidType utterances.
+
+Phase 1 must be complete and tested before starting Phase 2 or 3.
+
+## Decisions already made
+
+- Keep all network, filesystem, credential, and process work in the Electron main process.
+- Do not add Python, CTranslate2, models, or model downloads to the Electron package.
+- Use a provider-neutral client; do not name it after LibreTranslate, Argos, or OPUS-MT.
+- Speak the LibreTranslate request/response format so either the preferred CT2 service or stock
+  LibreTranslate can be configured.
+- Translation is additive. Never rewrite, rename, move, or delete the diarizer JSON.
+- The preferred backend is a separate CT2 + official OPUS-MT service, bound to loopback by default.
+- Do not fold translation into the meeting diarizer by default. The diarizer can be stopped after a
+  transcription batch to free resources, while LucidType translation must remain available.
+- Do not silently fall back to an LLM. Offline failure must remain a visible failure unless the user
+  has explicitly selected an LLM fallback policy.
+- Populate language choices from the service's `/languages` response. Do not hard-code a marketing
+  list of 17 languages.
+- Defer a standalone Translate app. LucidType already owns editable text, dictation, review, and Apply.
+- Treat resource and latency estimates as targets to benchmark, not promises in the UI or docs.
+
+## Out of scope
+
+- Editing or replacing raw transcripts.
+- Translating audio directly.
+- Simultaneous interpreting before an utterance has completed STT.
+- Bundling a Python runtime or translation models in the open-quake installer.
+- Automatically downloading or executing a translation server from Electron.
+- Exposing a generic renderer-controlled proxy to the configured translation URL.
+- Translating arbitrary HTML in the first release.
+- A standalone panel app in Phase 1.
+
+## External service contract
+
+The open-quake client supports this subset of the LibreTranslate API.
+
+### `GET /health`
+
+Success:
+
+```json
+{ "status": "ok" }
+```
+
+Any 2xx response may be treated as reachable, but malformed JSON should be reported diagnostically.
+
+### `GET /languages`
+
+Success follows LibreTranslate's language shape:
+
+```json
+[
+  { "code": "en", "name": "English", "targets": ["de", "es", "fr"] },
+  { "code": "es", "name": "Spanish", "targets": ["en"] }
+]
+```
+
+Normalize and validate this response in the main process before sending a reduced, non-secret list
+to the renderer. Language codes are stable identifiers; display names are presentation only.
+
+### `POST /translate`
+
+Request:
+
+```json
+{
+  "q": ["First utterance", "Second utterance"],
+  "source": "en",
+  "target": "es",
+  "format": "text"
+}
+```
+
+`q` may be a string or an array. Prefer arrays for meeting batches. A configured LibreTranslate API
+key, when present, is added as `api_key` in the JSON body. Do not put it in the URL, logs, renderer
+state, or an Authorization header.
+
+Success:
+
+```json
+{
+  "translatedText": ["Primera intervención", "Segunda intervención"],
+  "detectedLanguage": { "language": "en", "confidence": 99 }
+}
+```
+
+Require `translatedText` to have the same scalar/array shape and array length as `q`. Reject partial,
+empty, or malformed success responses rather than producing a misleading transcript.
+
+`source: "auto"` is supported only when the selected backend advertises or successfully implements
+it. If the preferred lean service does not include language detection, the UI must require an
+explicit source language rather than guessing.
+
+### URL handling
+
+Accept a bare host/port, a base URL, or a full `/translate` URL and normalize it to one origin/base.
+Allow only `http:` and `https:`. Preserve an intentional base path if the server is reverse-proxied;
+do not reduce every URL to its origin as `normalizeOwuiUrl` does.
+
+The preferred default is `http://127.0.0.1:5000`. Do not imply that a configured non-loopback server
+is private or offline.
+
+## Configuration
+
+Add a global object under `config.settings`, because Meetings and LucidType both consume it:
+
+```json
+{
+  "translation": {
+    "url": "http://127.0.0.1:5000",
+    "apiKey": "",
+    "sourceLanguage": "auto",
+    "targetLanguage": "es",
+    "fallback": "none"
+  }
+}
+```
+
+Allowed fallback values:
+
+- `none`: translation-service errors are shown to the user.
+- `llm`: use the already configured LucidType AI backend if the translation service fails.
+
+The label for `llm` must disclose that text may leave the machine and may incur cost, depending on
+the configured AI backend. Do not enable it by default.
+
+Implementation requirements:
+
+- Add defaults and migration/defaulting for existing user configs.
+- Add the API key to `app/secretStore.js` discovery/transforms and test encrypted persistence.
+- Never send the key to either renderer.
+- Put the controls in a dedicated Translation section or clearly separated global language-services
+  section. Do not make them meeting-only or LucidType-page-only settings.
+- Include server URL, source language, default target language, fallback policy, connection test,
+  and a dynamically loaded language-pair selector.
+- Saving an unreachable server is allowed; the connection test reports the problem without blocking
+  the rest of open-quake.
+
+## New main-process modules
+
+### `app/translationClient.js`
+
+Create a small, dependency-injected HTTP client responsible only for the external API.
+
+Suggested public surface:
+
+```js
+createTranslationClient(deps) -> {
+  normalizeBaseUrl(raw),
+  health(config),
+  languages(config),
+  translate(textOrTexts, { source, target, config })
+}
+```
+
+Requirements:
+
+- Use raw `http`/`https` or a focused bounded helper. `owuiClient.postJson` currently buffers an
+  unlimited response and uses Bearer authentication, so do not reuse it unchanged.
+- Enforce request and response size limits.
+- Use an inactivity timeout appropriate for local batch translation and return actionable errors.
+- Limit redirects or reject them; never forward an API key to a different origin.
+- Map non-2xx responses and `{ error }` bodies to concise errors without leaking response bodies,
+  local paths, keys, or full transcript text.
+- Accept injected transports in unit tests.
+- Do not log request bodies or translated content.
+
+### `app/translator.js`
+
+Own provider policy above the HTTP client.
+
+Suggested public surface:
+
+```js
+createTranslator(deps) -> {
+  getCapabilities(),
+  translate(textOrTexts, { source, target })
+}
+```
+
+Return both text and safe provenance:
+
+```js
+{
+  "translatedText": ["..."],
+  "source": "en",
+  "target": "es",
+  "provider": "service"
+}
+```
+
+`provider` is `service` or `llm`; do not expose secrets or a credential-bearing URL.
+
+For explicit LLM fallback, reuse `lucidtypeAI.js` backend resolution. Protect segment association
+with stable sentinels such as `[[OQSEG_0001]]`, require every sentinel exactly once in the response,
+and fail closed if the model adds, removes, duplicates, or reorders them. Do not allow the LLM to
+rewrite speaker labels. A safer initial implementation may translate each batch item separately if
+the performance tradeoff is documented and bounded.
+
+## Phase 1 — meeting transcript translation
+
+### `app/meetingTranslate.js`
+
+Follow the dependency-injection and queue/state conventions of `app/meetingAnalyze.js`, without
+copying its AI-specific CLI logic or post-analysis filing behavior.
+
+Suggested public surface:
+
+```js
+createMeetingTranslator(deps) -> {
+  start({ name, source, target }),
+  getState(),
+  result({ name, target })
+}
+```
+
+Queue identity is `(safe transcript path, source, target)`, not filename alone. Run one meeting job
+at a time initially. State should include the active target, queued jobs, last completion, last error,
+and safe provider provenance.
+
+Translation algorithm:
+
+1. Validate the relative transcript name with the existing `safeRelPath`/containment rules.
+2. Require a `-diarizer-response.json` transcript; do not treat meeting-info sidecars as transcripts.
+3. Parse JSON and require a non-empty `segments` array.
+4. Extract non-empty `segment.text` values as structured items.
+5. Keep `segment.speaker` in open-quake. Never send speaker names through machine translation.
+6. Merge consecutive segments from the same speaker only when needed to reduce requests, while
+   retaining enough mapping to produce stable output order.
+7. Translate text as an array and verify result count/order.
+8. Render Markdown locally.
+9. Write to a temporary file and atomically rename it into place only after complete success.
+
+Do not use `slimTranscript()` as the translation payload: it mixes speaker labels with translatable
+text. Its validation/merging ideas may be extracted into a shared pure helper if that improves reuse
+without changing meeting analysis behavior.
+
+Output name:
+
+```text
+<base>-<target>.md
+```
+
+For example:
+
+```text
+2026-08-18_09-30-team-sync-es.md
+```
+
+Use the same human-facing folder rule as analysis: normally beside the transcript; when the transcript
+is in a `details` folder, place the Markdown one level above it. Re-translate may atomically replace
+only the same derived target-language file. It must never touch another language, the analysis, WAV,
+sidecar, screenshots, or raw diarizer response.
+
+Suggested Markdown:
+
+```markdown
+# Team Sync — Spanish translation
+
+Source: English  
+Target: Spanish  
+Provider: Offline translation service
+
+**Alice:** Texto traducido.
+
+**Bob:** Otra intervención.
+```
+
+Escape or neutralize speaker text so a diarizer-provided name cannot inject headings, links, or raw
+HTML. Do not include server URLs, API keys, absolute paths, or raw service diagnostics in the file.
+
+### Main-process construction
+
+- Construct the shared translator during startup with the same graceful-degradation discipline as
+  meeting transcription and analysis.
+- Construct `meetingTranslator` beside `meetingAnalyzer`.
+- A translation initialization failure must not break recording, transcription, analysis, or startup.
+- Add a resolver for global translation settings instead of cloning meeting-specific URL state.
+
+### Local HTTP routes
+
+Add focused routes rather than a generic proxy:
+
+- `POST /meeting-translate/start` with `{ name, source, target }`
+- `GET /meeting-translate/state`
+- `GET /meeting-translation?name=...&target=...`
+- `GET /translation/languages`
+- `POST /translation/test`
+
+Requirements:
+
+- Apply the existing same-origin checks to every state-changing route.
+- Use the existing bounded JSON-body reader.
+- Validate language codes in the main process against a conservative syntax and, when available,
+  the server capability list.
+- Keep all path containment checks in the owning main-process module.
+- Return plain safe JSON errors; do not leak absolute paths or upstream response bodies.
+- Add route tests in `test/sysserver.test.js`.
+
+### Meeting panel
+
+Extend the existing Analysis/library experience rather than creating another app page.
+
+- Add a target-language picker and Translate/Re-translate action for transcript rows.
+- Support selected/batch translation using the existing selection pattern.
+- Display queued, translating, completed, and failed states distinctly from AI analysis.
+- Add a View Translation action that reuses the safe Markdown renderer but calls the translation
+  result route.
+- Clearly label LLM-produced output when fallback was used.
+- Keep touch targets at least 48 x 48 px and verify the 1920x480 layout in both themes.
+- Do not place the API key or upstream URL in DOM state.
+
+### Meeting library metadata
+
+Extend `meetingLibrary` entries with target-specific translation availability, derived only from safe
+filenames in the expected folder(s). Do not scan or expose arbitrary Markdown files. The renderer
+should not guess whether a translation exists.
+
+## Phase 2 — LucidType Translate action
+
+Add Translate beside Cleanup and Rewrite in the existing LucidType page.
+
+- Use the current box contents; if empty, follow the existing clipboard-adoption behavior.
+- Open the existing review UI with `kind: "translate"`, preserving original and proposed text.
+- Carry the selected target language in review state.
+- Apply/Cancel should behave exactly like Cleanup/Rewrite.
+- Refine is an AI concept and should be hidden or disabled for deterministic MT translations.
+- Expose a source/target picker in the LucidType settings overlay without exposing secrets.
+- Add an optional global hotkey only if it can follow the existing conflict/registration handling.
+- Unit-test service success, explicit fallback, failure, cancellation, and review apply.
+
+Do not route deterministic translation through the Cleanup/Rewrite prompt path. Both features may
+share review UI and backend configuration, but translation calls `translator.translate()` directly.
+
+## Phase 3 — ordered live LucidType translation
+
+Translate only finalized utterances returned by Wyoming/Whisper. Do not attempt token-level partial
+translation.
+
+The current LucidType controller can have multiple transcriptions in flight. Assign a monotonically
+increasing utterance ID before each STT request, buffer completed STT/translation results, and commit
+them to the visible transcript in capture order. A slow earlier utterance must not appear after a fast
+later utterance.
+
+Required behavior:
+
+- Live translation is independently opt-in.
+- Preserve both original and translated utterance streams in controller state.
+- Provide a clear display mode: original, translated, or both.
+- Applying text uses the mode the user can see; never silently substitute translated text.
+- Stop waits for or visibly reports the pending tail, consistent with current STT behavior.
+- Cancellation prevents late translation results from entering a new dictation session.
+- Bound pending work and surface backpressure instead of allowing an unbounded queue.
+- A failed utterance remains visible in the original stream with a retryable translation error; it
+  must not disappear or reorder adjacent text.
+- Record service latency in transient state for diagnostics, but never log spoken text.
+
+## Preferred CT2 + OPUS-MT service deliverable
+
+This service is a separate component/repository. If the programming task is scoped only to
+open-quake, implement the client contract and mocks but do not place a Python runtime in this repo.
+
+Required service behavior:
+
+- Python service using CTranslate2 and official OPUS-MT-compatible models.
+- CPU/int8 default; GPU is optional configuration.
+- Bind to `127.0.0.1` by default.
+- Implement the three endpoints above and the exact scalar/array response shape.
+- Download models only after an explicit admin/user action, never as a side effect of translating.
+- Verify model checksums and use atomic installation.
+- Store source URL, version, language pair, checksum, conversion settings, and license metadata.
+- Carry required CC-BY-4.0 attribution in distribution documentation and model metadata.
+- Lazy-load models and enforce a configurable LRU/idle-unload policy.
+- Return a clear missing-pair error rather than silently pivoting unless pivoting is explicitly
+  implemented and disclosed.
+- Preserve input ordering when batching.
+- Set request-size, response-size, concurrency, and per-request timeout limits.
+- Do not bind publicly without authentication and deployment guidance.
+- Include a benchmark script; publish measured cold load, warm sentence, batch throughput, memory,
+  and model-disk figures for the actual supported models and reference machine.
+
+Stock LibreTranslate is a compatibility backend, not a bundled dependency. Document its AGPL-3.0
+license separately and avoid claiming that every Argos model package has uniform licensing.
+
+## Tests
+
+Add focused `node:test` coverage.
+
+### `test/translationClient.test.js`
+
+- URL normalization: bare host, base path, full `/translate`, invalid protocol.
+- String and array requests.
+- API key appears only in the request body.
+- Successful scalar and array responses.
+- Array length/shape mismatch is rejected.
+- `{ error }`, non-2xx, timeout, redirect, truncated/malformed JSON, and oversized response.
+- `/languages` normalization and hostile/malformed entries.
+- No test failure output contains the API key or full source text.
+
+### `test/translator.test.js`
+
+- Service-only success and failure.
+- No implicit fallback when policy is `none`.
+- Explicit LLM fallback and provider provenance.
+- Sentinel validation rejects missing, duplicate, or reordered segments.
+
+### `test/meetingTranslate.test.js`
+
+- Parses diarizer segments and translates text only.
+- Speaker names are preserved without being sent upstream.
+- Empty/malformed/segment-less JSON fails loudly.
+- Relative-path and containment rejection.
+- FIFO queue and duplicate job handling.
+- Multiple target languages produce independent files.
+- `details` folder output placement.
+- Atomic replacement on Re-translate.
+- Upstream failure leaves no completed or partial Markdown file.
+- Markdown escaping for hostile speaker names.
+- Raw transcript bytes are identical before and after every success/failure case.
+
+### Existing suites to extend
+
+- `test/meetingLibrary.test.js`: target-specific translation metadata.
+- `test/sysserver.test.js`: routes, methods, body limits, same-origin rejection.
+- `test/lucidtype.test.js` / `test/lucidtypeReview.test.js`: Phase 2 and ordered Phase 3 behavior.
+- Secret-store tests: translation API key encryption/redaction.
+
+Run `npm test` for every phase. Main/preload/renderer changes also require `npm start` smoke testing.
+
+## Documentation
+
+Update:
+
+- `docs/settings.md`: configuration, privacy/fallback warning, connection test, language pairs.
+- `docs/meeting.md`: Translate workflow, output naming/location, raw-transcript guarantee.
+- LucidType documentation for Phase 2/3.
+- `NOTICE` or the appropriate third-party attribution document for official OPUS-MT model attribution
+  when the preferred service is distributed.
+- Building/deployment documentation for the separate service, without suggesting that Python or
+  models ship inside open-quake.
+
+Do not publish unverified performance numbers as guarantees. Label benchmark hardware, model pair,
+quantization, batch size, and cold/warm state.
+
+## Implementation order
+
+1. Add config defaults/migration and secret handling.
+2. Implement and test `translationClient.js`.
+3. Implement and test provider policy in `translator.js`.
+4. Implement and test `meetingTranslate.js` with atomic additive output.
+5. Wire guarded main-process handlers and local HTTP routes; extend route tests.
+6. Extend meeting-library metadata.
+7. Add meeting-panel picker/actions/status/view and update meeting/settings docs.
+8. Run the full unit suite and smoke-test Electron at 1920x480 in light and dark themes.
+9. Validate against both the preferred CT2 service and an unmodified stock LibreTranslate instance.
+10. Only then implement the LucidType Translate action.
+11. Implement ordered live utterance translation as a separate change after the action is stable.
+
+## Phase 1 definition of done
+
+- A user can configure and test a translation service.
+- Available source/target pairs come from the service.
+- A user can translate one or multiple completed diarizer transcripts from the Meeting panel.
+- Each successful job creates only `<base>-<target>.md` in the documented human-facing folder.
+- Raw transcript, WAV, sidecar, analysis, screenshots, and other language outputs remain unchanged.
+- Failure is visible and leaves no file that looks complete.
+- Stock LibreTranslate and the preferred compatible CT2 service pass the same client contract tests.
+- LLM fallback occurs only when explicitly enabled and is labeled in UI/output provenance.
+- API keys are encrypted at rest and absent from renderers, URLs, logs, snapshots, and fixtures.
+- Path containment, same-origin gating, body/response limits, timeouts, and graceful startup failure are
+  covered by tests.
+- `npm test` passes.
+- The Electron flow is smoke-tested at 1920x480, with touch targets and both themes checked.
+- User documentation and attribution are updated.
+
+## Review cautions
+
+- Do not treat API compatibility as proof that all LibreTranslate instances support identical models,
+  auto-detection, limits, or batching behavior; validate capabilities and errors.
+- Do not reuse an HTTP helper that can buffer unbounded upstream data.
+- Do not let a renderer select arbitrary outbound destinations.
+- Do not translate speaker labels or trust diarizer-provided names as Markdown.
+- Do not let analysis filing move or rename translation outputs unexpectedly.
+- Do not describe an LLM fallback as offline, deterministic, free, or zero-setup.
+- Do not claim LibreTranslate's AGPL or third-party model licensing is automatically irrelevant; keep
+  it separate from the MIT Electron distribution and document what is actually shipped.

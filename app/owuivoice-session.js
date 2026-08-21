@@ -32,6 +32,7 @@ function createOwuiVoiceAdapter({ resolveOwui, log, client }) {
   let modelList = null;      // null until /api/models answers; then an array of id strings
   let stream = null;         // in-flight { destroy() } from streamChat
   let acc = '';              // assistant text accumulated for the current turn
+  let profilePrompt = '';    // active AI profile instruction; prepended as a system message per request
 
   function cfg() { return (resolveOwui && resolveOwui()) || {}; }
   function endpoint() { return owui.normalizeOwuiUrl(cfg().url); }
@@ -66,7 +67,7 @@ function createOwuiVoiceAdapter({ resolveOwui, log, client }) {
 
   return {
     // ---- lifecycle ----
-    start({ model }) {
+    start({ model, profilePrompt: pp }) {
       if (!endpoint()) {
         say('start refused: no usable Open WebUI URL configured');
         emitter.emit('error', { message: "Open WebUI connection not configured — set the URL on the editor's Auth tab." });
@@ -78,9 +79,13 @@ function createOwuiVoiceAdapter({ resolveOwui, log, client }) {
       history = [];
       acc = '';
       modelPick = model || '';
+      profilePrompt = String(pp || '');
       fetchModels();
       return true;
     },
+    // AI profile switch — takes effect on the next request (system message prepended per send,
+    // never evicted by the history cap). Instant, no restart.
+    setProfilePrompt(text) { profilePrompt = String(text || ''); return true; },
     stop() {
       if (stream) { try { stream.destroy(); } catch (e) {} stream = null; }
       running = false;
@@ -105,7 +110,7 @@ function createOwuiVoiceAdapter({ resolveOwui, log, client }) {
       acc = '';
       emitter.emit('assistant-start');
       let sawLength = false;
-      stream = owui.streamChat(ep.chatUrl, { model, stream: true, messages: history.slice() }, String(cfg().apiKey || ''), TURN_TIMEOUT_MS, {
+      stream = owui.streamChat(ep.chatUrl, { model, stream: true, messages: (profilePrompt ? [{ role: 'system', content: profilePrompt }] : []).concat(history) }, String(cfg().apiKey || ''), TURN_TIMEOUT_MS, {
         onDelta: t => { acc += t; emitter.emit('assistant-delta', { text: t }); },
         onDone: ({ finishReason }) => {
           sawLength = finishReason === 'length';

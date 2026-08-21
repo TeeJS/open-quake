@@ -40,6 +40,12 @@
     background:var(--surf); color:var(--fg); font-size:18px; font-weight:700; }
   .topBtn { height:48px; padding:0 22px; border-radius:11px; background:var(--surf); color:var(--fg);
     font-size:18px; font-weight:700; }
+  /* Column toggles: same chip as .topBtn, accent-filled while their column is open. Each is hidden
+     until its feature is enabled in Settings -> Meetings (Control has no switch — it's always there). */
+  .colBtn.on { background:var(--accent); color:var(--accent-fg,#04121f); }
+  #btnSlidePanel, #btnHlPanel { display:none; }
+  body.slides #btnSlidePanel { display:block; }
+  body.hlon #btnHlPanel { display:block; }
   #recToggle .dot { width:14px; height:14px; border-radius:50%; background:var(--danger); }
   #pill { display:flex; align-items:center; gap:16px; height:48px; padding:0 10px 0 20px; border-radius:11px; background:var(--danger-tint); }
   #pill .dot { width:14px; height:14px; border-radius:50%; background:var(--danger); animation:pulse 1.4s infinite; }
@@ -69,8 +75,20 @@
   .ctl.decline .btn { color:var(--danger); }
   .ctl.end .btn { background:var(--danger); color:#1a0505; }
   .ctl.foc:focus-visible .btn { box-shadow:0 0 0 4px var(--accent); }
+  /* Only with all three columns open is the deck tight; pull 72px out of its whitespace (separator
+     margins 48->24 = 48px, control gaps 34->28 = 24px across the Teams layout's 4 gaps). Measured
+     result: Teams needs 905 in a 946 box, 41px of slack, no page overflow. Touch targets untouched. */
+  body.pctl.pslide.phl .sep { margin:0 24px; }
+  body.pctl.pslide.phl .crow { gap:28px; }
 
-  #rail { flex:0 0 330px; background:var(--surf2); border-radius:18px; padding:18px; display:flex; flex-direction:column; gap:14px; }
+  /* The three utility columns are all opt-in from the top bar and stack right of the deck in a
+     fixed order: Control, Slide Capture, Highlight. Measured at 1920x480: the columns settle at
+     320 / 302 / 260 (their content minimums exceed the 300/300/260 basis), and the deck's worst
+     case is Teams — 2 AV + 4 call controls at 124px each (the LABEL is wider than the 112px
+     circle), 282 + 97 sep + 598 = 977. 977 + 882 + 3x16 gaps = 1907, i.e. 31px past the 1876 of
+     usable width, so the all-three case tightens the deck's own spacing to buy it back (below). */
+  #rail { display:none; flex:0 0 300px; background:var(--surf2); border-radius:18px; padding:18px; flex-direction:column; gap:14px; }
+  body.pctl #rail { display:flex; }
   .rlabel { font-size:13px; font-weight:800; letter-spacing:1.5px; color:var(--dim); }
   #vol { display:flex; align-items:stretch; gap:12px; }
   #vol .vb { width:82px; height:104px; border-radius:14px; background:var(--surf); display:flex; align-items:center; justify-content:center; color:var(--fg); }
@@ -86,9 +104,8 @@
   .rrow .ic { width:26px; height:26px; color:var(--muted); flex:0 0 auto; }
 
   /* ---- slide-capture column (hidden unless body.slides) ---- */
-  #slide { display:none; flex:0 0 330px; background:var(--surf2); border-radius:18px; padding:18px; flex-direction:column; gap:14px; }
-  body.slides #slide { display:flex; }
-  body.slides #rail { flex:0 0 300px; }                    /* give the deck a touch back when a 3rd column joins */
+  #slide { display:none; flex:0 0 300px; background:var(--surf2); border-radius:18px; padding:18px; flex-direction:column; gap:14px; }
+  body.slides.pslide #slide { display:flex; }
   .srow { height:64px; display:flex; align-items:center; gap:12px; padding:0 16px; border-radius:12px; background:var(--surf); color:var(--fg); font-size:18px; font-weight:600; text-align:left; }
   .srow .ic { width:24px; height:24px; color:var(--muted); flex:0 0 auto; }
   .srow .val { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -105,6 +122,20 @@
   .sstat { font-size:15px; color:var(--dim); font-weight:600; text-align:center; min-height:20px; line-height:1.3; }
   .sstat b { color:var(--accent); font-variant-numeric:tabular-nums; }
   .sstat.warn { color:var(--danger); }
+
+  /* ---- highlight column ---- */
+  #hl { display:none; flex:0 0 260px; background:var(--surf2); border-radius:18px; padding:18px; flex-direction:column; gap:14px; }
+  body.hlon.phl #hl { display:flex; }
+  .hbig { height:96px; border-radius:14px; display:flex; align-items:center; justify-content:center; gap:12px;
+    background:var(--accent); color:var(--accent-fg,#04121f); font-size:19px; font-weight:800; text-align:center; }
+  .hbig .hglyph { width:18px; height:18px; border-radius:50%; background:currentColor; flex:0 0 auto; }
+  body.highlighting .hbig { background:var(--danger); color:#1a0505; }   /* Start -> Stop, same box */
+  body.highlighting .hbig .hglyph { border-radius:4px; animation:pulse 1.4s infinite; }
+  /* Nothing recording = nothing to flag; .sdis is the column-wide dimmed-but-present treatment. */
+  .hclear { height:64px; border-radius:12px; background:var(--surf); color:var(--fg); font-size:17px; font-weight:700; }
+  .hstat { font-size:15px; color:var(--dim); font-weight:600; text-align:center; min-height:20px; line-height:1.3; }
+  .hstat b { color:var(--accent); font-variant-numeric:tabular-nums; }
+  body.highlighting .hstat { color:var(--danger); }
   /* capture controls are inert until a recording is live (slides need a home folder); Select stays usable */
   .sdis { opacity:.4; pointer-events:none; }
 
@@ -227,6 +258,9 @@
         <button class="seg press foc" type="button" data-platform="zoom">Zoom</button>
         <button class="seg press foc" type="button" data-platform="teams">Teams</button>
       </div>
+      <button class="topBtn colBtn press foc" id="btnCtlPanel" type="button">Control</button>
+      <button class="topBtn colBtn press foc" id="btnSlidePanel" type="button">Slide Capture</button>
+      <button class="topBtn colBtn press foc" id="btnHlPanel" type="button">Highlight</button>
       <div id="status">Ready</div>
       <div id="spacer"></div>
       <button class="topBtn press foc" id="btnAnalysis" type="button">Analysis</button>
@@ -255,7 +289,7 @@
           <button class="vb press foc" id="volUp" type="button"></button>
         </div>
         <div class="rsep"></div>
-        <button class="rrow press foc" id="settingsRow" type="button"><span class="ic" id="ic-settings"></span>Settings</button>
+        <button class="rrow press foc" id="settingsRow" type="button"><span class="ic" id="ic-settings"></span>Mic</button>
         <button class="rrow press foc" id="shareScreen" type="button"><span class="ic" id="ic-share"></span>Share screen</button>
       </div>
 
@@ -267,6 +301,13 @@
         <button class="sbig press foc" id="slideToggle" type="button"><span class="sglyph"></span><span class="slbl">Start capture</span></button>
         <button class="smanual press foc" id="slideManual" type="button"><span class="ic" id="ic-slide-cam"></span>Manual capture</button>
         <div class="sstat" id="slideStat"></div>
+      </div>
+
+      <div id="hl">
+        <div class="rlabel">HIGHLIGHT</div>
+        <button class="hbig press foc" id="hlToggle" type="button"><span class="hglyph"></span><span class="hlbl">Start highlighting</span></button>
+        <button class="hclear press foc" id="hlClear" type="button">Clear current highlight</button>
+        <div class="hstat" id="hlStat"></div>
       </div>
 
       <div id="scrim"></div>

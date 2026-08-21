@@ -72,7 +72,7 @@
 
   button:focus:not(:focus-visible) { outline: none; }
 
-  /* Settings overlay: pause tolerance + microphone pick (opens the device picker below). */
+  /* Settings overlay: microphone pick (opens the device picker below). */
   #settingsOverlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
     align-items: center; justify-content: center; padding: 18px; z-index: 40; user-select: none; }
   #settingsOverlay.hidden { display: none; }
@@ -150,11 +150,11 @@
       <button id="micPickBtn" class="pickRow" type="button">
         <span class="pickName">Microphone</span><span id="micPickVal" class="pickVal"></span><span class="pickChevron">›</span>
       </button>
-      <div class="srow"><span class="slabel">Voice pause tolerance</span>
+      <div class="srow" id="pauseRow"><span class="slabel">Voice pause tolerance</span>
         <button id="pauseMinus" class="stepBtn" type="button">–</button>
         <span id="pauseVal" class="stepVal"></span>
         <button id="pausePlus" class="stepBtn" type="button">+</button></div>
-      <p class="hint" style="margin:0 0 12px">Pause tolerance = how long you can go quiet mid-sentence before the utterance is sent for translation.</p>
+      <p class="hint" id="pauseHint" style="margin:0 0 12px">Pause tolerance = how long you can go quiet mid-sentence before the utterance is sent for translation (AI provider).</p>
       <div class="srow" style="justify-content:flex-end;margin:0"><button id="settingsClose" type="button">Done</button></div>
     </div>
   </div>

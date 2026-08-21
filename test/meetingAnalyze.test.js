@@ -9,7 +9,7 @@ const { PassThrough } = require('node:stream');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createMeetingAnalyzer, slimTranscript } = require('../app/meetingAnalyze');
+const { createMeetingAnalyzer, slimTranscript, highlightsBlock } = require('../app/meetingAnalyze');
 const { normalizeOwuiUrl } = require('../app/owuiClient');
 
 // Fake child process: capture stdin, emit stdout, exit with a code on the next tick.
@@ -38,17 +38,17 @@ function fakeSpawnFactory(spawns, behavior) {
   };
 }
 
-function setup(behavior, aiSetting, finders) {
+function setup(behavior, aiSetting, finders, extraDeps) {
   const processed = fs.mkdtempSync(path.join(os.tmpdir(), 'oqx-an-'));
   fs.writeFileSync(path.join(processed, 'm.json'), JSON.stringify({ segments: [] }));
   const spawns = [];
-  const an = createMeetingAnalyzer({
+  const an = createMeetingAnalyzer(Object.assign({
     resolveFolders: () => ({ unprocessed: processed, processed }),
     resolveAi: () => aiSetting,
     spawn: fakeSpawnFactory(spawns, behavior),
     findClaudeExe: (finders && finders.claude) || (() => 'claude.exe'),
     findCodexExe: (finders && finders.codex) || (() => 'codex.cmd'),
-  });
+  }, extraDeps || {}));
   return { processed, spawns, an };
 }
 function settle() { return new Promise(r => setTimeout(r, 50)); }
@@ -520,4 +520,128 @@ test('result() reads the filed markdown or reports not analyzed', async () => {
   await drained(s.an);
   assert.deepEqual(s.an.result('m.json'), { ok: true, markdown: 'notes' });
   assert.equal(s.an.result('..\\m.json').ok, false);
+});
+
+test('joplin: note created after a successful analysis with the analysis markdown', async () => {
+  const notes = [];
+  const s = setup(() => ({ stdout: '# Meeting Analysis\nnotes\n## Transcript\ndialogue', code: 0 }), 'claude', null, {
+    resolveJoplin: () => ({ enabled: true, url: 'box:41184', token: 'tok', notebook: 'NW Pipe' }),
+    joplinNotes: { createAnalysisNote: async args => { notes.push(args); return { id: 'n1', applied: ['meeting notes'], skipped: [] }; } },
+    filingOptions: () => ({ separateTranscript: true }),
+  });
+  s.an.start('m.json');
+  await drained(s.an);
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].title, 'm');
+  assert.equal(notes[0].notebook, 'NW Pipe');
+  assert.match(notes[0].body, /# Meeting Analysis/);
+  assert.doesNotMatch(notes[0].body, /dialogue/);   // separate-transcript: note body is notes only
+  assert.equal(s.an.getState().joplin.ok, true);
+});
+
+test('joplin: disabled -> never called; failure -> analysis still succeeds, surfaced in state', async () => {
+  let calls = 0;
+  const off = setup(() => ({ stdout: 'notes', code: 0 }), 'claude', null, {
+    resolveJoplin: () => ({ enabled: false }),
+    joplinNotes: { createAnalysisNote: async () => { calls++; return { id: 'n', applied: [], skipped: [] }; } },
+  });
+  off.an.start('m.json');
+  await drained(off.an);
+  assert.equal(calls, 0);
+  assert.equal(off.an.getState().joplin, null);
+
+  const fail = setup(() => ({ stdout: 'notes', code: 0 }), 'claude', null, {
+    resolveJoplin: () => ({ enabled: true, url: 'box:41184', token: 'tok', notebook: 'NW Pipe' }),
+    joplinNotes: { createAnalysisNote: async () => { throw new Error('could not reach Joplin'); } },
+  });
+  fail.an.start('m.json');
+  await drained(fail.an);
+  const st = fail.an.getState();
+  assert.equal(st.error, null);                     // the analysis itself is fine
+  assert.equal(st.lastDone.name, 'm.json');
+  assert.equal(st.joplin.ok, false);
+  assert.match(st.joplin.error, /could not reach Joplin/);
+  assert.equal(fs.readFileSync(path.join(fail.processed, 'm-analysis.md'), 'utf8'), 'notes');
+});
+
+test('companion metadata + VTT ride along in the CLI input; legacy name never self-includes', async () => {
+  const s = setup(() => ({ stdout: 'notes', code: 0 }), 'claude');
+  fs.writeFileSync(path.join(s.processed, 'x-diarizer-response.json'), JSON.stringify({ segments: [] }));
+  fs.writeFileSync(path.join(s.processed, 'x.json'), JSON.stringify({ subject: 'Weekly sync', organizer: 'T.J.' }));
+  // separator drift in the stamp prefix: JSON uses "-", the Teams VTT "_" — still matched
+  fs.writeFileSync(path.join(s.processed, '2026-08-19-09-57-16-Sync-diarizer-response.json'), JSON.stringify({ segments: [] }));
+  fs.writeFileSync(path.join(s.processed, '2026-08-19_09-57-16-Sync.vtt'), 'WEBVTT\n<v T.J. Schmitz>hi</v>');
+
+  s.an.start('x-diarizer-response.json');
+  await drained(s.an);
+  assert.match(s.spawns[0].stdin, /Meeting metadata JSON follows/);
+  assert.match(s.spawns[0].stdin, /Weekly sync/);
+  assert.doesNotMatch(s.spawns[0].stdin, /VTT transcript follows/);   // no .vtt for this one
+
+  s.an.start('2026-08-19-09-57-16-Sync-diarizer-response.json');
+  await drained(s.an);
+  assert.match(s.spawns[1].stdin, /VTT transcript follows/);
+  assert.match(s.spawns[1].stdin, /WEBVTT/);
+
+  s.an.start('m.json');   // legacy plain name: <base>.json IS the transcript — no fake metadata
+  await drained(s.an);
+  assert.doesNotMatch(s.spawns[2].stdin, /Meeting metadata JSON follows/);
+});
+
+// ---- mid-meeting highlights ----
+
+test('highlightsBlock converts ms spans to seconds + mm:ss, and asks for the section', () => {
+  const block = highlightsBlock(JSON.stringify({
+    subject: 'Weekly sync',
+    highlights: [{ startMs: 30000, endMs: 75000 }, { startMs: 605000, endMs: 640500 }],
+  }));
+  assert.match(block, /0:30–1:15/);
+  assert.match(block, /seconds 30\.0–75\.0/);
+  assert.match(block, /10:05–10:41/);   // 640.5s rounds to 641 = 10:41
+  assert.match(block, /seconds 605\.0–640\.5/);
+  assert.match(block, /"## Highlights" section/);
+  assert.match(block, /immediately after ## Summary/);
+});
+
+test('highlightsBlock returns null for absent, empty, or malformed spans', () => {
+  assert.equal(highlightsBlock(null), null);
+  assert.equal(highlightsBlock('{ not json'), null);
+  assert.equal(highlightsBlock(JSON.stringify({ subject: 'x' })), null);
+  assert.equal(highlightsBlock(JSON.stringify({ highlights: [] })), null);
+  // a reversed or non-numeric span is dropped; a block of nothing is no block at all
+  assert.equal(highlightsBlock(JSON.stringify({ highlights: [{ startMs: 900, endMs: 100 }] })), null);
+  assert.equal(highlightsBlock(JSON.stringify({ highlights: [{ startMs: 'a', endMs: 'b' }] })), null);
+});
+
+test('highlights ride along in the CLI input when the sidecar carries them', async () => {
+  const s = setup(() => ({ stdout: 'notes', code: 0 }), 'claude');
+  fs.writeFileSync(path.join(s.processed, 'h-diarizer-response.json'), JSON.stringify({ segments: [] }));
+  fs.writeFileSync(path.join(s.processed, 'h.json'), JSON.stringify({
+    subject: 'Weekly sync', highlights: [{ startMs: 12000, endMs: 48000 }],
+  }));
+  s.an.start('h-diarizer-response.json');
+  await drained(s.an);
+  assert.match(s.spawns[0].stdin, /Highlighted moments follow/);
+  assert.match(s.spawns[0].stdin, /0:12–0:48/);
+});
+
+test('a sidecar without highlights adds no highlight block', async () => {
+  const s = setup(() => ({ stdout: 'notes', code: 0 }), 'claude');
+  fs.writeFileSync(path.join(s.processed, 'p-diarizer-response.json'), JSON.stringify({ segments: [] }));
+  fs.writeFileSync(path.join(s.processed, 'p.json'), JSON.stringify({ subject: 'Weekly sync' }));
+  s.an.start('p-diarizer-response.json');
+  await drained(s.an);
+  assert.match(s.spawns[0].stdin, /Meeting metadata JSON follows/);
+  assert.doesNotMatch(s.spawns[0].stdin, /Highlighted moments follow/);
+});
+
+test('slimTranscript stamps turns only when asked', () => {
+  const json = JSON.stringify({ segments: [
+    { speaker: 'T.J. Schmitz', start: 65.4, end: 70, text: 'first' },
+    { speaker: 'T.J. Schmitz', start: 70, end: 72, text: 'still me' },
+    { speaker: 'Speaker A', start: 130.9, end: 134, text: 'their turn' },
+  ] });
+  assert.equal(slimTranscript(json), 'T.J. Schmitz: first still me\nSpeaker A: their turn');
+  // stamped form keeps the FIRST segment's start for a merged run
+  assert.equal(slimTranscript(json, true), '[1:05] T.J. Schmitz: first still me\n[2:11] Speaker A: their turn');
 });

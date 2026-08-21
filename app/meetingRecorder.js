@@ -81,6 +81,8 @@ function createMeetingRecorder(deps) {
   let dataBytes = 0;
   let lastLoudAt = 0;
   let silenceStopMs = 0;       // 0 = disabled
+  let captureSession = 0;      // incremented per recording; frames must carry the current id
+  let warnedStaleSession = false;
 
   function recorderSession() {
     return session.fromPartition('persist:recorder');
@@ -124,6 +126,17 @@ function createMeetingRecorder(deps) {
 
   function onPcm(buf, meta) {
     if (!recording || !stream) return;
+    // Backstop against a capture that outlived its stop: frames are stamped with the session
+    // they were started for, so a stale one can never be mixed into a later recording (which
+    // is what doubled every block and made the audio echo).
+    if (!meta || meta.session !== captureSession) {
+      if (!warnedStaleSession) {
+        warnedStaleSession = true;
+        log('dropping PCM from a stale capture session (expected ' + captureSession +
+            ', got ' + (meta ? meta.session : 'none') + ')');
+      }
+      return;
+    }
     try {
       const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
       stream.write(b);
@@ -173,7 +186,9 @@ function createMeetingRecorder(deps) {
     triggerApp = app || null;
     lastLoudAt = now.getTime();
 
-    sendCmd({ type: 'start', mic: micLabel, echoGate: !!s.echoGate, sampleRate: SAMPLE_RATE });
+    captureSession++;
+    warnedStaleSession = false;
+    sendCmd({ type: 'start', mic: micLabel, echoGate: !!s.echoGate, sampleRate: SAMPLE_RATE, session: captureSession });
     log('recording started (' + (reason || 'manual') + (app ? ', app=' + app : '') + ') -> ' + filePath);
     emitState();
     return getState();

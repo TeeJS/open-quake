@@ -87,12 +87,49 @@
   .iconopt .note { color: #6f8298; font-size: 12px; }
   .icondetail { margin: 6px 0 0 26px; min-height: 8px; }
   .icondetail .row { margin: 4px 0; }
+  .emoji-grid { display: flex; flex-wrap: wrap; gap: 4px; max-height: 150px; overflow-y: auto;
+    margin-top: 8px; background: #0a111a; border: 1px solid #1b2838; border-radius: 8px; padding: 8px; }
+  .emoji-btn { font-size: 19px; line-height: 1; padding: 6px; width: auto; background: #1c2735; border: 1px solid #2a3a4e; border-radius: 6px; cursor: pointer; }
+  .emoji-btn:hover { background: #243246; border-color: #3a5068; }
   .iconpreview { margin-top: 14px; height: 84px; display: flex; align-items: center; justify-content: center;
     background: #0a111a; border: 1px solid #1b2838; border-radius: 10px; }
   .iconpreview .em { font-size: 52px; line-height: 1; }
   .iconpreview img { width: 64px; height: 64px; object-fit: contain; }
   .iconpreview .none { color: #41566b; font-size: 13px; }
   .hint { color: #6f8298; font-size: 12px; margin-top: 8px; }
+  /* Routines tab: searchable master-detail. Left = compact scannable list + search; right = the one
+     selected routine's fields. Stacks on a narrow window. */
+  .rtSplit { display: flex; gap: 16px; align-items: flex-start; }
+  .rtList { width: 300px; flex: none; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .rtListHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .rtCount { color: #6f8298; font-size: 12px; }
+  .rtItems { display: flex; flex-direction: column; gap: 4px; max-height: 60vh; overflow: auto; padding-right: 2px; }
+  .rtItem { padding: 8px 10px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; min-width: 0; }
+  .rtItem:hover { background: #182230; }
+  .rtItem.sel { background: #16314f; border-color: #2b6fb0; }
+  .rtItem .rtiName { font-size: 13px; font-weight: 600; color: #dbe5f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rtItem .rtiSub { font-size: 11px; color: #6f8298; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .rtItem .rtiPage { color: #7CFFB2; }
+  .rtDetail { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+  .rtDetailHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .rtHeadBtns { display: flex; gap: 8px; flex: none; }
+  button.rtRun { background: #1f7a44; border-color: #2f9d57; color: #eafff2; }
+  button.rtRun:hover { background: #248a4e; }
+  button.rtRun:disabled { background: #17311f; border-color: #24503a; color: #5b8a70; cursor: default; }
+  .rtField { display: flex; flex-direction: column; gap: 4px; }
+  .rtField > label { width: auto; color: #91a4ba; font-size: 12px; }
+  .rtFolderRow { display: flex; gap: 6px; }
+  .rtFolderRow input { flex: 1; min-width: 0; }
+  .rtFolderRow button { flex: none; }
+  .rtEmpty { color: #6f8298; font-size: 13px; padding: 18px 4px; line-height: 1.5; }
+  /* Stack when the routines pane itself is narrow -- a container query, not a viewport one, because
+     the 240px pages sidebar means the pane can be cramped while the window is still wide. */
+  #sRoutineRows { container-type: inline-size; }
+  @container (max-width: 680px) {
+    .rtSplit { flex-direction: column; }
+    .rtList { width: 100%; }
+    .rtItems { max-height: 40vh; }
+  }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; min-height: 26px; }
   .chip { display: flex; align-items: center; gap: 6px; background: #182230; border: 1px solid #2a3a4e; border-radius: 999px; padding: 5px 6px 5px 12px; font-size: 13px; color: #cfe0f2; }
   .chip button { background: transparent; border: none; border-radius: 999px; width: 20px; height: 20px; padding: 0; line-height: 1; font-size: 12px; color: #8aa0b6; }

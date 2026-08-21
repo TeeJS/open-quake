@@ -156,6 +156,17 @@ Recording and transcription for the Meeting panel (details in [meeting.md](meeti
   per analyzed meeting, pointing at its `-analysis.md` (and meeting metadata when the
   calendar integration provided it) — the hand-off for pulling action items onto a
   kanban board. Only successful analyses are listed.
+- **Advanced → Create Joplin notes for analyses** — after each analysis, creates a note
+  in Joplin through the **Joplin API URL** (the Web Clipper service of Joplin Desktop,
+  Tools › Options › Web Clipper — default port 41184) using the **API token** shown
+  there (stored encrypted). Title = the recording basename, body = the analysis
+  markdown, filed to **Notebook** (default `NW Pipe`), tagged `meeting notes` + the
+  year + title keywords. Only tags that already exist in Joplin are applied — none are
+  created; skipped tags are logged. Joplin Desktop must be running when the analysis
+  finishes; a failed note is reported on the panel but never fails the analysis.
+  Analyses also send the calendar meeting-info JSON and any companion Teams `.vtt`
+  caption file (same folder, same timestamp prefix) to the AI as speaker-identity
+  aids, and the `.vtt` is filed with the recording's other artifacts afterwards.
 - **Advanced → Run commands before/after transcription** — start and stop the
   transcription server around each batch (e.g. `ssh root@host "docker start
   meeting-diarizer"` — a loaded diarizer holds ~3.4 GB of GPU memory). **Before** runs
@@ -208,7 +219,7 @@ service catalog, icon resolution, memory footprint — lives in
 ### Open WebUI
 
 One connection shared by the meeting **Analysis AI** (Meeting tab) and the
-**[Open WebUI Voice](owui-voice.md)** panel app:
+**[AI Voice](ai-voice.md)** app's Open WebUI backend:
 
 - **URL** — the server's address (e.g. `http://192.168.1.25:3000`). Any pasted form works —
   bare host:port, trailing slash, or a full path; the app derives `/api/chat/completions` and
@@ -221,3 +232,11 @@ One connection shared by the meeting **Analysis AI** (Meeting tab) and the
 
 The existing per-page [Open WebUI chat widget](ai-chat.md) keeps its own endpoint options and is
 unaffected.
+
+## AI Profiles
+
+The global library behind the [AI Voice](ai-voice.md) app's **Profile** button: each row is a
+name plus the instruction the AI receives for the conversation (Translator, Summarizer, Writer, …).
+Rename, rewrite, add, or remove rows here — changes apply the next time a profile is picked (or a
+session starts). **General Chat** ships with an empty instruction, which means plain, unmodified
+chat. Deleting a profile that a page was using safely falls back to the first one in the list.

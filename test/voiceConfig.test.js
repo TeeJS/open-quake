@@ -61,7 +61,61 @@ test('migration keeps a divergent second page as an explicit override', () => {
 
 test('migration is idempotent and a no-op without legacy keys', () => {
   const cfg = { settings: { voice: { sttHost: 'keep', sttPort: '10300', ttsHost: 'keep', ttsPort: '10200' } },
-    grids: [{ app: 'claude-voice', options: { projectDir: 'C:/x' } }] };
+    grids: [{ app: 'ai-voice', options: { backend: 'claude', projectDir: 'C:/x' } }] };
+  const before = JSON.stringify(cfg);
+  migrateVoiceConfig(cfg);
+  assert.equal(JSON.stringify(cfg), before);
+});
+
+// ---- app-id consolidation (the four voice apps -> ai-voice + per-page backend) ----
+
+test('old voice app ids migrate to ai-voice with the matching backend', () => {
+  const cfg = { grids: [
+    { kind: 'app', app: 'claude-voice', options: { projectDir: 'C:/x', permissionMode: 'manual' } },
+    { kind: 'app', app: 'codex-voice', options: {} },
+    { kind: 'app', app: 'copilot-voice' },
+    { kind: 'app', app: 'owui-voice', options: { modelPick: 'llama3' } },
+    { kind: 'app', app: 'music', options: {} },
+  ] };
+  migrateVoiceConfig(cfg);
+  assert.deepEqual(cfg.grids.map(g => g.app), ['ai-voice', 'ai-voice', 'ai-voice', 'ai-voice', 'music']);
+  assert.deepEqual(cfg.grids.slice(0, 4).map(g => g.options.backend), ['claude', 'codex', 'copilot', 'owui']);
+  assert.equal(cfg.grids[0].options.projectDir, 'C:/x');       // everything else carries over
+  assert.equal(cfg.grids[0].options.permissionMode, 'manual');
+  assert.equal(cfg.grids[3].options.modelPick, 'llama3');
+});
+
+test('ensureAiProfiles seeds once and never touches user edits', () => {
+  const { ensureAiProfiles, DEFAULT_AI_PROFILES } = require('../app/voiceConfig');
+  const cfg = {};
+  ensureAiProfiles(cfg);
+  assert.equal(cfg.settings.aiProfiles.length, DEFAULT_AI_PROFILES.length);
+  assert.equal(cfg.settings.aiProfiles[0].id, 'chat');
+  assert.equal(cfg.settings.aiProfiles[0].prompt, '');   // General Chat = plain behavior
+  // User edits and deletions survive re-runs.
+  cfg.settings.aiProfiles = [{ id: 'mine', name: 'Mine', prompt: 'be mine' }];
+  ensureAiProfiles(cfg);
+  assert.deepEqual(cfg.settings.aiProfiles, [{ id: 'mine', name: 'Mine', prompt: 'be mine' }]);
+  // Even an emptied list stays empty (a deliberate delete-all is respected).
+  cfg.settings.aiProfiles = [];
+  ensureAiProfiles(cfg);
+  assert.deepEqual(cfg.settings.aiProfiles, []);
+});
+
+test('resolveAiProfile falls back to the first profile for blank or deleted ids', () => {
+  const { resolveAiProfile } = require('../app/voiceConfig');
+  const settings = { aiProfiles: [{ id: 'a', name: 'A', prompt: 'pa' }, { id: 'b', name: 'B', prompt: 'pb' }] };
+  assert.equal(resolveAiProfile(settings, 'b').prompt, 'pb');
+  assert.equal(resolveAiProfile(settings, '').id, 'a');
+  assert.equal(resolveAiProfile(settings, 'gone').id, 'a');
+  assert.equal(resolveAiProfile({ aiProfiles: [] }, 'x').prompt, '');   // emptied library = plain chat
+});
+
+test('id migration never overwrites an existing backend and is idempotent', () => {
+  const cfg = { grids: [{ kind: 'app', app: 'claude-voice', options: { backend: 'codex' } }] };
+  migrateVoiceConfig(cfg);
+  assert.equal(cfg.grids[0].app, 'ai-voice');
+  assert.equal(cfg.grids[0].options.backend, 'codex');   // pre-set backend wins
   const before = JSON.stringify(cfg);
   migrateVoiceConfig(cfg);
   assert.equal(JSON.stringify(cfg), before);

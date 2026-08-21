@@ -31,4 +31,5 @@ contextBridge.exposeInMainWorld('openQuakePanel', {
   onKnob(callback) { return on('knob', callback); },
   onMicToggle(callback) { return on('micToggle', callback); },
   onReloadDashboard(callback) { return on('reloadDashboard', callback); },
+  onNotice(callback) { return on('notice', callback); },
 });

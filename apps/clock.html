@@ -92,6 +92,20 @@
   #corner .cdate { display: block; font-size: clamp(13px, 4vh, 48px); color: var(--fg); text-shadow: var(--digit-glow); font-weight: 600; letter-spacing: .04em; }
   #corner .cdow  { display: block; font-size: clamp(12px, 3.4vh, 40px); color: var(--fg); text-shadow: var(--digit-glow); font-weight: 700; letter-spacing: .18em; }
 
+  /* ---- weather, bottom-left corner (off by default; see App options) ----
+     Sized per the panel's own scale, not the corner date's (that one reads as
+     metadata on purpose). Temp is the headline here: bold, glowing, body-scale
+     like the rest of this appliance's readable-at-arm's-length text. */
+  #weather { position: fixed; bottom: calc(clamp(8px, 3vh, 30px) + 20px); left: clamp(12px, 3vw, 44px);
+    display: none; align-items: center; gap: clamp(10px, 2vw, 22px); }
+  #weather.show { display: flex; }
+  #weather .wicon { font-size: clamp(45.6px, 12vh, 72px); line-height: 1; }
+  #weather .wtext { text-align: left; line-height: 1.15; }
+  #weather .wtemp { display: block; font-size: clamp(36px, 10.2vh, 62.4px); color: var(--fg); text-shadow: var(--digit-glow); font-weight: 700; letter-spacing: .01em; }
+  #weather .wdesc { display: block; font-size: clamp(19.2px, 5.04vh, 31.2px); color: var(--label); font-weight: 600; letter-spacing: .01em; margin-top: 2px; }
+  #weather .wcity { display: block; font-size: clamp(16.8px, 3.84vh, 24px); color: var(--label); font-weight: 600; letter-spacing: .02em; }
+  body.light #weather .wtemp { color: #26323d; text-shadow: none; }
+
   /* ---- settings ---- */
   #gear { position: fixed; top: 14px; right: 16px; width: 40px; height: 40px; border-radius: 10px;
     display: flex; align-items: center; justify-content: center; font-size: 22px; color: var(--label);
@@ -106,11 +120,16 @@
   #panel .seg button { flex: 1; background: #131c28; color: #dbe5f0; border: 0; padding: 8px; cursor: pointer; font-size: 13px; }
   #panel .seg button.on { background: #1e6fd0; }
   #panel label { display: flex; align-items: center; gap: 8px; cursor: pointer; flex: 1; }
+  #panel input[type=text] { flex: 1; min-width: 0; background: #131c28; color: #dbe5f0; border: 1px solid #2a3a4e;
+    border-radius: 8px; padding: 8px 10px; font-size: 13px; font-family: inherit; }
+  #panel .wx-sub { display: none; }
+  #panel .wx-sub.show { display: flex; }
 </style>
 </head>
 <body>
   <div id="clock"></div>
   <div id="corner"></div>
+  <div id="weather"></div>
 
   <div id="gear" title="Settings">⚙</div>
   <div id="panel">
@@ -119,6 +138,10 @@
       <div class="seg"><button data-set="mode" data-val="24">24h</button><button data-set="mode" data-val="12">12h</button></div></div>
     <div class="row"><label><input type="checkbox" data-toggle="seconds"> Show seconds</label></div>
     <div class="row"><label><input type="checkbox" data-toggle="date"> Show date &amp; day</label></div>
+    <div class="row"><label><input type="checkbox" data-toggle="weather"> Show weather</label></div>
+    <div class="row wx-sub"><input type="text" id="wxCity" placeholder="City, e.g. Salt Lake City, US"></div>
+    <div class="row wx-sub"><span style="flex:1">Units</span>
+      <div class="seg"><button data-set="weatherUnit" data-val="f">°F</button><button data-set="weatherUnit" data-val="c">°C</button></div></div>
   </div>
 
 <script>
@@ -127,7 +150,7 @@
   const $ = sel => document.querySelector(sel);
 
   // ---- settings (localStorage + URL params) ----
-  const defaults = { mode: '24', seconds: false, date: true };
+  const defaults = { mode: '24', seconds: false, date: true, weather: false, weatherCity: '', weatherUnit: 'f' };
   // Read params from the full href — robust for file:// (where location.search is often empty
   // in an Electron webview). Accepts both ?query and #hash forms.
   function readParams() {
@@ -148,10 +171,90 @@
     if ('mode' in p) s.mode = p.mode === '12' ? '12' : '24';
     if ('seconds' in p) s.seconds = p.seconds === '1' || p.seconds === 'true';
     if ('date' in p) s.date = !(p.date === '0' || p.date === 'false');
+    if ('weather' in p) s.weather = p.weather === '1' || p.weather === 'true';
+    if ('weatherCity' in p) s.weatherCity = p.weatherCity;
+    if ('weatherUnit' in p) s.weatherUnit = p.weatherUnit === 'c' ? 'c' : 'f';
     return s;
   }
   function save() { try { localStorage.setItem('flipclock', JSON.stringify(settings)); } catch (e) {} }
   let settings = load();
+
+  // ---- weather (Open-Meteo: free, keyless geocoding + current conditions) ----
+  const WCODE = {
+    0: ['☀️', 'Clear'], 1: ['🌤️', 'Mostly clear'], 2: ['⛅', 'Partly cloudy'], 3: ['☁️', 'Overcast'],
+    45: ['🌫️', 'Fog'], 48: ['🌫️', 'Rime fog'],
+    51: ['🌦️', 'Light drizzle'], 53: ['🌦️', 'Drizzle'], 55: ['🌧️', 'Dense drizzle'],
+    56: ['🌧️', 'Freezing drizzle'], 57: ['🌧️', 'Freezing drizzle'],
+    61: ['🌧️', 'Light rain'], 63: ['🌧️', 'Rain'], 65: ['🌧️', 'Heavy rain'],
+    66: ['🌧️', 'Freezing rain'], 67: ['🌧️', 'Freezing rain'],
+    71: ['🌨️', 'Light snow'], 73: ['🌨️', 'Snow'], 75: ['❄️', 'Heavy snow'], 77: ['🌨️', 'Snow grains'],
+    80: ['🌦️', 'Light showers'], 81: ['🌧️', 'Showers'], 82: ['⛈️', 'Violent showers'],
+    85: ['🌨️', 'Snow showers'], 86: ['🌨️', 'Heavy snow showers'],
+    95: ['⛈️', 'Thunderstorm'], 96: ['⛈️', 'Thunderstorm, hail'], 99: ['⛈️', 'Severe thunderstorm'],
+  };
+  const WX_REFRESH_MS = 20 * 60 * 1000;   // conditions don't need to be fresher than this
+  let wxGeo = null, wxTimer = null, wxReq = 0;
+  function wxShow(html) {
+    const el = $('#weather'); if (!el) return;
+    el.innerHTML = html; el.classList.toggle('show', !!html);
+  }
+  async function wxGeocodeOnce(name) {
+    const r = await fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=' + encodeURIComponent(name));
+    if (!r.ok) throw new Error('geocode ' + r.status);
+    const hit = ((await r.json()).results || [])[0];
+    return hit ? { lat: hit.latitude, lon: hit.longitude, name: hit.name, admin1: hit.admin1 || '' } : null;
+  }
+  // Open-Meteo geocodes place NAMES, not postcodes or full addresses. Drop digit-bearing tokens
+  // (postcodes, house numbers) from the locality so a pasted address still resolves:
+  // "London W6 9HA, United Kingdom" -> "London, United Kingdom".
+  function simplifyCity(city) {
+    const parts = String(city).split(',');
+    parts[0] = parts[0].split(/\s+/).filter(w => w && !/\d/.test(w)).join(' ');
+    return parts.map(s => s.trim()).filter(Boolean).join(', ');
+  }
+  async function wxGeocode(city) {
+    let hit = await wxGeocodeOnce(city);
+    if (!hit) { const simpler = simplifyCity(city); if (simpler && simpler !== city) hit = await wxGeocodeOnce(simpler); }
+    return hit;
+  }
+  async function wxFetch(lat, lon, unit) {
+    const r = await fetch('https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon
+      + '&current=temperature_2m,weather_code&temperature_unit=' + (unit === 'c' ? 'celsius' : 'fahrenheit'));
+    if (!r.ok) throw new Error('forecast ' + r.status);
+    return (await r.json()).current;
+  }
+  async function wxRefresh() {
+    const myReq = ++wxReq;
+    if (!settings.weather || gridMode) { wxShow(''); return; }
+    const city = (settings.weatherCity || '').trim();
+    if (!city) { wxShow(''); return; }
+    try {
+      if (!wxGeo || wxGeo.key !== city) {
+        const hit = await wxGeocode(city);
+        if (myReq !== wxReq) return;
+        if (!hit) { wxGeo = null; wxShow('<span class="wicon">🌍</span><span class="wtext"><span class="wdesc">City not found</span></span>'); return; }
+        wxGeo = { key: city, lat: hit.lat, lon: hit.lon, name: hit.name, admin1: hit.admin1 };
+      }
+      const cur = await wxFetch(wxGeo.lat, wxGeo.lon, settings.weatherUnit);
+      if (myReq !== wxReq) return;
+      const [icon, label] = WCODE[cur.weather_code] || ['🌡️', 'Unknown'];
+      const temp = Math.round(cur.temperature_2m) + '°' + (settings.weatherUnit === 'c' ? 'C' : 'F');
+      // Temperature is the headline (bright, bold, glowing — the .wtemp the CSS was built for);
+      // description and city are the supporting lines under it. The old build jammed the temp into
+      // the small uppercase-gray .wdesc, so the one number you glance at read as dim metadata.
+      wxShow('<span class="wicon">' + icon + '</span><span class="wtext">'
+        + '<span class="wtemp">' + temp + '</span>'
+        + '<span class="wdesc">' + label + '</span>'
+        + '<span class="wcity">' + wxGeo.name + (wxGeo.admin1 ? ', ' + wxGeo.admin1 : '') + '</span></span>');
+    } catch (e) {
+      if (myReq !== wxReq) return;
+      wxShow('<span class="wicon">🌡️</span><span class="wtext"><span class="wdesc">Weather unavailable</span></span>');
+    }
+  }
+  function wxSchedule() {
+    clearInterval(wxTimer);
+    if (settings.weather && !gridMode && (settings.weatherCity || '').trim()) wxTimer = setInterval(wxRefresh, WX_REFRESH_MS);
+  }
 
   // ---- sizing: cards scale to viewport; smaller when seconds shown ----
   function applySizing() {
@@ -200,6 +303,7 @@
     corner.innerHTML = showDate ? '<span class="cdate" id="date"></span><span class="cdow" id="dow"></span>' : '';
     for (const k in cards) cards[k].dataset.v = '';           // force a fresh first paint
     tick(true);
+    wxRefresh(); wxSchedule();
   }
 
   // ---- the flip ----
@@ -252,10 +356,13 @@
   function syncPanel() {
     document.querySelectorAll('[data-set]').forEach(b => b.classList.toggle('on', settings[b.dataset.set] === b.dataset.val));
     document.querySelectorAll('[data-toggle]').forEach(c => c.checked = !!settings[c.dataset.toggle]);
+    const wc = $('#wxCity'); if (wc && document.activeElement !== wc) wc.value = settings.weatherCity || '';
+    document.querySelectorAll('.wx-sub').forEach(r => r.classList.toggle('show', !!settings.weather));
   }
   $('#gear').onclick = () => $('#panel').classList.toggle('open');
   document.querySelectorAll('[data-set]').forEach(b => b.onclick = () => { settings[b.dataset.set] = b.dataset.val; save(); build(); syncPanel(); });
   document.querySelectorAll('[data-toggle]').forEach(c => c.onchange = () => { settings[c.dataset.toggle] = c.checked; save(); build(); syncPanel(); });
+  { const wc = $('#wxCity'); if (wc) wc.onchange = () => { settings.weatherCity = wc.value; save(); build(); syncPanel(); }; }
 
   build(); syncPanel();
   window.addEventListener('hashchange', () => { settings = load(); build(); syncPanel(); });  // re-apply when options change

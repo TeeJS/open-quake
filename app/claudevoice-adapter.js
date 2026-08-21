@@ -103,6 +103,21 @@ function createClaudeVoiceAdapter({ getServerPort, getUserDataPath, log }) {
     emitter.emit('exit', { stillRunning: session.isRunning() });
   });
 
+  let currentProfilePrompt = '';   // the active AI profile's instruction; folded into the system prompt
+
+  // Bundled voice prompt + the user's panel prompt file + the active AI profile, in that order.
+  function assembleSystemPrompt() {
+    let voicePrompt = '';
+    try { voicePrompt = fs.readFileSync(path.join(__dirname, 'claudevoice-voice-prompt.md'), 'utf8'); }
+    catch (e) { say('voice prompt not loaded: ' + e.message); }
+    try {
+      const userPrompt = readUserPrompt();
+      if (userPrompt) voicePrompt += (voicePrompt ? '\n\n' : '') + userPrompt;
+    } catch (e) { say('panel prompt file not loaded: ' + e.message); }
+    if (currentProfilePrompt) voicePrompt += (voicePrompt ? '\n\n' : '') + currentProfilePrompt;
+    return voicePrompt;
+  }
+
   function userPromptPath() { return path.join(getUserDataPath(), 'claude-panel-prompt.md'); }
   function ensureUserPromptFile() {
     const p = userPromptPath();
@@ -120,27 +135,29 @@ function createClaudeVoiceAdapter({ getServerPort, getUserDataPath, log }) {
     // session start rather than on checkbox change -- app options save through the generic grid-
     // config path with no per-option event, and re-syncing here is idempotent. A toggle takes
     // effect the next time a session starts.
-    start({ projectDir, mode, model, approvalsEnabled }) {
+    start({ projectDir, mode, model, approvalsEnabled, profilePrompt }) {
       try {
         if (approvalsEnabled) claudeVoiceApprovals.ensureHookInstalled(getUserDataPath(), say);
         else claudeVoiceApprovals.ensureHookRemoved(say);
       } catch (e) { say('hook sync failed: ' + e.message); }
-      let voicePrompt = '';
-      try { voicePrompt = fs.readFileSync(path.join(__dirname, 'claudevoice-voice-prompt.md'), 'utf8'); }
-      catch (e) { say('voice prompt not loaded: ' + e.message); }
-      try {
-        const userPrompt = readUserPrompt();
-        if (userPrompt) voicePrompt += (voicePrompt ? '\n\n' : '') + userPrompt;
-      } catch (e) { say('panel prompt file not loaded: ' + e.message); }
+      currentProfilePrompt = String(profilePrompt || '');
       session.start({
         projectDir,
         permissionMode: mode || 'manual',   // fail safe: ask, never bypass
         model: CLAUDE_VOICE_MODEL_PICKS.includes(model) ? model : '',
         port: getServerPort(),
         token,
-        systemPrompt: voicePrompt,
+        systemPrompt: assembleSystemPrompt(),
       });
       return true;
+    },
+    // AI profile switch: the CLI only reads its system prompt at launch, so a live switch swaps
+    // the child and resumes the conversation (the Mode/Model button mechanic). Not running -> just
+    // remember it for the next start.
+    setProfilePrompt(text) {
+      currentProfilePrompt = String(text || '');
+      if (!session.isRunning()) return true;
+      return session.setSystemPromptAppend(assembleSystemPrompt());
     },
     stop() {
       session.stop();
