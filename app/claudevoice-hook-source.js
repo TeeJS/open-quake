@@ -44,7 +44,7 @@ function readStdin() {
 
   var result = await new Promise(function (resolve) {
     var req = http.request({
-      host: '127.0.0.1', port: Number(port), path: '/claude-voice/approval-request', method: 'POST',
+      host: '127.0.0.1', port: Number(port), path: '/ai-voice/claude/approval-request', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'x-oqx-voice-token': token },
       timeout: 590000,
     }, function (res) {

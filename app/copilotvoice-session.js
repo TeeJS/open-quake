@@ -68,6 +68,8 @@ function createCopilotVoiceAdapter({ log }) {
   let nextId = 0;
   let pending = new Map();          // request id -> {resolve, reject}
   let queuedTurns = [];             // sendTurn() calls made before the handshake finished
+  let profilePrompt = '';           // active AI profile instruction (no protocol slot -> first-turn prefix)
+  let profileInjectPending = false;   // true = the next turn carries the profile prefix
   let sessionId = null;
   let projectDir = null;
   let mode = COPILOT_DEFAULT_MODE;
@@ -290,6 +292,13 @@ function createCopilotVoiceAdapter({ log }) {
   }
 
   function startTurn(text) {
+    // AI profile: copilot's ACP session/prompt has no instructions slot, so the profile rides as a
+    // prefix on the FIRST turn after a session start or profile switch. The transcript shows the
+    // user's own words — the host records the unprefixed text.
+    if (profileInjectPending && profilePrompt) {
+      text = '[Instructions for this conversation — follow them in every reply]\n' + profilePrompt + '\n[End of instructions]\n\n' + text;
+      profileInjectPending = false;
+    }
     turnText = '';
     turnInFlight = true;
     emitter.emit('assistant-start');
@@ -310,13 +319,15 @@ function createCopilotVoiceAdapter({ log }) {
 
   return {
     // ---- lifecycle (host adapter contract; see voicepanel-host.js header) ----
-    start({ projectDir: dir, mode: pick, model }) {
+    start({ projectDir: dir, mode: pick, model, profilePrompt: pp }) {
       if (!findCopilotExe()) {
         say('copilot CLI not found on PATH');
         emitter.emit('error', { message: 'copilot CLI not found on PATH' });
         return false;
       }
       stopProc('superseded by a new session');
+      profilePrompt = String(pp || '');
+      profileInjectPending = !!profilePrompt;
       projectDir = dir;
       mode = COPILOT_MODE_PRESETS[pick] ? pick : COPILOT_DEFAULT_MODE;
       sessionId = null;
@@ -338,6 +349,8 @@ function createCopilotVoiceAdapter({ log }) {
       startTurn(text);
       return true;
     },
+    // AI profile switch mid-session: the new instruction rides on the next turn.
+    setProfilePrompt(text) { profilePrompt = String(text || ''); profileInjectPending = !!profilePrompt; return true; },
     isRunning() { return !!proc; },
     sessionId() { return sessionId; },
     projectDir() { return projectDir; },

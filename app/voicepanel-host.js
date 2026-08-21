@@ -22,6 +22,9 @@ const fs = require('fs');
 const path = require('path');
 const speechLib = require('./claudevoice-speech');   // pure: sentence cutter + sanitizer + per-turn WAV pipeline
 const wyoming = require('./claudevoice-wyoming');    // pure: Wyoming STT/TTS protocol client
+const { resolveAiProfile } = require('./voiceConfig'); // pure: AI-profile library lookup (Smart Profiles)
+const { createPanelReview, PANEL_SYSTEM_PROMPT, PANEL_PROFILE } = require('./panelGenerate'); // pure: Panel Builder review
+const routinesLib = require('./routines');            // pure: saved AI routines (shape + auto-name)
 
 // Whisper hallucinates stock phrases on background noise/near-silence ("thanks for watching" is the
 // classic, from YouTube training data). Exact-phrase blocklist, compared case/punctuation-insensitively --
@@ -40,6 +43,9 @@ function isSttNoisePhrase(text) {
 function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps }) {
   const say = log || (() => {});
   const brand = branding || {};
+  // Which grids belong to THIS host. deps.ownsGrid narrows beyond the app id (the AI Voice app runs
+  // one host per backend under a single id); without it the id alone decides, as it always did.
+  const ownsGrid = deps.ownsGrid || (g => !!(g && g.kind === 'app' && g.app === appId));
 
   // Accumulated view of the current turn, for the /<app>/state snapshot (initial page load and
   // SSE-reconnect recovery -- a fresh subscriber knows the current status immediately, before any
@@ -69,10 +75,8 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
     synthesize: wyoming.synthesize,
     wavHeader: wyoming.wavHeader,
     getTts: () => {
-      const opts = deps.activeServedAppConfig(appId);
-      const host = (opts && opts.options.wyomingHost) || '';
-      const port = (opts && opts.options.wyomingTtsPort) || '';
-      return host && port ? { host, port } : null;
+      const e = deps.voiceEndpoints();
+      return e.ttsHost && e.ttsPort ? { host: e.ttsHost, port: e.ttsPort } : null;
     },
     log: say,
     // A dead/disabled TTS service must never be a SILENT nothing (it fails every sentence and the
@@ -84,11 +88,20 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
   adapter.on('model', ({ model }) => broadcast({ type: 'model', model }));
   adapter.on('models-changed', () => broadcast({ type: 'meta', meta: buildMeta() }));
   adapter.on('notice', ({ text }) => broadcast({ type: 'notice', text }));   // plain-language user guidance on the status line
+  // Panel Builder turns stream JSON. It is buffered here rather than shown, and doubles as the
+  // turn's text for backends whose turn-complete carries none (codex streams deltas and finishes
+  // with no final text — without this buffer its panels were never detected at all).
+  let panelTurnText = '';
   adapter.on('assistant-start', () => {
     state.status = 'thinking';
+    panelTurnText = '';
     broadcast({ type: 'assistant-start' });
+    if (panelProfileActive()) broadcast({ type: 'notice', text: 'Building your panel…' });
   });
   adapter.on('assistant-delta', ({ text }) => {
+    // Never stream a panel's JSON into the chat: the user should see a panel appear, not a wall of
+    // braces. A prose reply on this profile (a clarifying question) still renders at turn-complete.
+    if (panelProfileActive()) { panelTurnText += (text || ''); return; }
     // A dequeued turn's speech starts on its FIRST delta, not at dispatch -- so the previous
     // reply's spoken tail gets to finish (CLI semantics: complete the current task, then answer).
     if (queuedSpeakPending) {
@@ -107,21 +120,52 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
     // THIS turn's text only: a turn that died without producing anything must broadcast null, not
     // echo the previous reply out of lastAssistantText (which made every errored turn "answer"
     // with the prior response, hardware-observed as the agent repeating itself).
-    const turnFinalText = typeof text === 'string' ? text : null;
+    let turnFinalText = typeof text === 'string' ? text : null;
+    // A Panel Builder turn whose backend reports no final text still has the deltas we buffered.
+    if (!turnFinalText && panelTurnText) turnFinalText = panelTurnText;
     if (turnFinalText != null) state.lastAssistantText = turnFinalText;
     state.error = error;
+    // Panel Builder: while that profile is active a JSON reply is a PROPOSED PAGE, not something to
+    // read aloud or print. Detect it before any speech starts, so Piper never narrates raw JSON.
+    // Ordinary conversation on the same profile (e.g. a clarifying question) parses as nothing and
+    // falls through untouched.
+    let panelOffered = false;
+    if (!state.error && turnFinalText && panelProfileActive()) {
+      try { panelOffered = panelReview.offer(turnFinalText); }
+      catch (e) { say('panel review failed: ' + ((e && e.message) || e)); }
+    }
+    // A JSON-shaped reply on this profile that we could NOT turn into a panel (truncated, wrong
+    // shape) must not be pasted at the user as braces — that is the "gibberish" case. Say something
+    // human instead, and speak that rather than the JSON.
+    let shownText = turnFinalText;
+    if (!panelOffered && turnFinalText && panelProfileActive()) {
+      const t = turnFinalText.trim();
+      if (t.charAt(0) === '{' || t.slice(0, 3) === '```') {
+        shownText = "I couldn't build that panel. Try saying it again, or describe it a bit differently.";
+        say('panel reply was JSON-shaped but unusable; showed a plain message instead');
+      }
+    }
     // A dequeued result-only turn (no deltas ever streamed) still owes its speech: open its stream
     // now so the whole-text finish below lands in it.
     if (queuedSpeakPending) {
       queuedSpeakPending = false;
-      if (!error && text) broadcast({ type: 'turn-speech', speech: speech.beginTurn() });
+      if (!error && text && !panelOffered) broadcast({ type: 'turn-speech', speech: speech.beginTurn() });
     }
     // Speech: flush the pipeline's remainder (or speak the whole result for turns that never
     // streamed deltas, e.g. slash commands); errored turns get their speech cut instead.
     if (state.error) speech.abortActive('turn ended in error');
-    else speech.finish(turnFinalText);
-    if (turnFinalText && !state.error) transcript.push({ role: 'assistant', text: turnFinalText });
-    broadcast({ type: 'turn-complete', text: turnFinalText, error: state.error });
+    else if (panelOffered) speech.abortActive('panel proposals are shown, not spoken');
+    else speech.finish(shownText);
+    if (shownText && !state.error && !panelOffered) transcript.push({ role: 'assistant', text: shownText });
+    if (panelOffered) {
+      const ps = panelReview.state();
+      transcript.push({ role: 'assistant', text: ps.status === 'ready'
+        ? 'Proposed "' + ps.page.name + '" — review it on screen.'
+        : 'That panel could not be used: ' + ps.error });
+      broadcast({ type: 'panel-review', panel: ps });
+    }
+    panelTurnText = '';
+    broadcast({ type: 'turn-complete', text: panelOffered ? null : shownText, error: state.error });
     // CLI semantics: the finished turn hands off to the next queued entry, in order.
     turnActive = false;
     if (turnQueue.length) {
@@ -198,6 +242,37 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
     if (lazyStart) broadcast({ type: 'user-turn', text });
     return { ok: true, speech: speechId };
   }
+  // "+ Routine" beside Send. Saves `text` (the message field) as a reusable routine, or — when the
+  // field is empty — the last request that was actually sent, so you can speak a task, watch it
+  // work, and keep it. The routine is named from its own opening words: the panel has no on-screen
+  // keyboard, so a "name it" dialog would be a dead end. Rename it on Settings -> Routines.
+  function saveRoutine(text) {
+    const prompt = String(text || '').trim() || String(state.lastUserText || '').trim();
+    if (!prompt) return { ok: false, error: 'Nothing to save yet — type a request, or ask for something first.' };
+    const grid = deps.activeGrid && deps.activeGrid();
+    if (!grid || !grid.id) return { ok: false, error: 'Open an AI Chat page first.' };
+    const config = deps.getConfig();
+    if (!config.settings) config.settings = {};
+    if (!Array.isArray(config.settings.routines)) config.settings.routines = [];
+    const routine = routinesLib.normalizeRoutine({
+      prompt: prompt,
+      appPageId: grid.id,
+      profileId: (grid.options && grid.options.profilePick) || '',   // the profile this page is on right now
+      // ...and the folder it's in right now, so re-running lands in the same place. Chat-only
+      // backends have no working directory; normalizeRoutine keeps the blank.
+      folder: routinesLib.allowsFolder(grid) ? ((grid.options && grid.options.projectDir) || '') : '',
+      // ...and the permission mode the page is running under -- the same truth the Mode button
+      // shows: the live session's mode if one is running, else the page's stored pick. Backends
+      // with no modes report '' and it stays blank.
+      mode: (adapter.isRunning() && adapter.mode ? adapter.mode() : ((grid.options && grid.options.permissionMode) || '')),
+    });
+    if (!routine) return { ok: false, error: 'Nothing to save yet.' };
+    config.settings.routines.push(routine);
+    deps.saveConfig();
+    say('routine saved: "' + routine.name + '"');
+    return { ok: true, name: routine.name };
+  }
+
   // Sends one turn to the adapter. Returns false on send failure, else the speech-stream id (or
   // null). Queued dispatches defer their speech to the first delta (see the assistant-delta
   // handler) so the previous reply's spoken tail is never cut off.
@@ -219,6 +294,56 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
     return speechId;
   }
 
+  // The active page's AI profile (Smart Profiles): per-page pick resolved against the global
+  // library; '' or a deleted id falls back to the library's first entry (General Chat).
+  function currentProfile() {
+    const opts = deps.activeServedAppConfig(appId);
+    const settings = (deps.getConfig() || {}).settings;
+    return resolveAiProfile(settings, (opts && opts.options.profilePick) || '');
+  }
+  function panelProfileActive() { return currentProfile().id === PANEL_PROFILE.id; }
+  // The Panel Builder's JSON contract lives in CODE and is appended to whatever the (user-editable)
+  // profile text says, so editing the profile can change its wording but never break generation.
+  function profilePromptFor(prof) {
+    const base = (prof && prof.prompt) || '';
+    if (!prof || prof.id !== PANEL_PROFILE.id) return base;
+    return (base ? base + '\n\n' : '') + PANEL_SYSTEM_PROMPT;
+  }
+
+  // Panel Builder review: holds an AI-authored page until the user Accepts it on the panel.
+  const panelReview = createPanelReview({
+    existingIds: () => ((deps.getConfig() || {}).grids || []).map(g => g && g.id).filter(Boolean),
+    makeId: () => {
+      const used = ((deps.getConfig() || {}).grids || []).map(g => g && g.id);
+      let id;
+      do { id = 'g' + Math.random().toString(36).slice(2, 8); } while (used.indexOf(id) !== -1);
+      return id;
+    },
+    log: say,
+  });
+
+  // Panel Profile picker: persist the pick on the page, hand the prompt to the adapter (chat
+  // backends apply it on the next request; claude quietly restarts-with-resume; codex/copilot
+  // prefix their next turn), and tell every subscribed page.
+  function setProfile(id) {
+    if (typeof id !== 'string' || id.length > 64) return false;
+    const g = deps.activeGrid();
+    if (!ownsGrid(g)) return false;
+    if (!g.options) g.options = {};
+    g.options.profilePick = id;
+    deps.saveConfig();
+    const prof = currentProfile();
+    if (adapter.setProfilePrompt) adapter.setProfilePrompt(profilePromptFor(prof));
+    // Leaving Panel Builder drops any panel still awaiting review — it can't be accepted from
+    // another mode, and a stale proposal reappearing later would be baffling.
+    if (prof.id !== PANEL_PROFILE.id && panelReview.isActive()) {
+      panelReview.cancel();
+      broadcast({ type: 'panel-review', panel: panelReview.state() });
+    }
+    broadcast({ type: 'profile', id: prof.id, name: prof.name });
+    return true;
+  }
+
   function getState() {
     const opts = deps.activeServedAppConfig(appId);
     return Object.assign({}, state, {
@@ -231,6 +356,8 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
       projectDir: adapter.projectDir() || (opts && opts.options.projectDir) || '',
       transcript,
       meta: buildMeta(),
+      // A page reloaded mid-review (rotation, relaunch) repaints the pending panel from here.
+      panel: panelReview.state(),
     });
   }
   // Agent-specific page strings + pick lists; the shared page applies these over its claude-shaped
@@ -244,6 +371,11 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
       modes: adapter.listModes ? adapter.listModes() : [],
       models: adapter.listModels ? adapter.listModels() : [],
       approvalAlways: !!adapter.supportsAlwaysApproval,   // "Always" = approve + stop asking this session (codex acceptForSession)
+      // Backends without a working directory (owui/api chat) hide the page's folder button.
+      hasProject: brand.hasProject !== false,
+      // Smart Profiles: the global library (names only) + this page's current pick.
+      profiles: ((((deps.getConfig() || {}).settings || {}).aiProfiles) || []).map(p => ({ id: p.id, name: p.name })),
+      profile: currentProfile().id,
     };
   }
 
@@ -282,11 +414,40 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
     const v = validate(value);
     if (v == null) return false;
     const g = deps.activeGrid();
-    if (!(g && g.kind === 'app' && g.app === appId)) return false;
+    if (!ownsGrid(g)) return false;
     if (!g.options) g.options = {};
     g.options[key] = v;
     deps.saveConfig();
     return true;
+  }
+
+  // Commit the panel the user just approved: append it to the page list and persist. This is the
+  // only path from model output into config.grids, and it runs only after an explicit Accept (plus a
+  // second confirmation when the panel contains anything executable).
+  function panelAccept(confirmRisky, replace) {
+    const config = deps.getConfig();
+    if (!Array.isArray(config.grids)) return { ok: false, error: 'no page list to add to' };
+    // The page we'd replace may have been deleted in the editor since; fall back to adding.
+    const target = panelReview.state().replaces;
+    if (replace && (!target || !config.grids.some(g => g && g.id === target.id))) {
+      panelReview.forgetAccepted();
+      replace = false;
+    }
+    const r = panelReview.accept(!!confirmRisky, !!replace);
+    if (!r.ok) return r;
+    const at = r.replaceId ? config.grids.findIndex(g => g && g.id === r.replaceId) : -1;
+    if (at >= 0) config.grids[at] = r.page; else config.grids.push(r.page);
+    deps.saveConfig();
+    say('panel accepted: "' + r.page.name + '" ' + (at >= 0 ? 'replaced page ' : 'added as page ') + r.page.id);
+    broadcast({ type: 'panel-review', panel: panelReview.state() });
+    broadcast({ type: 'panel-accepted', id: r.page.id, name: r.page.name });
+    if (deps.gotoGrid) { try { deps.gotoGrid(r.page.id); } catch (e) {} }   // land on what was just built
+    return { ok: true, id: r.page.id, name: r.page.name };
+  }
+  function panelCancel() {
+    panelReview.cancel();
+    broadcast({ type: 'panel-review', panel: panelReview.state() });
+    return { ok: true };
   }
 
   function setPermissionMode(mode) {
@@ -308,7 +469,7 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
     // feeds the picker overlay's quick row. One combined saveConfig below.
     const g = deps.activeGrid();
     let cfgDirty = false;
-    if (g && g.kind === 'app' && g.app === appId) {
+    if (ownsGrid(g)) {
       if (!g.options) g.options = {};
       if (g.options.projectDir !== projectDir) { g.options.projectDir = projectDir; cfgDirty = true; }
     }
@@ -320,9 +481,12 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
     if (cfgDirty) deps.saveConfig();
     adapter.start({
       projectDir,
-      mode: opts.options.permissionMode,
+      // '' (the consolidated manifest's neutral default) must read as "adapter's own default",
+      // not as a real mode string.
+      mode: opts.options.permissionMode || undefined,
       model: opts.options.modelPick,
       approvalsEnabled: !!opts.options.approvalsEnabled,
+      profilePrompt: profilePromptFor(currentProfile()),
     });
     state = { running: true, status: 'idle', lastUserText: '', lastAssistantText: '', error: null };
     turnActive = false;
@@ -361,10 +525,8 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
   // Transcribes one VAD-trimmed utterance (raw 16kHz/16-bit/mono PCM, matching the page's mic
   // pipeline -- see claudevoice-vad.js) via the configured wyoming-faster-whisper host/port.
   async function transcribe(pcmBuffer) {
-    const opts = deps.activeServedAppConfig(appId);
-    const host = (opts && opts.options.wyomingHost) || '';
-    const port = (opts && opts.options.wyomingSttPort) || '';
-    if (!host || !port) return { ok: false, error: 'Wyoming host/STT port not configured' };
+    const { sttHost: host, sttPort: port } = deps.voiceEndpoints();
+    if (!host || !port) return { ok: false, error: 'STT host/port not configured (Settings → TTS/STT)' };
     try {
       const text = await wyoming.transcribe({ host, port, audio: pcmBuffer, rate: 16000, width: 2, channels: 1, log: say });
       if (isSttNoisePhrase(text)) {
@@ -383,9 +545,7 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
   // us the real sample rate/width/channels (Piper's rate can vary by voice model). Used by the
   // Test-speech button; real replies stream through the per-turn pipeline instead.
   async function synthesize(text, res) {
-    const opts = deps.activeServedAppConfig(appId);
-    const host = (opts && opts.options.wyomingHost) || '';
-    const port = (opts && opts.options.wyomingTtsPort) || '';
+    const { ttsHost: host, ttsPort: port } = deps.voiceEndpoints();
     text = speechLib.prepWholeSpeech(text);   // speech-only markdown cleanup lives server-side
     if (!host || !port || !text) { res.writeHead(400); res.end(); return; }
     let headerWritten = false;
@@ -422,6 +582,10 @@ function createVoicePanelHost({ appId, storageKey, log, adapter, branding, deps 
       getProjects,
       setOption,
       setPermissionMode,
+      setProfile,
+      panelAccept,
+      panelCancel,
+      saveRoutine,
       setModel: model => adapter.setModel(model),
       sessionStart: startSession,
       sessionStop: stopSession,

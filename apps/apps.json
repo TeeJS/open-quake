@@ -31,6 +31,43 @@
         "label": "Show date & day",
         "type": "bool",
         "default": true
+      },
+      {
+        "key": "weather",
+        "label": "Show weather",
+        "type": "bool",
+        "default": false
+      },
+      {
+        "key": "weatherCity",
+        "label": "City",
+        "type": "text",
+        "default": "",
+        "help": "e.g. \"Salt Lake City, US\" — looked up via Open-Meteo, no account or key needed.",
+        "showIf": {
+          "key": "weather",
+          "value": true
+        }
+      },
+      {
+        "key": "weatherUnit",
+        "label": "Units",
+        "type": "select",
+        "default": "f",
+        "choices": [
+          [
+            "f",
+            "°F"
+          ],
+          [
+            "c",
+            "°C"
+          ]
+        ],
+        "showIf": {
+          "key": "weather",
+          "value": true
+        }
       }
     ]
   },
@@ -46,8 +83,14 @@
         "type": "select",
         "default": "zoom",
         "choices": [
-          ["zoom", "Zoom"],
-          ["teams", "Teams"]
+          [
+            "zoom",
+            "Zoom"
+          ],
+          [
+            "teams",
+            "Teams"
+          ]
         ],
         "help": "Which platform the Meeting page opens to. Switching tabs on the panel still works for a one-off call on the other platform; this just sets what shows up by default."
       },
@@ -64,7 +107,10 @@
         "type": "text",
         "default": "alt+a",
         "help": "Zoom default: Alt+A (\"Mute/Unmute Audio\"). Must match whatever's actually assigned in Zoom → Settings → Keyboard Shortcuts, with \"Enable Global Shortcut\" checked so it works even when Zoom isn't focused.",
-        "showIf": { "key": "zoomUseDefaults", "value": false }
+        "showIf": {
+          "key": "zoomUseDefaults",
+          "value": false
+        }
       },
       {
         "key": "zoomVideo",
@@ -72,7 +118,10 @@
         "type": "text",
         "default": "alt+v",
         "help": "Zoom default: Alt+V (\"Start/Stop Video\").",
-        "showIf": { "key": "zoomUseDefaults", "value": false }
+        "showIf": {
+          "key": "zoomUseDefaults",
+          "value": false
+        }
       },
       {
         "key": "zoomAccept",
@@ -80,7 +129,10 @@
         "type": "text",
         "default": "control+shift+a",
         "help": "Zoom default: Ctrl+Shift+A (Zoom Phone's \"Accept inbound call\").",
-        "showIf": { "key": "zoomUseDefaults", "value": false }
+        "showIf": {
+          "key": "zoomUseDefaults",
+          "value": false
+        }
       },
       {
         "key": "zoomDecline",
@@ -88,7 +140,10 @@
         "type": "text",
         "default": "control+shift+d",
         "help": "Zoom default: Ctrl+Shift+D (Zoom Phone's \"Decline inbound call\").",
-        "showIf": { "key": "zoomUseDefaults", "value": false }
+        "showIf": {
+          "key": "zoomUseDefaults",
+          "value": false
+        }
       },
       {
         "key": "zoomLeave",
@@ -96,9 +151,19 @@
         "type": "text",
         "default": "alt+q",
         "help": "Zoom default: Alt+Q (\"Display prompt to end or leave meeting\") — this opens Zoom's leave/end confirmation dialog rather than leaving instantly; you'll still need to confirm it once (in Zoom, via mouse or Enter).",
-        "showIf": { "key": "zoomUseDefaults", "value": false }
+        "showIf": {
+          "key": "zoomUseDefaults",
+          "value": false
+        }
       }
     ]
+  },
+  {
+    "id": "diagnostics",
+    "name": "Device Diagnostics",
+    "file": "diagnosticsview.html",
+    "served": true,
+    "options": []
   },
   {
     "id": "music",
@@ -106,8 +171,18 @@
     "file": "musicview.html",
     "served": true,
     "options": [
-      { "key": "art", "label": "Show album art", "type": "bool", "default": true },
-      { "key": "lyrics", "label": "Show lyrics", "type": "bool", "default": false }
+      {
+        "key": "art",
+        "label": "Show album art",
+        "type": "bool",
+        "default": true
+      },
+      {
+        "key": "lyrics",
+        "label": "Show lyrics",
+        "type": "bool",
+        "default": false
+      }
     ]
   },
   {
@@ -143,150 +218,1190 @@
     "file": "office.html",
     "served": true,
     "options": [
-      { "key": "app1", "label": "App 1", "type": "select", "default": "teams", "choices": [["teams", "Teams"], ["outlook", "Outlook"], ["word", "Word"], ["excel", "Excel"], ["powerpoint", "PowerPoint"], ["onenote", "OneNote"], ["onedrive", "OneDrive"], ["office", "Microsoft 365"]] },
-      { "key": "mode1", "label": "App 1 launch", "type": "select", "default": "prefer-desktop", "choices": [["prefer-desktop", "Prefer desktop; fall back to web"], ["desktop", "Desktop app only"], ["web", "Web app"]] },
-      { "key": "desktopSwitch1", "label": "App 1 when already open", "type": "select", "default": "focus", "choices": [["focus", "Focus the app window"], ["shortcuts", "Keep Office panel visible; only switch shortcuts"]] },
-      { "key": "app1ShortcutCount", "label": "App 1 shortcuts", "type": "select", "default": "4", "choices": [["4", "4"], ["5", "5"], ["6", "6"], ["7", "7"], ["8", "8"]] },
-      { "key": "app2", "label": "App 2", "type": "select", "default": "outlook", "choices": [["teams", "Teams"], ["outlook", "Outlook"], ["word", "Word"], ["excel", "Excel"], ["powerpoint", "PowerPoint"], ["onenote", "OneNote"], ["onedrive", "OneDrive"], ["office", "Microsoft 365"]] },
-      { "key": "mode2", "label": "App 2 launch", "type": "select", "default": "prefer-desktop", "choices": [["prefer-desktop", "Prefer desktop; fall back to web"], ["desktop", "Desktop app only"], ["web", "Web app"]] },
-      { "key": "desktopSwitch2", "label": "App 2 when already open", "type": "select", "default": "focus", "choices": [["focus", "Focus the app window"], ["shortcuts", "Keep Office panel visible; only switch shortcuts"]] },
-      { "key": "app2ShortcutCount", "label": "App 2 shortcuts", "type": "select", "default": "4", "choices": [["4", "4"], ["5", "5"], ["6", "6"], ["7", "7"], ["8", "8"]] },
-      { "key": "app3", "label": "App 3", "type": "select", "default": "word", "choices": [["teams", "Teams"], ["outlook", "Outlook"], ["word", "Word"], ["excel", "Excel"], ["powerpoint", "PowerPoint"], ["onenote", "OneNote"], ["onedrive", "OneDrive"], ["office", "Microsoft 365"]] },
-      { "key": "mode3", "label": "App 3 launch", "type": "select", "default": "prefer-desktop", "choices": [["prefer-desktop", "Prefer desktop; fall back to web"], ["desktop", "Desktop app only"], ["web", "Web app"]] },
-      { "key": "desktopSwitch3", "label": "App 3 when already open", "type": "select", "default": "focus", "choices": [["focus", "Focus the app window"], ["shortcuts", "Keep Office panel visible; only switch shortcuts"]] },
-      { "key": "app3ShortcutCount", "label": "App 3 shortcuts", "type": "select", "default": "4", "choices": [["4", "4"], ["5", "5"], ["6", "6"], ["7", "7"], ["8", "8"]] },
-      { "key": "app4", "label": "App 4", "type": "select", "default": "excel", "choices": [["teams", "Teams"], ["outlook", "Outlook"], ["word", "Word"], ["excel", "Excel"], ["powerpoint", "PowerPoint"], ["onenote", "OneNote"], ["onedrive", "OneDrive"], ["office", "Microsoft 365"]] },
-      { "key": "mode4", "label": "App 4 launch", "type": "select", "default": "prefer-desktop", "choices": [["prefer-desktop", "Prefer desktop; fall back to web"], ["desktop", "Desktop app only"], ["web", "Web app"]] },
-      { "key": "desktopSwitch4", "label": "App 4 when already open", "type": "select", "default": "focus", "choices": [["focus", "Focus the app window"], ["shortcuts", "Keep Office panel visible; only switch shortcuts"]] },
-      { "key": "app4ShortcutCount", "label": "App 4 shortcuts", "type": "select", "default": "4", "choices": [["4", "4"], ["5", "5"], ["6", "6"], ["7", "7"], ["8", "8"]] },
-      { "key": "app1Shortcut1Icon", "label": "App 1 shortcut 1 icon", "type": "text", "default": "🎙️" },
-      { "key": "app1Shortcut1IconImage", "label": "App 1 shortcut 1 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut1Label", "label": "App 1 shortcut 1 label", "type": "text", "default": "Mute" },
-      { "key": "app1Shortcut1Keys", "label": "App 1 shortcut 1 keys", "type": "text", "default": "Ctrl+Shift+M" },
-      { "key": "app1Shortcut2Icon", "label": "App 1 shortcut 2 icon", "type": "text", "default": "📹" },
-      { "key": "app1Shortcut2IconImage", "label": "App 1 shortcut 2 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut2Label", "label": "App 1 shortcut 2 label", "type": "text", "default": "Camera" },
-      { "key": "app1Shortcut2Keys", "label": "App 1 shortcut 2 keys", "type": "text", "default": "Ctrl+Shift+O" },
-      { "key": "app1Shortcut3Icon", "label": "App 1 shortcut 3 icon", "type": "text", "default": "📞" },
-      { "key": "app1Shortcut3IconImage", "label": "App 1 shortcut 3 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut3Label", "label": "App 1 shortcut 3 label", "type": "text", "default": "Accept audio" },
-      { "key": "app1Shortcut3Keys", "label": "App 1 shortcut 3 keys", "type": "text", "default": "Ctrl+Shift+S" },
-      { "key": "app1Shortcut4Icon", "label": "App 1 shortcut 4 icon", "type": "text", "default": "📴" },
-      { "key": "app1Shortcut4IconImage", "label": "App 1 shortcut 4 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut4Label", "label": "App 1 shortcut 4 label", "type": "text", "default": "Hang up" },
-      { "key": "app1Shortcut4Keys", "label": "App 1 shortcut 4 keys", "type": "text", "default": "Ctrl+Shift+H" },
-      { "key": "app1Shortcut5Icon", "label": "App 1 shortcut 5 icon", "type": "text", "default": "⌨" },
-      { "key": "app1Shortcut5IconImage", "label": "App 1 shortcut 5 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut5Label", "label": "App 1 shortcut 5 label", "type": "text", "default": "Shortcut 5" },
-      { "key": "app1Shortcut5Keys", "label": "App 1 shortcut 5 keys", "type": "text", "default": "" },
-      { "key": "app1Shortcut6Icon", "label": "App 1 shortcut 6 icon", "type": "text", "default": "⌨" },
-      { "key": "app1Shortcut6IconImage", "label": "App 1 shortcut 6 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut6Label", "label": "App 1 shortcut 6 label", "type": "text", "default": "Shortcut 6" },
-      { "key": "app1Shortcut6Keys", "label": "App 1 shortcut 6 keys", "type": "text", "default": "" },
-      { "key": "app1Shortcut7Icon", "label": "App 1 shortcut 7 icon", "type": "text", "default": "⌨" },
-      { "key": "app1Shortcut7IconImage", "label": "App 1 shortcut 7 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut7Label", "label": "App 1 shortcut 7 label", "type": "text", "default": "Shortcut 7" },
-      { "key": "app1Shortcut7Keys", "label": "App 1 shortcut 7 keys", "type": "text", "default": "" },
-      { "key": "app1Shortcut8Icon", "label": "App 1 shortcut 8 icon", "type": "text", "default": "⌨" },
-      { "key": "app1Shortcut8IconImage", "label": "App 1 shortcut 8 icon image", "type": "text", "default": "" },
-      { "key": "app1Shortcut8Label", "label": "App 1 shortcut 8 label", "type": "text", "default": "Shortcut 8" },
-      { "key": "app1Shortcut8Keys", "label": "App 1 shortcut 8 keys", "type": "text", "default": "" },
-      { "key": "app2Shortcut1Icon", "label": "App 2 shortcut 1 icon", "type": "text", "default": "✉️" },
-      { "key": "app2Shortcut1IconImage", "label": "App 2 shortcut 1 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut1Label", "label": "App 2 shortcut 1 label", "type": "text", "default": "New message" },
-      { "key": "app2Shortcut1Keys", "label": "App 2 shortcut 1 keys", "type": "text", "default": "Ctrl+N" },
-      { "key": "app2Shortcut2Icon", "label": "App 2 shortcut 2 icon", "type": "text", "default": "↩️" },
-      { "key": "app2Shortcut2IconImage", "label": "App 2 shortcut 2 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut2Label", "label": "App 2 shortcut 2 label", "type": "text", "default": "Reply" },
-      { "key": "app2Shortcut2Keys", "label": "App 2 shortcut 2 keys", "type": "text", "default": "Ctrl+R" },
-      { "key": "app2Shortcut3Icon", "label": "App 2 shortcut 3 icon", "type": "text", "default": "↪️" },
-      { "key": "app2Shortcut3IconImage", "label": "App 2 shortcut 3 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut3Label", "label": "App 2 shortcut 3 label", "type": "text", "default": "Forward" },
-      { "key": "app2Shortcut3Keys", "label": "App 2 shortcut 3 keys", "type": "text", "default": "Ctrl+F" },
-      { "key": "app2Shortcut4Icon", "label": "App 2 shortcut 4 icon", "type": "text", "default": "🚀" },
-      { "key": "app2Shortcut4IconImage", "label": "App 2 shortcut 4 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut4Label", "label": "App 2 shortcut 4 label", "type": "text", "default": "Send" },
-      { "key": "app2Shortcut4Keys", "label": "App 2 shortcut 4 keys", "type": "text", "default": "Alt+S" },
-      { "key": "app2Shortcut5Icon", "label": "App 2 shortcut 5 icon", "type": "text", "default": "⌨" },
-      { "key": "app2Shortcut5IconImage", "label": "App 2 shortcut 5 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut5Label", "label": "App 2 shortcut 5 label", "type": "text", "default": "Shortcut 5" },
-      { "key": "app2Shortcut5Keys", "label": "App 2 shortcut 5 keys", "type": "text", "default": "" },
-      { "key": "app2Shortcut6Icon", "label": "App 2 shortcut 6 icon", "type": "text", "default": "⌨" },
-      { "key": "app2Shortcut6IconImage", "label": "App 2 shortcut 6 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut6Label", "label": "App 2 shortcut 6 label", "type": "text", "default": "Shortcut 6" },
-      { "key": "app2Shortcut6Keys", "label": "App 2 shortcut 6 keys", "type": "text", "default": "" },
-      { "key": "app2Shortcut7Icon", "label": "App 2 shortcut 7 icon", "type": "text", "default": "⌨" },
-      { "key": "app2Shortcut7IconImage", "label": "App 2 shortcut 7 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut7Label", "label": "App 2 shortcut 7 label", "type": "text", "default": "Shortcut 7" },
-      { "key": "app2Shortcut7Keys", "label": "App 2 shortcut 7 keys", "type": "text", "default": "" },
-      { "key": "app2Shortcut8Icon", "label": "App 2 shortcut 8 icon", "type": "text", "default": "⌨" },
-      { "key": "app2Shortcut8IconImage", "label": "App 2 shortcut 8 icon image", "type": "text", "default": "" },
-      { "key": "app2Shortcut8Label", "label": "App 2 shortcut 8 label", "type": "text", "default": "Shortcut 8" },
-      { "key": "app2Shortcut8Keys", "label": "App 2 shortcut 8 keys", "type": "text", "default": "" },
-      { "key": "app3Shortcut1Icon", "label": "App 3 shortcut 1 icon", "type": "text", "default": "📄" },
-      { "key": "app3Shortcut1IconImage", "label": "App 3 shortcut 1 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut1Label", "label": "App 3 shortcut 1 label", "type": "text", "default": "New document" },
-      { "key": "app3Shortcut1Keys", "label": "App 3 shortcut 1 keys", "type": "text", "default": "Ctrl+N" },
-      { "key": "app3Shortcut2Icon", "label": "App 3 shortcut 2 icon", "type": "text", "default": "💾" },
-      { "key": "app3Shortcut2IconImage", "label": "App 3 shortcut 2 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut2Label", "label": "App 3 shortcut 2 label", "type": "text", "default": "Save" },
-      { "key": "app3Shortcut2Keys", "label": "App 3 shortcut 2 keys", "type": "text", "default": "Ctrl+S" },
-      { "key": "app3Shortcut3Icon", "label": "App 3 shortcut 3 icon", "type": "text", "default": "🔍" },
-      { "key": "app3Shortcut3IconImage", "label": "App 3 shortcut 3 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut3Label", "label": "App 3 shortcut 3 label", "type": "text", "default": "Find" },
-      { "key": "app3Shortcut3Keys", "label": "App 3 shortcut 3 keys", "type": "text", "default": "Ctrl+F" },
-      { "key": "app3Shortcut4Icon", "label": "App 3 shortcut 4 icon", "type": "text", "default": "↶" },
-      { "key": "app3Shortcut4IconImage", "label": "App 3 shortcut 4 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut4Label", "label": "App 3 shortcut 4 label", "type": "text", "default": "Undo" },
-      { "key": "app3Shortcut4Keys", "label": "App 3 shortcut 4 keys", "type": "text", "default": "Ctrl+Z" },
-      { "key": "app3Shortcut5Icon", "label": "App 3 shortcut 5 icon", "type": "text", "default": "⌨" },
-      { "key": "app3Shortcut5IconImage", "label": "App 3 shortcut 5 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut5Label", "label": "App 3 shortcut 5 label", "type": "text", "default": "Shortcut 5" },
-      { "key": "app3Shortcut5Keys", "label": "App 3 shortcut 5 keys", "type": "text", "default": "" },
-      { "key": "app3Shortcut6Icon", "label": "App 3 shortcut 6 icon", "type": "text", "default": "⌨" },
-      { "key": "app3Shortcut6IconImage", "label": "App 3 shortcut 6 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut6Label", "label": "App 3 shortcut 6 label", "type": "text", "default": "Shortcut 6" },
-      { "key": "app3Shortcut6Keys", "label": "App 3 shortcut 6 keys", "type": "text", "default": "" },
-      { "key": "app3Shortcut7Icon", "label": "App 3 shortcut 7 icon", "type": "text", "default": "⌨" },
-      { "key": "app3Shortcut7IconImage", "label": "App 3 shortcut 7 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut7Label", "label": "App 3 shortcut 7 label", "type": "text", "default": "Shortcut 7" },
-      { "key": "app3Shortcut7Keys", "label": "App 3 shortcut 7 keys", "type": "text", "default": "" },
-      { "key": "app3Shortcut8Icon", "label": "App 3 shortcut 8 icon", "type": "text", "default": "⌨" },
-      { "key": "app3Shortcut8IconImage", "label": "App 3 shortcut 8 icon image", "type": "text", "default": "" },
-      { "key": "app3Shortcut8Label", "label": "App 3 shortcut 8 label", "type": "text", "default": "Shortcut 8" },
-      { "key": "app3Shortcut8Keys", "label": "App 3 shortcut 8 keys", "type": "text", "default": "" },
-      { "key": "app4Shortcut1Icon", "label": "App 4 shortcut 1 icon", "type": "text", "default": "📊" },
-      { "key": "app4Shortcut1IconImage", "label": "App 4 shortcut 1 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut1Label", "label": "App 4 shortcut 1 label", "type": "text", "default": "New workbook" },
-      { "key": "app4Shortcut1Keys", "label": "App 4 shortcut 1 keys", "type": "text", "default": "Ctrl+N" },
-      { "key": "app4Shortcut2Icon", "label": "App 4 shortcut 2 icon", "type": "text", "default": "💾" },
-      { "key": "app4Shortcut2IconImage", "label": "App 4 shortcut 2 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut2Label", "label": "App 4 shortcut 2 label", "type": "text", "default": "Save" },
-      { "key": "app4Shortcut2Keys", "label": "App 4 shortcut 2 keys", "type": "text", "default": "Ctrl+S" },
-      { "key": "app4Shortcut3Icon", "label": "App 4 shortcut 3 icon", "type": "text", "default": "🔍" },
-      { "key": "app4Shortcut3IconImage", "label": "App 4 shortcut 3 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut3Label", "label": "App 4 shortcut 3 label", "type": "text", "default": "Find" },
-      { "key": "app4Shortcut3Keys", "label": "App 4 shortcut 3 keys", "type": "text", "default": "Ctrl+F" },
-      { "key": "app4Shortcut4Icon", "label": "App 4 shortcut 4 icon", "type": "text", "default": "↶" },
-      { "key": "app4Shortcut4IconImage", "label": "App 4 shortcut 4 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut4Label", "label": "App 4 shortcut 4 label", "type": "text", "default": "Undo" },
-      { "key": "app4Shortcut4Keys", "label": "App 4 shortcut 4 keys", "type": "text", "default": "Ctrl+Z" },
-      { "key": "app4Shortcut5Icon", "label": "App 4 shortcut 5 icon", "type": "text", "default": "⌨" },
-      { "key": "app4Shortcut5IconImage", "label": "App 4 shortcut 5 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut5Label", "label": "App 4 shortcut 5 label", "type": "text", "default": "Shortcut 5" },
-      { "key": "app4Shortcut5Keys", "label": "App 4 shortcut 5 keys", "type": "text", "default": "" },
-      { "key": "app4Shortcut6Icon", "label": "App 4 shortcut 6 icon", "type": "text", "default": "⌨" },
-      { "key": "app4Shortcut6IconImage", "label": "App 4 shortcut 6 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut6Label", "label": "App 4 shortcut 6 label", "type": "text", "default": "Shortcut 6" },
-      { "key": "app4Shortcut6Keys", "label": "App 4 shortcut 6 keys", "type": "text", "default": "" },
-      { "key": "app4Shortcut7Icon", "label": "App 4 shortcut 7 icon", "type": "text", "default": "⌨" },
-      { "key": "app4Shortcut7IconImage", "label": "App 4 shortcut 7 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut7Label", "label": "App 4 shortcut 7 label", "type": "text", "default": "Shortcut 7" },
-      { "key": "app4Shortcut7Keys", "label": "App 4 shortcut 7 keys", "type": "text", "default": "" },
-      { "key": "app4Shortcut8Icon", "label": "App 4 shortcut 8 icon", "type": "text", "default": "⌨" },
-      { "key": "app4Shortcut8IconImage", "label": "App 4 shortcut 8 icon image", "type": "text", "default": "" },
-      { "key": "app4Shortcut8Label", "label": "App 4 shortcut 8 label", "type": "text", "default": "Shortcut 8" },
-      { "key": "app4Shortcut8Keys", "label": "App 4 shortcut 8 keys", "type": "text", "default": "" }
+      {
+        "key": "app1",
+        "label": "App 1",
+        "type": "select",
+        "default": "teams",
+        "choices": [
+          [
+            "teams",
+            "Teams"
+          ],
+          [
+            "outlook",
+            "Outlook"
+          ],
+          [
+            "word",
+            "Word"
+          ],
+          [
+            "excel",
+            "Excel"
+          ],
+          [
+            "powerpoint",
+            "PowerPoint"
+          ],
+          [
+            "onenote",
+            "OneNote"
+          ],
+          [
+            "onedrive",
+            "OneDrive"
+          ],
+          [
+            "office",
+            "Microsoft 365"
+          ]
+        ]
+      },
+      {
+        "key": "mode1",
+        "label": "App 1 launch",
+        "type": "select",
+        "default": "prefer-desktop",
+        "choices": [
+          [
+            "prefer-desktop",
+            "Prefer desktop; fall back to web"
+          ],
+          [
+            "desktop",
+            "Desktop app only"
+          ],
+          [
+            "web",
+            "Web app"
+          ]
+        ]
+      },
+      {
+        "key": "desktopSwitch1",
+        "label": "App 1 when already open",
+        "type": "select",
+        "default": "focus",
+        "choices": [
+          [
+            "focus",
+            "Focus the app window"
+          ],
+          [
+            "shortcuts",
+            "Keep Office panel visible; only switch shortcuts"
+          ]
+        ]
+      },
+      {
+        "key": "app1ShortcutCount",
+        "label": "App 1 shortcuts",
+        "type": "select",
+        "default": "4",
+        "choices": [
+          [
+            "4",
+            "4"
+          ],
+          [
+            "5",
+            "5"
+          ],
+          [
+            "6",
+            "6"
+          ],
+          [
+            "7",
+            "7"
+          ],
+          [
+            "8",
+            "8"
+          ]
+        ]
+      },
+      {
+        "key": "app2",
+        "label": "App 2",
+        "type": "select",
+        "default": "outlook",
+        "choices": [
+          [
+            "teams",
+            "Teams"
+          ],
+          [
+            "outlook",
+            "Outlook"
+          ],
+          [
+            "word",
+            "Word"
+          ],
+          [
+            "excel",
+            "Excel"
+          ],
+          [
+            "powerpoint",
+            "PowerPoint"
+          ],
+          [
+            "onenote",
+            "OneNote"
+          ],
+          [
+            "onedrive",
+            "OneDrive"
+          ],
+          [
+            "office",
+            "Microsoft 365"
+          ]
+        ]
+      },
+      {
+        "key": "mode2",
+        "label": "App 2 launch",
+        "type": "select",
+        "default": "prefer-desktop",
+        "choices": [
+          [
+            "prefer-desktop",
+            "Prefer desktop; fall back to web"
+          ],
+          [
+            "desktop",
+            "Desktop app only"
+          ],
+          [
+            "web",
+            "Web app"
+          ]
+        ]
+      },
+      {
+        "key": "desktopSwitch2",
+        "label": "App 2 when already open",
+        "type": "select",
+        "default": "focus",
+        "choices": [
+          [
+            "focus",
+            "Focus the app window"
+          ],
+          [
+            "shortcuts",
+            "Keep Office panel visible; only switch shortcuts"
+          ]
+        ]
+      },
+      {
+        "key": "app2ShortcutCount",
+        "label": "App 2 shortcuts",
+        "type": "select",
+        "default": "4",
+        "choices": [
+          [
+            "4",
+            "4"
+          ],
+          [
+            "5",
+            "5"
+          ],
+          [
+            "6",
+            "6"
+          ],
+          [
+            "7",
+            "7"
+          ],
+          [
+            "8",
+            "8"
+          ]
+        ]
+      },
+      {
+        "key": "app3",
+        "label": "App 3",
+        "type": "select",
+        "default": "word",
+        "choices": [
+          [
+            "teams",
+            "Teams"
+          ],
+          [
+            "outlook",
+            "Outlook"
+          ],
+          [
+            "word",
+            "Word"
+          ],
+          [
+            "excel",
+            "Excel"
+          ],
+          [
+            "powerpoint",
+            "PowerPoint"
+          ],
+          [
+            "onenote",
+            "OneNote"
+          ],
+          [
+            "onedrive",
+            "OneDrive"
+          ],
+          [
+            "office",
+            "Microsoft 365"
+          ]
+        ]
+      },
+      {
+        "key": "mode3",
+        "label": "App 3 launch",
+        "type": "select",
+        "default": "prefer-desktop",
+        "choices": [
+          [
+            "prefer-desktop",
+            "Prefer desktop; fall back to web"
+          ],
+          [
+            "desktop",
+            "Desktop app only"
+          ],
+          [
+            "web",
+            "Web app"
+          ]
+        ]
+      },
+      {
+        "key": "desktopSwitch3",
+        "label": "App 3 when already open",
+        "type": "select",
+        "default": "focus",
+        "choices": [
+          [
+            "focus",
+            "Focus the app window"
+          ],
+          [
+            "shortcuts",
+            "Keep Office panel visible; only switch shortcuts"
+          ]
+        ]
+      },
+      {
+        "key": "app3ShortcutCount",
+        "label": "App 3 shortcuts",
+        "type": "select",
+        "default": "4",
+        "choices": [
+          [
+            "4",
+            "4"
+          ],
+          [
+            "5",
+            "5"
+          ],
+          [
+            "6",
+            "6"
+          ],
+          [
+            "7",
+            "7"
+          ],
+          [
+            "8",
+            "8"
+          ]
+        ]
+      },
+      {
+        "key": "app4",
+        "label": "App 4",
+        "type": "select",
+        "default": "excel",
+        "choices": [
+          [
+            "teams",
+            "Teams"
+          ],
+          [
+            "outlook",
+            "Outlook"
+          ],
+          [
+            "word",
+            "Word"
+          ],
+          [
+            "excel",
+            "Excel"
+          ],
+          [
+            "powerpoint",
+            "PowerPoint"
+          ],
+          [
+            "onenote",
+            "OneNote"
+          ],
+          [
+            "onedrive",
+            "OneDrive"
+          ],
+          [
+            "office",
+            "Microsoft 365"
+          ]
+        ]
+      },
+      {
+        "key": "mode4",
+        "label": "App 4 launch",
+        "type": "select",
+        "default": "prefer-desktop",
+        "choices": [
+          [
+            "prefer-desktop",
+            "Prefer desktop; fall back to web"
+          ],
+          [
+            "desktop",
+            "Desktop app only"
+          ],
+          [
+            "web",
+            "Web app"
+          ]
+        ]
+      },
+      {
+        "key": "desktopSwitch4",
+        "label": "App 4 when already open",
+        "type": "select",
+        "default": "focus",
+        "choices": [
+          [
+            "focus",
+            "Focus the app window"
+          ],
+          [
+            "shortcuts",
+            "Keep Office panel visible; only switch shortcuts"
+          ]
+        ]
+      },
+      {
+        "key": "app4ShortcutCount",
+        "label": "App 4 shortcuts",
+        "type": "select",
+        "default": "4",
+        "choices": [
+          [
+            "4",
+            "4"
+          ],
+          [
+            "5",
+            "5"
+          ],
+          [
+            "6",
+            "6"
+          ],
+          [
+            "7",
+            "7"
+          ],
+          [
+            "8",
+            "8"
+          ]
+        ]
+      },
+      {
+        "key": "app1Shortcut1Icon",
+        "label": "App 1 shortcut 1 icon",
+        "type": "text",
+        "default": "🎙️"
+      },
+      {
+        "key": "app1Shortcut1IconImage",
+        "label": "App 1 shortcut 1 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut1Label",
+        "label": "App 1 shortcut 1 label",
+        "type": "text",
+        "default": "Mute"
+      },
+      {
+        "key": "app1Shortcut1Keys",
+        "label": "App 1 shortcut 1 keys",
+        "type": "text",
+        "default": "Ctrl+Shift+M"
+      },
+      {
+        "key": "app1Shortcut2Icon",
+        "label": "App 1 shortcut 2 icon",
+        "type": "text",
+        "default": "📹"
+      },
+      {
+        "key": "app1Shortcut2IconImage",
+        "label": "App 1 shortcut 2 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut2Label",
+        "label": "App 1 shortcut 2 label",
+        "type": "text",
+        "default": "Camera"
+      },
+      {
+        "key": "app1Shortcut2Keys",
+        "label": "App 1 shortcut 2 keys",
+        "type": "text",
+        "default": "Ctrl+Shift+O"
+      },
+      {
+        "key": "app1Shortcut3Icon",
+        "label": "App 1 shortcut 3 icon",
+        "type": "text",
+        "default": "📞"
+      },
+      {
+        "key": "app1Shortcut3IconImage",
+        "label": "App 1 shortcut 3 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut3Label",
+        "label": "App 1 shortcut 3 label",
+        "type": "text",
+        "default": "Accept audio"
+      },
+      {
+        "key": "app1Shortcut3Keys",
+        "label": "App 1 shortcut 3 keys",
+        "type": "text",
+        "default": "Ctrl+Shift+S"
+      },
+      {
+        "key": "app1Shortcut4Icon",
+        "label": "App 1 shortcut 4 icon",
+        "type": "text",
+        "default": "📴"
+      },
+      {
+        "key": "app1Shortcut4IconImage",
+        "label": "App 1 shortcut 4 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut4Label",
+        "label": "App 1 shortcut 4 label",
+        "type": "text",
+        "default": "Hang up"
+      },
+      {
+        "key": "app1Shortcut4Keys",
+        "label": "App 1 shortcut 4 keys",
+        "type": "text",
+        "default": "Ctrl+Shift+H"
+      },
+      {
+        "key": "app1Shortcut5Icon",
+        "label": "App 1 shortcut 5 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app1Shortcut5IconImage",
+        "label": "App 1 shortcut 5 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut5Label",
+        "label": "App 1 shortcut 5 label",
+        "type": "text",
+        "default": "Shortcut 5"
+      },
+      {
+        "key": "app1Shortcut5Keys",
+        "label": "App 1 shortcut 5 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut6Icon",
+        "label": "App 1 shortcut 6 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app1Shortcut6IconImage",
+        "label": "App 1 shortcut 6 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut6Label",
+        "label": "App 1 shortcut 6 label",
+        "type": "text",
+        "default": "Shortcut 6"
+      },
+      {
+        "key": "app1Shortcut6Keys",
+        "label": "App 1 shortcut 6 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut7Icon",
+        "label": "App 1 shortcut 7 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app1Shortcut7IconImage",
+        "label": "App 1 shortcut 7 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut7Label",
+        "label": "App 1 shortcut 7 label",
+        "type": "text",
+        "default": "Shortcut 7"
+      },
+      {
+        "key": "app1Shortcut7Keys",
+        "label": "App 1 shortcut 7 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut8Icon",
+        "label": "App 1 shortcut 8 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app1Shortcut8IconImage",
+        "label": "App 1 shortcut 8 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app1Shortcut8Label",
+        "label": "App 1 shortcut 8 label",
+        "type": "text",
+        "default": "Shortcut 8"
+      },
+      {
+        "key": "app1Shortcut8Keys",
+        "label": "App 1 shortcut 8 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut1Icon",
+        "label": "App 2 shortcut 1 icon",
+        "type": "text",
+        "default": "✉️"
+      },
+      {
+        "key": "app2Shortcut1IconImage",
+        "label": "App 2 shortcut 1 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut1Label",
+        "label": "App 2 shortcut 1 label",
+        "type": "text",
+        "default": "New message"
+      },
+      {
+        "key": "app2Shortcut1Keys",
+        "label": "App 2 shortcut 1 keys",
+        "type": "text",
+        "default": "Ctrl+N"
+      },
+      {
+        "key": "app2Shortcut2Icon",
+        "label": "App 2 shortcut 2 icon",
+        "type": "text",
+        "default": "↩️"
+      },
+      {
+        "key": "app2Shortcut2IconImage",
+        "label": "App 2 shortcut 2 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut2Label",
+        "label": "App 2 shortcut 2 label",
+        "type": "text",
+        "default": "Reply"
+      },
+      {
+        "key": "app2Shortcut2Keys",
+        "label": "App 2 shortcut 2 keys",
+        "type": "text",
+        "default": "Ctrl+R"
+      },
+      {
+        "key": "app2Shortcut3Icon",
+        "label": "App 2 shortcut 3 icon",
+        "type": "text",
+        "default": "↪️"
+      },
+      {
+        "key": "app2Shortcut3IconImage",
+        "label": "App 2 shortcut 3 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut3Label",
+        "label": "App 2 shortcut 3 label",
+        "type": "text",
+        "default": "Forward"
+      },
+      {
+        "key": "app2Shortcut3Keys",
+        "label": "App 2 shortcut 3 keys",
+        "type": "text",
+        "default": "Ctrl+F"
+      },
+      {
+        "key": "app2Shortcut4Icon",
+        "label": "App 2 shortcut 4 icon",
+        "type": "text",
+        "default": "🚀"
+      },
+      {
+        "key": "app2Shortcut4IconImage",
+        "label": "App 2 shortcut 4 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut4Label",
+        "label": "App 2 shortcut 4 label",
+        "type": "text",
+        "default": "Send"
+      },
+      {
+        "key": "app2Shortcut4Keys",
+        "label": "App 2 shortcut 4 keys",
+        "type": "text",
+        "default": "Alt+S"
+      },
+      {
+        "key": "app2Shortcut5Icon",
+        "label": "App 2 shortcut 5 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app2Shortcut5IconImage",
+        "label": "App 2 shortcut 5 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut5Label",
+        "label": "App 2 shortcut 5 label",
+        "type": "text",
+        "default": "Shortcut 5"
+      },
+      {
+        "key": "app2Shortcut5Keys",
+        "label": "App 2 shortcut 5 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut6Icon",
+        "label": "App 2 shortcut 6 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app2Shortcut6IconImage",
+        "label": "App 2 shortcut 6 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut6Label",
+        "label": "App 2 shortcut 6 label",
+        "type": "text",
+        "default": "Shortcut 6"
+      },
+      {
+        "key": "app2Shortcut6Keys",
+        "label": "App 2 shortcut 6 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut7Icon",
+        "label": "App 2 shortcut 7 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app2Shortcut7IconImage",
+        "label": "App 2 shortcut 7 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut7Label",
+        "label": "App 2 shortcut 7 label",
+        "type": "text",
+        "default": "Shortcut 7"
+      },
+      {
+        "key": "app2Shortcut7Keys",
+        "label": "App 2 shortcut 7 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut8Icon",
+        "label": "App 2 shortcut 8 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app2Shortcut8IconImage",
+        "label": "App 2 shortcut 8 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app2Shortcut8Label",
+        "label": "App 2 shortcut 8 label",
+        "type": "text",
+        "default": "Shortcut 8"
+      },
+      {
+        "key": "app2Shortcut8Keys",
+        "label": "App 2 shortcut 8 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut1Icon",
+        "label": "App 3 shortcut 1 icon",
+        "type": "text",
+        "default": "📄"
+      },
+      {
+        "key": "app3Shortcut1IconImage",
+        "label": "App 3 shortcut 1 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut1Label",
+        "label": "App 3 shortcut 1 label",
+        "type": "text",
+        "default": "New document"
+      },
+      {
+        "key": "app3Shortcut1Keys",
+        "label": "App 3 shortcut 1 keys",
+        "type": "text",
+        "default": "Ctrl+N"
+      },
+      {
+        "key": "app3Shortcut2Icon",
+        "label": "App 3 shortcut 2 icon",
+        "type": "text",
+        "default": "💾"
+      },
+      {
+        "key": "app3Shortcut2IconImage",
+        "label": "App 3 shortcut 2 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut2Label",
+        "label": "App 3 shortcut 2 label",
+        "type": "text",
+        "default": "Save"
+      },
+      {
+        "key": "app3Shortcut2Keys",
+        "label": "App 3 shortcut 2 keys",
+        "type": "text",
+        "default": "Ctrl+S"
+      },
+      {
+        "key": "app3Shortcut3Icon",
+        "label": "App 3 shortcut 3 icon",
+        "type": "text",
+        "default": "🔍"
+      },
+      {
+        "key": "app3Shortcut3IconImage",
+        "label": "App 3 shortcut 3 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut3Label",
+        "label": "App 3 shortcut 3 label",
+        "type": "text",
+        "default": "Find"
+      },
+      {
+        "key": "app3Shortcut3Keys",
+        "label": "App 3 shortcut 3 keys",
+        "type": "text",
+        "default": "Ctrl+F"
+      },
+      {
+        "key": "app3Shortcut4Icon",
+        "label": "App 3 shortcut 4 icon",
+        "type": "text",
+        "default": "↶"
+      },
+      {
+        "key": "app3Shortcut4IconImage",
+        "label": "App 3 shortcut 4 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut4Label",
+        "label": "App 3 shortcut 4 label",
+        "type": "text",
+        "default": "Undo"
+      },
+      {
+        "key": "app3Shortcut4Keys",
+        "label": "App 3 shortcut 4 keys",
+        "type": "text",
+        "default": "Ctrl+Z"
+      },
+      {
+        "key": "app3Shortcut5Icon",
+        "label": "App 3 shortcut 5 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app3Shortcut5IconImage",
+        "label": "App 3 shortcut 5 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut5Label",
+        "label": "App 3 shortcut 5 label",
+        "type": "text",
+        "default": "Shortcut 5"
+      },
+      {
+        "key": "app3Shortcut5Keys",
+        "label": "App 3 shortcut 5 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut6Icon",
+        "label": "App 3 shortcut 6 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app3Shortcut6IconImage",
+        "label": "App 3 shortcut 6 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut6Label",
+        "label": "App 3 shortcut 6 label",
+        "type": "text",
+        "default": "Shortcut 6"
+      },
+      {
+        "key": "app3Shortcut6Keys",
+        "label": "App 3 shortcut 6 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut7Icon",
+        "label": "App 3 shortcut 7 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app3Shortcut7IconImage",
+        "label": "App 3 shortcut 7 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut7Label",
+        "label": "App 3 shortcut 7 label",
+        "type": "text",
+        "default": "Shortcut 7"
+      },
+      {
+        "key": "app3Shortcut7Keys",
+        "label": "App 3 shortcut 7 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut8Icon",
+        "label": "App 3 shortcut 8 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app3Shortcut8IconImage",
+        "label": "App 3 shortcut 8 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app3Shortcut8Label",
+        "label": "App 3 shortcut 8 label",
+        "type": "text",
+        "default": "Shortcut 8"
+      },
+      {
+        "key": "app3Shortcut8Keys",
+        "label": "App 3 shortcut 8 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut1Icon",
+        "label": "App 4 shortcut 1 icon",
+        "type": "text",
+        "default": "📊"
+      },
+      {
+        "key": "app4Shortcut1IconImage",
+        "label": "App 4 shortcut 1 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut1Label",
+        "label": "App 4 shortcut 1 label",
+        "type": "text",
+        "default": "New workbook"
+      },
+      {
+        "key": "app4Shortcut1Keys",
+        "label": "App 4 shortcut 1 keys",
+        "type": "text",
+        "default": "Ctrl+N"
+      },
+      {
+        "key": "app4Shortcut2Icon",
+        "label": "App 4 shortcut 2 icon",
+        "type": "text",
+        "default": "💾"
+      },
+      {
+        "key": "app4Shortcut2IconImage",
+        "label": "App 4 shortcut 2 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut2Label",
+        "label": "App 4 shortcut 2 label",
+        "type": "text",
+        "default": "Save"
+      },
+      {
+        "key": "app4Shortcut2Keys",
+        "label": "App 4 shortcut 2 keys",
+        "type": "text",
+        "default": "Ctrl+S"
+      },
+      {
+        "key": "app4Shortcut3Icon",
+        "label": "App 4 shortcut 3 icon",
+        "type": "text",
+        "default": "🔍"
+      },
+      {
+        "key": "app4Shortcut3IconImage",
+        "label": "App 4 shortcut 3 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut3Label",
+        "label": "App 4 shortcut 3 label",
+        "type": "text",
+        "default": "Find"
+      },
+      {
+        "key": "app4Shortcut3Keys",
+        "label": "App 4 shortcut 3 keys",
+        "type": "text",
+        "default": "Ctrl+F"
+      },
+      {
+        "key": "app4Shortcut4Icon",
+        "label": "App 4 shortcut 4 icon",
+        "type": "text",
+        "default": "↶"
+      },
+      {
+        "key": "app4Shortcut4IconImage",
+        "label": "App 4 shortcut 4 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut4Label",
+        "label": "App 4 shortcut 4 label",
+        "type": "text",
+        "default": "Undo"
+      },
+      {
+        "key": "app4Shortcut4Keys",
+        "label": "App 4 shortcut 4 keys",
+        "type": "text",
+        "default": "Ctrl+Z"
+      },
+      {
+        "key": "app4Shortcut5Icon",
+        "label": "App 4 shortcut 5 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app4Shortcut5IconImage",
+        "label": "App 4 shortcut 5 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut5Label",
+        "label": "App 4 shortcut 5 label",
+        "type": "text",
+        "default": "Shortcut 5"
+      },
+      {
+        "key": "app4Shortcut5Keys",
+        "label": "App 4 shortcut 5 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut6Icon",
+        "label": "App 4 shortcut 6 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app4Shortcut6IconImage",
+        "label": "App 4 shortcut 6 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut6Label",
+        "label": "App 4 shortcut 6 label",
+        "type": "text",
+        "default": "Shortcut 6"
+      },
+      {
+        "key": "app4Shortcut6Keys",
+        "label": "App 4 shortcut 6 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut7Icon",
+        "label": "App 4 shortcut 7 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app4Shortcut7IconImage",
+        "label": "App 4 shortcut 7 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut7Label",
+        "label": "App 4 shortcut 7 label",
+        "type": "text",
+        "default": "Shortcut 7"
+      },
+      {
+        "key": "app4Shortcut7Keys",
+        "label": "App 4 shortcut 7 keys",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut8Icon",
+        "label": "App 4 shortcut 8 icon",
+        "type": "text",
+        "default": "⌨"
+      },
+      {
+        "key": "app4Shortcut8IconImage",
+        "label": "App 4 shortcut 8 icon image",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "app4Shortcut8Label",
+        "label": "App 4 shortcut 8 label",
+        "type": "text",
+        "default": "Shortcut 8"
+      },
+      {
+        "key": "app4Shortcut8Keys",
+        "label": "App 4 shortcut 8 keys",
+        "type": "text",
+        "default": ""
+      }
     ]
   },
   {
@@ -6166,11 +7281,26 @@
         "type": "select",
         "default": "600",
         "choices": [
-          ["60", "1 min"],
-          ["300", "5 min"],
-          ["600", "10 min"],
-          ["1800", "30 min"],
-          ["3600", "1 hour"]
+          [
+            "60",
+            "1 min"
+          ],
+          [
+            "300",
+            "5 min"
+          ],
+          [
+            "600",
+            "10 min"
+          ],
+          [
+            "1800",
+            "30 min"
+          ],
+          [
+            "3600",
+            "1 hour"
+          ]
         ]
       }
     ]
@@ -6181,7 +7311,11 @@
     "file": "agenda.html",
     "served": true,
     "dev": true,
-    "grid": { "cols": 3, "rows": 2, "defaults": [] },
+    "grid": {
+      "cols": 3,
+      "rows": 2,
+      "defaults": []
+    },
     "options": [
       {
         "key": "interval",
@@ -6189,11 +7323,26 @@
         "type": "select",
         "default": "600",
         "choices": [
-          ["60", "1 min"],
-          ["300", "5 min"],
-          ["600", "10 min"],
-          ["1800", "30 min"],
-          ["3600", "1 hour"]
+          [
+            "60",
+            "1 min"
+          ],
+          [
+            "300",
+            "5 min"
+          ],
+          [
+            "600",
+            "10 min"
+          ],
+          [
+            "1800",
+            "30 min"
+          ],
+          [
+            "3600",
+            "1 hour"
+          ]
         ]
       }
     ]
@@ -6204,7 +7353,11 @@
     "file": "events.html",
     "served": true,
     "dev": true,
-    "grid": { "cols": 3, "rows": 2, "defaults": [] },
+    "grid": {
+      "cols": 3,
+      "rows": 2,
+      "defaults": []
+    },
     "options": [
       {
         "key": "interval",
@@ -6212,11 +7365,26 @@
         "type": "select",
         "default": "600",
         "choices": [
-          ["60", "1 min"],
-          ["300", "5 min"],
-          ["600", "10 min"],
-          ["1800", "30 min"],
-          ["3600", "1 hour"]
+          [
+            "60",
+            "1 min"
+          ],
+          [
+            "300",
+            "5 min"
+          ],
+          [
+            "600",
+            "10 min"
+          ],
+          [
+            "1800",
+            "30 min"
+          ],
+          [
+            "3600",
+            "1 hour"
+          ]
         ]
       }
     ]
@@ -6229,110 +7397,367 @@
     "options": []
   },
   {
-    "id": "claude-voice",
-    "name": "Claude Code",
+    "id": "ai-voice",
+    "name": "AI Voice",
     "file": "claudevoiceview.html",
     "served": true,
     "options": [
-      { "key": "projectDir", "label": "Default folder", "type": "text", "default": "" },
-      { "key": "projectsRoot", "label": "Folders root (for the panel picker)", "type": "text", "default": "" },
-      { "key": "wyomingHost", "label": "Wyoming host (STT/TTS)", "type": "text", "default": "127.0.0.1" },
-      { "key": "wyomingSttPort", "label": "Wyoming STT port", "type": "text", "default": "10300" },
-      { "key": "wyomingTtsPort", "label": "Wyoming TTS port", "type": "text", "default": "10200" },
       {
-        "key": "permissionMode",
-        "label": "Permission mode",
+        "key": "backend",
+        "label": "Backend",
         "type": "select",
-        "default": "manual",
+        "default": "claude",
         "choices": [
-          ["manual", "Manual — ask before every action (touch approval on the panel)"],
-          ["acceptEdits", "Accept edits — auto-approve file changes"],
-          ["plan", "Plan — describe, don't act, until approved"],
-          ["bypassPermissions", "Full auto — no prompts (use with care)"]
+          [
+            "claude",
+            "Claude Code — CLI agent with tools"
+          ],
+          [
+            "codex",
+            "Codex — CLI agent with tools"
+          ],
+          [
+            "copilot",
+            "Copilot — CLI agent with tools"
+          ],
+          [
+            "owui",
+            "Open WebUI — your server (Auth tab connection)"
+          ],
+          [
+            "api",
+            "API endpoint — your own key (OpenAI, DeepSeek, OpenRouter, …)"
+          ]
         ]
       },
-      { "key": "approvalsEnabled", "label": "Touch approval when in Manual mode", "type": "bool", "default": true },
-    { "key": "chatFontSize", "label": "Chat text size (px)", "type": "text", "default": "16" },
-    { "key": "vadHangoverMs", "label": "Voice pause tolerance (ms)", "type": "text", "default": "800" },
-    { "key": "micDevice", "label": "Microphone (set from the panel Settings)", "type": "text", "default": "" },
-    { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
-    { "key": "modelPick", "label": "Model (set from the panel Settings; blank = account default)", "type": "text", "default": "" }
+      {
+        "key": "projectDir",
+        "label": "Default folder",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "projectsRoot",
+        "label": "Folders root (for the panel picker)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "permissionMode",
+        "label": "Permission mode (choices depend on the backend)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "profilePick",
+        "label": "AI profile (see Settings → AI Profiles)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "approvalsEnabled",
+        "label": "Touch approval when in Manual mode (Claude Code)",
+        "type": "bool",
+        "default": true
+      },
+      {
+        "key": "apiBaseUrl",
+        "label": "API endpoint base URL (OpenAI-compatible)",
+        "type": "text",
+        "default": "https://api.openai.com/v1"
+      },
+      {
+        "key": "apiKey",
+        "label": "API endpoint key",
+        "type": "secret",
+        "default": ""
+      },
+      {
+        "key": "apiModel",
+        "label": "API model (e.g. gpt-4o-mini)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "chatFontSize",
+        "label": "Chat text size (px)",
+        "type": "text",
+        "default": "16"
+      },
+      {
+        "key": "vadHangoverMs",
+        "label": "Voice pause tolerance (ms)",
+        "type": "text",
+        "default": "400"
+      },
+      {
+        "key": "micDevice",
+        "label": "Microphone (set from the panel Settings)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "spkDevice",
+        "label": "Speaker (set from the panel Settings)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "modelPick",
+        "label": "Model (set from the panel Settings; blank = default)",
+        "type": "text",
+        "default": ""
+      }
     ]
   },
   {
-    "id": "codex-voice",
-    "name": "Codex",
-    "file": "claudevoiceview.html",
+    "id": "lucidtype",
+    "name": "LucidType",
+    "file": "lucidtypeview.html",
+    "served": true,
+    "options": []
+  },
+  {
+    "id": "livetranslate",
+    "name": "Live Translate",
+    "file": "livetranslateview.html",
     "served": true,
     "options": [
-      { "key": "projectDir", "label": "Default folder", "type": "text", "default": "" },
-      { "key": "projectsRoot", "label": "Folders root (for the panel picker)", "type": "text", "default": "" },
-      { "key": "wyomingHost", "label": "Wyoming host (STT/TTS)", "type": "text", "default": "127.0.0.1" },
-      { "key": "wyomingSttPort", "label": "Wyoming STT port", "type": "text", "default": "10300" },
-      { "key": "wyomingTtsPort", "label": "Wyoming TTS port", "type": "text", "default": "10200" },
       {
-        "key": "permissionMode",
-        "label": "Mode",
+        "key": "provider",
+        "label": "Translation provider",
         "type": "select",
-        "default": "ask-for-approval",
+        "default": "soniox",
         "choices": [
-          ["read-only", "Read Only — Codex can read files in the workspace; approval required to edit files or access the internet"],
-          ["ask-for-approval", "Ask for approval — Codex can read, edit, and run commands in the workspace; approval required for the internet or other files"],
-          ["approve-for-me", "Approve for me — only ask for actions detected as potentially unsafe"],
-          ["full-access", "Full Access — Codex can edit files outside the workspace and use the internet without asking (use with caution)"]
+          [
+            "soniox",
+            "Soniox — cloud real-time translation (recommended)"
+          ],
+          [
+            "ai",
+            "AI translate — your own API key (DeepSeek, OpenAI, …)"
+          ]
         ]
       },
-      { "key": "chatFontSize", "label": "Chat text size (px)", "type": "text", "default": "16" },
-      { "key": "vadHangoverMs", "label": "Voice pause tolerance (ms)", "type": "text", "default": "800" },
-      { "key": "micDevice", "label": "Microphone (set from the panel Settings)", "type": "text", "default": "" },
-      { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
-      { "key": "modelPick", "label": "Model (blank = account default)", "type": "text", "default": "" }
+      {
+        "key": "sonioxApiKey",
+        "label": "Soniox API key",
+        "type": "secret",
+        "default": ""
+      },
+      {
+        "key": "aiBaseUrl",
+        "label": "AI endpoint base URL (OpenAI-compatible)",
+        "type": "text",
+        "default": "https://api.deepseek.com"
+      },
+      {
+        "key": "aiApiKey",
+        "label": "AI endpoint API key",
+        "type": "secret",
+        "default": ""
+      },
+      {
+        "key": "aiModel",
+        "label": "AI model (e.g. deepseek-v4-flash)",
+        "type": "text",
+        "default": "deepseek-v4-flash"
+      },
+      {
+        "key": "targetLanguage",
+        "label": "Target language code (e.g. en, es, de)",
+        "type": "text",
+        "default": "en"
+      },
+      {
+        "key": "sourceHint",
+        "label": "Source language hint (optional, e.g. de)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "vadHangoverMs",
+        "label": "Voice pause tolerance (ms, AI provider)",
+        "type": "text",
+        "default": "800"
+      },
+      {
+        "key": "targetLangLabel",
+        "label": "Panel label override (optional)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "saveToFile",
+        "label": "Save transcript to a file",
+        "type": "bool",
+        "default": false
+      },
+      {
+        "key": "saveFolder",
+        "label": "Save folder (blank = Documents\\OpenQuake Translations)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "micDevice",
+        "label": "Microphone (set from the panel Settings)",
+        "type": "text",
+        "default": ""
+      },
+      {
+        "key": "micHotkey",
+        "label": "Toggle-translation hotkey (global)",
+        "type": "text",
+        "default": ""
+      }
     ]
   },
   {
-    "id": "copilot-voice",
-    "name": "Copilot",
-    "file": "claudevoiceview.html",
+    "id": "screensaver",
+    "name": "Screensaver",
+    "file": "screensaverview.html",
     "served": true,
     "options": [
-      { "key": "projectDir", "label": "Default folder", "type": "text", "default": "" },
-      { "key": "projectsRoot", "label": "Folders root (for the panel picker)", "type": "text", "default": "" },
-      { "key": "wyomingHost", "label": "Wyoming host (STT/TTS)", "type": "text", "default": "127.0.0.1" },
-      { "key": "wyomingSttPort", "label": "Wyoming STT port", "type": "text", "default": "10300" },
-      { "key": "wyomingTtsPort", "label": "Wyoming TTS port", "type": "text", "default": "10200" },
       {
-        "key": "permissionMode",
-        "label": "Mode",
-        "type": "select",
-        "default": "manual",
-        "choices": [
-          ["manual", "Manual — ask before every action (touch approval on the panel)"],
-          ["plan", "Plan — describe, don't act, until approved"],
-          ["auto", "Approve for me — file changes and commands run automatically"],
-          ["autopilot", "Full auto — runs until the task is done, no prompts at all"]
-        ]
+        "key": "showScenes",
+        "label": "Built-in scenes",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
       },
-      { "key": "chatFontSize", "label": "Chat text size (px)", "type": "text", "default": "16" },
-      { "key": "vadHangoverMs", "label": "Voice pause tolerance (ms)", "type": "text", "default": "800" },
-      { "key": "micDevice", "label": "Microphone (set from the panel Settings)", "type": "text", "default": "" },
-      { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
-      { "key": "modelPick", "label": "Model (blank = account default)", "type": "text", "default": "" }
-    ]
-  },
-  {
-    "id": "owui-voice",
-    "name": "Open WebUI Voice",
-    "file": "claudevoiceview.html",
-    "served": true,
-    "options": [
-      { "key": "wyomingHost", "label": "Wyoming host (STT/TTS)", "type": "text", "default": "127.0.0.1" },
-      { "key": "wyomingSttPort", "label": "Wyoming STT port", "type": "text", "default": "10300" },
-      { "key": "wyomingTtsPort", "label": "Wyoming TTS port", "type": "text", "default": "10200" },
-      { "key": "chatFontSize", "label": "Chat text size (px)", "type": "text", "default": "16" },
-      { "key": "vadHangoverMs", "label": "Voice pause tolerance (ms)", "type": "text", "default": "800" },
-      { "key": "micDevice", "label": "Microphone (set from the panel Settings)", "type": "text", "default": "" },
-      { "key": "spkDevice", "label": "Speaker (set from the panel Settings)", "type": "text", "default": "" },
-      { "key": "modelPick", "label": "Model (set from the panel Settings; blank = the Auth tab's default model)", "type": "text", "default": "" }
+      {
+        "key": "showPhotos",
+        "label": "My photos",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
+      },
+      {
+        "key": "showVideos",
+        "label": "My videos",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
+      },
+      {
+        "key": "sceneWaves",
+        "label": "Waves",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
+      },
+      {
+        "key": "sceneStarfield",
+        "label": "Starfield",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
+      },
+      {
+        "key": "sceneLava",
+        "label": "Lava lamp",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
+      },
+      {
+        "key": "sceneFireflies",
+        "label": "Fireflies",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
+      },
+      {
+        "key": "sceneFlurry",
+        "label": "Flurry",
+        "type": "bool",
+        "default": true,
+        "editorCustom": true
+      },
+      {
+        "key": "imageStyle",
+        "label": "Photo style",
+        "type": "select",
+        "default": "slide",
+        "choices": [
+          [
+            "slide",
+            "Slideshow (one at a time)"
+          ],
+          [
+            "collage",
+            "Collage (scrapbook pile)"
+          ]
+        ],
+        "showIf": {
+          "key": "showPhotos",
+          "value": true
+        },
+        "help": "Collage fills the screen with tilted prints (a new one every 0.5-1.5s), then holds the finished board for the interval. Videos always play full-screen."
+      },
+      {
+        "key": "imageFit",
+        "label": "Photos",
+        "type": "select",
+        "default": "cover",
+        "choices": [
+          [
+            "cover",
+            "Crop to fill the screen"
+          ],
+          [
+            "contain",
+            "Don't crop (letterbox)"
+          ]
+        ],
+        "showIf": [
+          {
+            "key": "showPhotos",
+            "value": true
+          },
+          {
+            "key": "imageStyle",
+            "value": "slide"
+          }
+        ],
+        "help": "Applies to slideshow photos only — videos are never cropped (they letterbox unless they're already 1920×480)."
+      },
+      {
+        "key": "intervalSec",
+        "label": "Change every (s)",
+        "type": "text",
+        "default": "10",
+        "help": "Seconds per photo/scene. Videos always play through to the end instead; a finished collage board is displayed for this long."
+      },
+      {
+        "key": "shuffle",
+        "label": "Shuffle",
+        "type": "bool",
+        "default": false,
+        "inline": "Shuffle the order"
+      },
+      {
+        "key": "idleMinutes",
+        "label": "Idle auto-start",
+        "type": "text",
+        "default": "30",
+        "help": "Minutes of no input; 0 = never. With no panel touches or knob turns for this long, the panel switches to this page by itself; any input returns to the page you were on. Panel mode only. 0 disables auto-start — the page then only appears manually or in rotation."
+      },
+      {
+        "key": "photosDir",
+        "label": "Photos folder",
+        "type": "text",
+        "default": "",
+        "serverOnly": true
+      },
+      {
+        "key": "videosDir",
+        "label": "Videos folder",
+        "type": "text",
+        "default": "",
+        "serverOnly": true
+      }
     ]
   }
 ]

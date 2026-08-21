@@ -95,7 +95,7 @@ document.querySelectorAll('.seg').forEach(function (b) {
 // ---- utility rail ----
 $('volDown').innerHTML = '<span class="ic">' + ICON.minus + '</span>';
 $('volUp').innerHTML = '<span class="ic">' + ICON.plus + '</span>';
-$('ic-settings').innerHTML = ICON.gear;
+$('ic-settings').innerHTML = ICON.mic;   // the row opens the mic picker — a gear next to "Mic" reads as app settings
 $('ic-share').innerHTML = ICON.share;
 $('volDown').onclick = function () { fireAction('system', 'voldown', 'Volume down').then(pollState); };
 $('volUp').onclick = function () { fireAction('system', 'volup', 'Volume up').then(pollState); };
@@ -128,6 +128,62 @@ function fmtDur(ms) {
 function tick() {
   if (curState.recording && curState.startedAt) $('pillDur').textContent = fmtDur(Date.now() - curState.startedAt);
 }
+// =====================================================================================
+// Utility columns (Control / Slide Capture / Highlight) — all opt-in from the top bar and all
+// closed on a fresh install. The open set is remembered in the config rather than localStorage:
+// the panel server binds an ephemeral port, so web storage is wiped on every app launch.
+// =====================================================================================
+var PANELS = [
+  { key: 'ctl',   btn: 'btnCtlPanel',   cls: 'pctl' },
+  { key: 'slide', btn: 'btnSlidePanel', cls: 'pslide' },
+  { key: 'hl',    btn: 'btnHlPanel',    cls: 'phl' },
+];
+var panelsOpen = {};
+var panelsRestored = false;
+
+function syncPanels() {
+  PANELS.forEach(function (p) {
+    document.body.classList.toggle(p.cls, !!panelsOpen[p.key]);
+    $(p.btn).classList.toggle('on', !!panelsOpen[p.key]);
+  });
+}
+function togglePanel(key) {
+  panelsOpen[key] = !panelsOpen[key];
+  syncPanels();
+  var csv = PANELS.filter(function (p) { return panelsOpen[p.key]; }).map(function (p) { return p.key; }).join(',');
+  fetch('/meeting-set-panels/' + encodeURIComponent(csv), { cache: 'no-store' }).catch(function () {});
+}
+PANELS.forEach(function (p) { $(p.btn).onclick = function () { togglePanel(p.key); }; });
+
+// =====================================================================================
+// Highlight column — tap to open a span, tap again to close it. Offsets are measured against the
+// recording's start in main; the page only renders what /meeting-state.highlight reports.
+// =====================================================================================
+var hlState = { enabled: false, canHighlight: false, highlighting: false, spanMs: 0, count: 0 };
+function applyHighlight(h) {
+  hlState = h || hlState;
+  document.body.classList.toggle('hlon', !!hlState.enabled);
+  if (!hlState.enabled) return;
+  document.body.classList.toggle('highlighting', !!hlState.highlighting);
+  var live = !!hlState.highlighting;
+  $('hlToggle').querySelector('.hlbl').textContent = live ? 'Stop highlighting' : 'Start highlighting';
+  // Nothing recording = nothing to flag; the button stays visible but inert (matches slide capture).
+  $('hlToggle').classList.toggle('sdis', !hlState.canHighlight && !live);
+  $('hlClear').classList.toggle('sdis', !live);
+  var st = $('hlStat');
+  if (live) st.innerHTML = 'Highlighting · <b>' + fmtDur(hlState.spanMs) + '</b>';
+  else if (!hlState.canHighlight) st.textContent = 'Start a recording to add highlights';
+  else if (hlState.count) st.innerHTML = '<b>' + hlState.count + '</b> highlight' + (hlState.count === 1 ? '' : 's') + ' this meeting';
+  else st.textContent = 'Ready · flags moments for the notes';
+}
+function hlCmd(path) {
+  return fetch(path, { cache: 'no-store' }).then(function (r) { return r.json(); })
+    .then(function (r) { if (r && r.error) statusShow(r.error, true); if (r && r.state) applyHighlight(r.state); return r; })
+    .catch(function () { statusShow('Highlight command failed', true); });
+}
+$('hlToggle').onclick = function () { if ($('hlToggle').classList.contains('sdis')) return; hlCmd(hlState.highlighting ? '/highlight/stop' : '/highlight/start'); };
+$('hlClear').onclick = function () { if ($('hlClear').classList.contains('sdis')) return; hlCmd('/highlight/cancel'); };
+
 function applyState(st) {
   curState = st || curState;
   if (!micInitialized) { savedMicLabel = curState.mic || ''; micInitialized = true; syncMic(); }
@@ -147,6 +203,14 @@ function applyState(st) {
   wrap.classList.toggle('drawer-open', drawerManual);
   $('recPanel').classList.toggle('details', live);
   if (curState.slide) applySlide(curState.slide);
+  if (curState.highlight) applyHighlight(curState.highlight);
+  // Restore the remembered column set once, from the first poll that carries it — after that
+  // the buttons own the state and a later poll must not undo a tap just made.
+  if (!panelsRestored && typeof curState.panelsOpen === 'string') {
+    panelsRestored = true;
+    curState.panelsOpen.split(',').forEach(function (k) { if (k) panelsOpen[k] = true; });
+    syncPanels();
+  }
   $('recFile').textContent = curState.file ? ('Saving ' + curState.file) : ' ';
   tick();
 }
@@ -559,6 +623,7 @@ function anPoll() {
     var queued = (st.queue || []).length;
     if (st.running) { n.textContent = 'Analyzing ' + splitRel(st.name).base + ' — ' + fmtDur(Date.now() - st.startedAt) + (queued ? ' · ' + queued + ' queued' : ''); n.classList.remove('err'); }
     else if (st.error) { n.textContent = splitRel(st.error.name).base + ': ' + st.error.error; n.classList.add('err'); }
+    else if (st.joplin && st.joplin.ok === false) { n.textContent = 'Joplin note failed (' + st.joplin.name + '): ' + st.joplin.error; n.classList.add('err'); }
     else { n.textContent = ''; n.classList.remove('err'); }
     var fin = (st.lastDone && st.lastDone.finishedAt) || 0;
     var finErr = (st.error && st.error.finishedAt) || 0;

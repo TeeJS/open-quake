@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>LucidType</title>
+<style>
+  * { box-sizing:border-box; }
+  :root {
+    --bg:#05080d; --fg:#e8eef6; --muted:#c2d1e0; --dim:#8194a8; --surf:#16232f; --surf2:#0e1822;
+    --tile-bd:#2a3b4e; --accent:#7CFFB2; --danger:#ff5a5a;
+    --danger-tint:rgba(255,90,90,.16);
+  }
+  body.light { --bg:#e6ecf3; --fg:#12202c; --muted:#37485a; --dim:#5b6b7a; --surf:#ffffff; --surf2:#dde5ee;
+    --tile-bd:#c3cfdb; --danger:#e23b3b; --danger-tint:rgba(226,59,59,.12); }
+  html, body { margin:0; width:100%; height:100%; }
+  html, body, button, input, select, textarea { font-family:"Segoe UI", system-ui, sans-serif; }
+  body { background:var(--bg); color:var(--fg); overflow:hidden; touch-action:manipulation; }
+  button { border:none; background:none; color:inherit; cursor:pointer; }
+
+  .press { transition:transform .12s ease, filter .12s ease, box-shadow .12s ease, background .12s ease; }
+  .press:active { transform:scale(.96); filter:brightness(1.12); }
+
+  #wrap { display:flex; flex-direction:column; width:100vw; height:100vh; padding:22px; gap:14px; }
+  #actions:empty { display:none; }   /* reserved strip adds no gap while empty, so the text box keeps its height */
+
+  /* ---- header ---- (the whole top row is 56px tall — the text box below keeps all remaining height) */
+  #topbar { flex:0 0 auto; display:flex; align-items:center; gap:16px; min-height:56px; }
+  #title { font-size:26px; font-weight:800; letter-spacing:.5px; }
+  #title .accent { color:var(--accent); }
+  #status { font-size:16px; color:var(--dim); font-weight:600; }
+  #spacer { flex:1; }
+  /* recording indicator — upper right */
+  #recHost { display:flex; align-items:center; }
+  #recIdle { display:flex; align-items:center; gap:12px; height:52px; padding:0 22px; border-radius:12px;
+    background:var(--surf); color:var(--dim); font-size:18px; font-weight:700; }
+  #recIdle .dot { width:13px; height:13px; border-radius:50%; background:var(--dim); }
+  #recLive { display:none; align-items:center; gap:14px; height:52px; padding:0 22px; border-radius:12px; background:var(--danger-tint); }
+  #recLive .dot { width:14px; height:14px; border-radius:50%; background:var(--danger); animation:pulse 1.4s infinite; }
+  #recLive .txt { font-size:18px; font-weight:800; color:var(--danger); letter-spacing:.5px; }
+  body.dictating #recIdle { display:none; }
+  body.dictating #recLive { display:flex; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  /* header buttons (right of the logo) — filled to the header height for readability */
+  #btnClear, #btnShowOrig, #btnDictate, #btnAppend { height:52px; padding:0 24px; border-radius:12px; background:var(--surf); color:var(--fg); font-size:19px; font-weight:700; }
+  #btnShowOrig { display:none; background:var(--accent); color:var(--accent-fg,#04121f); }
+  #btnDictate { background:var(--accent); color:var(--accent-fg,#04121f); }        /* Start Dictating (green) */
+  #btnDictate.rec { background:var(--danger); color:#1a0505; }                     /* Stop Dictating (red) while active */
+  #btnAppend:disabled { opacity:.4; }
+
+  /* ---- reserved strip above the text (future buttons; empty in Phase 1) ---- */
+  #actions:not(:empty) { flex:0 0 auto; display:flex; gap:12px; align-items:center; }
+
+  /* ---- body: big text + button box ---- */
+  #body { flex:1; display:flex; gap:16px; min-height:0; }
+  #textwrap { flex:1; background:var(--surf2); border-radius:18px; padding:8px; display:flex; min-height:0; }
+  #text { flex:1; width:100%; height:100%; resize:none; border:none; outline:none; background:transparent;
+    color:var(--fg); font-size:26px; line-height:1.4; padding:16px 18px; }
+  #text::placeholder { color:var(--dim); }
+
+  /* right box: a top-anchored button stack */
+  #rail { flex:0 0 240px; background:var(--surf2); border-radius:18px; padding:16px; display:flex;
+    flex-direction:column; justify-content:flex-start; gap:12px; }
+  .railbtn { min-height:64px; border-radius:12px; background:var(--surf); color:var(--fg); font-size:22px;
+    font-weight:800; display:flex; align-items:center; justify-content:center; }
+  .railbtn.accent { background:var(--accent); color:var(--accent-fg,#04121f); }
+  /* current rewrite mode — plain text under Select Mode */
+  #modeText { text-align:center; font-size:26px; font-weight:800; color:var(--accent); padding:6px 0 2px; cursor:pointer; }
+
+  /* review overlay (Cleanup / Rewrite) — full-screen, opaque; needs the room for big paragraphs */
+  #ltReviewOverlay { background:var(--bg); }
+  .revcard { width:100%; height:100%; max-height:100%; background:var(--surf2); border:none; border-radius:0; padding:22px 24px; display:flex; flex-direction:column; }
+  .revtitle { font-size:20px; font-weight:800; margin-bottom:14px; }
+  .revcols { display:flex; gap:16px; flex:1; min-height:0; }
+  .revcol { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .revlabel { font-size:12px; font-weight:800; letter-spacing:1px; color:var(--dim); margin-bottom:6px; }
+  .revpane { flex:1; min-height:150px; background:var(--surf); border-radius:12px; padding:16px 18px;
+    font-size:20px; line-height:1.4; overflow-y:auto; white-space:pre-wrap; word-break:break-word; }
+  textarea.revpane { border:1px solid var(--accent); outline:none; color:var(--fg); resize:none; }
+  .revpane .del { color:var(--danger); text-decoration:line-through; }
+  .revactions { display:flex; justify-content:space-between; align-items:center; margin-top:16px; }
+  .revbtns { display:flex; gap:12px; }
+  .ovlbtn2 { min-height:48px; min-width:96px; border-radius:11px; background:var(--surf); color:var(--fg); font-size:16px; font-weight:800; }
+  .revscroll .ovlbtn2 { min-width:78px; font-size:20px; }
+
+  /* rewrite mode picker */
+  .moderow { min-height:60px; display:flex; align-items:center; padding:0 20px; border-radius:12px; background:var(--surf);
+    font-size:19px; font-weight:700; margin-bottom:12px; cursor:pointer; }
+  .moderow.on { background:var(--accent); color:var(--accent-fg,#04121f); }
+  .moderow .rd { width:18px; height:18px; border-radius:50%; border:2px solid var(--dim); margin-right:16px; flex:none; }
+  .moderow.on .rd { border-color:var(--accent-fg,#04121f); background:radial-gradient(circle, var(--accent-fg,#04121f) 42%, transparent 46%); }
+
+  /* settings overlay — opened from the Settings button, like the voice apps */
+  .ovl { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:30; }
+  .ovl.hidden { display:none; }
+  .ovlcard { width:min(900px,92%); background:var(--surf2); border:1px solid var(--tile-bd); border-radius:16px; padding:22px; }
+  .ovltitle { font-size:20px; font-weight:800; margin-bottom:16px; }
+  .ovlcard .srow { min-height:56px; display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding:12px 16px; border-radius:12px; background:var(--surf); font-size:17px; font-weight:600; }
+  .ovlsel { flex:1; max-width:65%; height:48px; border-radius:10px; background:var(--surf2); color:var(--fg);
+    border:1px solid var(--tile-bd); font-size:16px; font-weight:600; padding:0 12px; }
+  .ovlhint { font-size:13px; color:var(--dim); line-height:1.45; margin-top:12px; }
+  .ovlbtn { min-height:48px; min-width:100px; border-radius:11px; background:var(--accent); color:var(--accent-fg,#04121f); font-size:16px; font-weight:800; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="topbar">
+      <div id="title">Lucid<span class="accent">Type</span></div>
+      <button id="btnDictate" class="press">Start Dictating</button>
+      <button id="btnAppend" class="press">Append Text</button>
+      <button id="btnClear" class="press">Clear Text</button>
+      <button id="btnShowOrig" class="press">Show Original</button>
+      <div id="status"></div>
+      <div id="spacer"></div>
+      <div id="recHost">
+        <div id="recIdle"><span class="dot"></span>Idle</div>
+        <div id="recLive"><span class="dot"></span><span class="txt">DICTATING</span></div>
+      </div>
+    </div>
+
+    <!-- Buttons above the text: reserved for a later phase. Dictation start/stop and apply are
+         driven entirely by the global hotkeys, not on-screen buttons. -->
+    <div id="actions"></div>
+
+    <div id="body">
+      <div id="textwrap">
+        <textarea id="text" placeholder="Press your dictation hotkey and speak — your words appear here. Edit freely, then press your apply hotkey to paste at your cursor."></textarea>
+      </div>
+      <div id="rail">
+        <button id="btnSettings" class="railbtn press">Settings</button>
+        <button id="btnCleanup" class="railbtn accent press">Cleanup</button>
+        <button id="btnRewrite" class="railbtn accent press">Rewrite</button>
+        <button id="btnMode" class="railbtn press">Select Mode</button>
+        <div id="modeText">Professional</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ltReviewOverlay" class="ovl hidden">
+    <div class="revcard">
+      <div class="revtitle" id="revTitle">Review</div>
+      <div class="revcols">
+        <div class="revcol"><div class="revlabel">ORIGINAL</div><div class="revpane" id="revOrig"></div></div>
+        <div class="revcol"><div class="revlabel">PROPOSED (editable)</div><textarea class="revpane" id="revProp"></textarea></div>
+      </div>
+      <div class="revactions">
+        <div class="revscroll" style="display:flex;gap:12px"><button id="revUp" class="ovlbtn2 press">▲</button><button id="revDown" class="ovlbtn2 press">▼</button></div>
+        <div class="revbtns"><button id="revRefine" class="ovlbtn2 press">Refine</button><button id="revCancel" class="ovlbtn2 press">Cancel</button><button id="revApply" class="ovlbtn press">Apply</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ltModeOverlay" class="ovl hidden">
+    <div class="ovlcard">
+      <div class="ovltitle">Rewrite mode</div>
+      <div class="moderow" data-mode="professional"><span class="rd"></span>Professional</div>
+      <div class="moderow" data-mode="concise"><span class="rd"></span>Concise</div>
+      <div class="moderow" data-mode="confident"><span class="rd"></span>Confident</div>
+      <div class="moderow" data-mode="custom"><span class="rd"></span>Custom</div>
+    </div>
+  </div>
+
+  <div id="ltSettingsOverlay" class="ovl hidden">
+    <div class="ovlcard">
+      <div class="ovltitle">LucidType settings</div>
+      <div class="srow">Microphone
+        <select id="ltOvlMic" class="ovlsel"><option value="">System default</option></select></div>
+      <p class="ovlhint">The mic used for dictation. Hotkeys, pause tolerance and the transcription server live in the open-quake editor — this page's own settings.</p>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px"><button id="btnSettingsClose" class="ovlbtn press">Done</button></div>
+    </div>
+  </div>
+<script src="lucidtypeview.js"></script>
+</body>
+</html>

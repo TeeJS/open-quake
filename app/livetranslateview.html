@@ -1,0 +1,176 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Live Translate</title>
+<style>
+  * { box-sizing: border-box; }
+  :root { --bg:#05080d; --fg:#e8eef6; --muted:#9fb3c8; --dim:#7e93ab; --surf:#131f2c; --surf2:#0e1822;
+    --tile-bd:#233245; --accent:#7CFFB2; --danger:#ff5a5a; --warn:#ffb454; }
+  body.light { --bg:#e6ecf3; --fg:#12202c; --muted:#566573; --dim:#68798a; --surf:#f3f6f9; --surf2:#e6ecf2; --tile-bd:#c7d2dc; }
+  html, body { margin: 0; width: 100%; height: 100%; }
+  body { background: var(--bg); color: var(--fg); overflow: hidden;
+    font-family: "Segoe UI", system-ui, sans-serif; touch-action: manipulation; }
+  #wrap { display: flex; flex-direction: row; width: 100vw; height: 100vh; padding: 14px 18px 16px 24px; gap: 16px; }
+  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+
+  /* Primary: the live (English) transcript. Captions style -- clean stacked lines, newest at the
+     bottom, oldest dimmed, large for arm's-length reading. The still-transcribing utterance shows a
+     placeholder line with a blinking accent cursor. */
+  #card { flex: 1; min-height: 0; overflow-y: auto; background: var(--surf); border: 1px solid var(--tile-bd);
+    border-radius: 14px; padding: 18px 24px; display: flex; flex-direction: column; justify-content: flex-end; gap: 14px;
+    touch-action: pan-y; overscroll-behavior: contain; }
+  #empty { color: var(--dim); font-size: 20px; text-align: center; margin: auto; }
+  .line { font-size: 26px; line-height: 1.4; overflow-wrap: break-word; color: var(--muted); }
+  .line.recent { color: var(--fg); }
+  .line.live { color: var(--fg); }
+  .line.live::after { content: ""; display: inline-block; width: 12px; height: 26px; margin-left: 6px;
+    background: var(--accent); vertical-align: -4px; border-radius: 2px; animation: oqxblink 1s step-end infinite; }
+  @keyframes oqxblink { 50% { opacity: 0; } }
+
+  #statusRow { flex: 0 0 auto; display: flex; gap: 16px; align-items: baseline; min-height: 18px; user-select: none; }
+  #status { font-size: 13px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+  #status.listening { color: var(--accent); }
+  #status.error { color: var(--danger); }
+  #srcInfo { font-size: 13px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Control rail -- 284px, mirrors the voice apps' right panel. */
+  #rail { flex: 0 0 284px; display: flex; flex-direction: column; gap: 14px; align-items: center;
+    justify-content: space-between; user-select: none; }
+  #title { width: 100%; text-align: center; font-size: 24px; font-weight: 700; }
+  #target { width: 100%; min-height: 56px; border-radius: 14px; border: 1px solid var(--tile-bd);
+    background: var(--surf); display: flex; align-items: center; justify-content: center; gap: 10px;
+    font-size: 22px; font-weight: 700; }
+  #target .arrow { color: var(--dim); font-weight: 600; font-size: 18px; }
+  #target .lang { color: var(--accent); }
+
+  .iconBtn { position: relative; width: 116px; height: 116px; border-radius: 50%; border: 2px solid var(--tile-bd);
+    background: linear-gradient(160deg, var(--surf), var(--surf2)); cursor: pointer; color: var(--fg);
+    display: flex; align-items: center; justify-content: center; transition: transform .08s ease; }
+  .iconBtn:active { transform: scale(.92); }
+  .iconBtn svg.glyph { width: 48%; height: 48%; fill: currentColor; position: relative; z-index: 2; }
+  .iconBtn.on { border-color: var(--accent); }
+  .iconBtn.off svg.glyph { opacity: .45; }
+  .iconBtn svg.ban { display: none; }
+  .iconBtn.off svg.ban { display: block; position: absolute; inset: 6%; width: 88%; height: 88%; z-index: 3;
+    fill: none; stroke: var(--danger); stroke-width: 1.6; stroke-linecap: round; }
+  #micRipples { position: absolute; inset: 0; pointer-events: none; z-index: 1; }
+  .ripple { position: absolute; left: 50%; top: 50%; width: 90px; height: 90px; margin: -45px 0 0 -45px;
+    border: 2px solid var(--accent); border-radius: 50%; opacity: .6; animation: oqxripple 1.1s ease-out forwards; }
+  @keyframes oqxripple { from { transform: scale(.6); opacity: .6; } to { transform: scale(2.1); opacity: 0; } }
+
+  #railBtns { width: 100%; display: flex; flex-direction: column; gap: 14px; }
+  .vpBtn { width: 100%; min-height: 64px; border-radius: 14px; border: 1px solid var(--tile-bd); background: var(--surf);
+    color: var(--fg); font-size: 19px; font-weight: 600; cursor: pointer; padding: 8px 10px;
+    display: flex; align-items: center; justify-content: center; gap: 10px; }
+  .vpBtn:active { background: var(--surf2); }
+  .vpBtn .sub { font-size: 14px; font-weight: 700; color: var(--dim); }
+  .vpBtn.on { border-color: var(--accent); }
+  .vpBtn.on .sub { color: var(--accent); }
+  #srcPill { font-size: 13px; color: var(--dim); text-align: center; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; width: 100%; }
+
+  button:focus:not(:focus-visible) { outline: none; }
+
+  /* Settings overlay: microphone pick (opens the device picker below). */
+  #settingsOverlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
+    align-items: center; justify-content: center; padding: 18px; z-index: 40; user-select: none; }
+  #settingsOverlay.hidden { display: none; }
+  #settingsCard { width: min(720px, 100%); max-height: 100%; overflow: hidden; display: flex; flex-direction: column;
+    background: var(--surf); border: 1px solid var(--tile-bd); border-radius: 16px; padding: 16px 24px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.4); }
+  #settingsTitle { font-size: 18px; font-weight: 700; margin-bottom: 12px; }
+  #settingsCard .srow { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+  #settingsCard .hint { font-size: 13px; color: var(--dim); }
+  .slabel { flex: 1; font-size: 18px; }
+  .stepBtn { width: 56px; height: 56px; border-radius: 12px; border: 1px solid var(--tile-bd);
+    background: var(--surf2); color: var(--fg); font-size: 28px; font-weight: 700; cursor: pointer; }
+  .stepBtn:active { background: var(--tile-bd); }
+  .stepVal { min-width: 92px; text-align: center; font-size: 20px; font-weight: 600; }
+  .pickRow { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 60px; margin-bottom: 12px;
+    border-radius: 12px; border: 1px solid var(--tile-bd); background: var(--surf2); color: var(--fg);
+    cursor: pointer; padding: 8px 18px; font-family: inherit; }
+  .pickRow:active { background: var(--tile-bd); }
+  .pickName { font-size: 18px; font-weight: 600; flex: 0 0 auto; }
+  .pickVal { flex: 1; min-width: 0; text-align: right; font-size: 17px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pickChevron { flex: 0 0 auto; font-size: 22px; color: var(--dim); }
+  #settingsClose { min-height: 48px; min-width: 96px; border-radius: 10px; border: none;
+    background: var(--accent); color: var(--accent-fg, #04120b); font-size: 15px; font-weight: 700; cursor: pointer; }
+
+  /* Device picker overlay (microphone): full-height, one uniform row per device, ▲/▼ page buttons. */
+  #devOverlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex;
+    align-items: center; justify-content: center; padding: 14px; z-index: 46; user-select: none; }
+  #devOverlay.hidden { display: none; }
+  #devCard { width: min(1200px, 100%); height: 100%; background: var(--surf); border: 1px solid var(--tile-bd);
+    border-radius: 16px; padding: 14px 20px; box-shadow: 0 12px 40px rgba(0,0,0,.4); display: flex; flex-direction: column; gap: 10px; }
+  #devTitleRow { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
+  #devTitle { font-size: 20px; font-weight: 700; }
+  #devCancel { margin-left: auto; min-height: 56px; min-width: 140px; border-radius: 12px;
+    border: 1px solid var(--tile-bd); background: var(--surf2); color: var(--fg); font-size: 19px; font-weight: 600; cursor: pointer; }
+  #devListWrap { flex: 1; min-height: 0; display: flex; gap: 10px; }
+  #devList { flex: 1; min-width: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+    touch-action: pan-y; overscroll-behavior: contain; scrollbar-width: none; }
+  #devList::-webkit-scrollbar { display: none; }
+  #devScrollBtns { flex: 0 0 56px; display: flex; flex-direction: column; gap: 10px; }
+  .projScrollBtn { flex: 1; min-height: 48px; border-radius: 12px; border: 1px solid var(--tile-bd);
+    background: var(--surf2); color: var(--fg); font-size: 26px; cursor: pointer; touch-action: none; }
+  .projScrollBtn:active { background: var(--tile-bd); }
+  .devRow { flex: 0 0 auto; min-height: 64px; border-radius: 12px; border: 1px solid var(--tile-bd);
+    background: var(--surf2); color: var(--fg); font-size: 26px; font-weight: 600; cursor: pointer;
+    text-align: left; padding: 8px 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .devRow:active { background: var(--tile-bd); }
+  .devRow.current { background: var(--accent); color: var(--accent-fg, #04120b); border-color: transparent; }
+</style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="main">
+      <div id="card"><div id="empty">Not listening — tap the microphone to start live translation.</div><div id="list"></div></div>
+      <div id="statusRow"><div id="status">IDLE</div><div id="srcInfo"></div></div>
+    </div>
+    <div id="rail">
+      <div id="title">Live Translate</div>
+      <div id="target"><span class="arrow">translating to</span> <span class="lang" id="targetLang">English</span></div>
+      <button id="micBtn" class="iconBtn off" type="button" title="Tap to start/stop live translation">
+        <div id="micRipples"></div>
+        <svg class="glyph" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2h-2v2a5 5 0 0 1-10 0v-2H5z"/><rect x="11" y="18.4" width="2" height="2.9"/><rect x="8" y="21.3" width="8" height="1.8" rx=".9"/></svg>
+        <svg class="ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.6"/><line x1="4.6" y1="4.6" x2="19.4" y2="19.4"/></svg>
+      </button>
+      <div id="railBtns">
+        <button id="saveBtn" class="vpBtn" type="button">💾 Save to file <span class="sub" id="saveState">OFF</span></button>
+        <button id="settingsBtn" class="vpBtn" type="button">Settings</button>
+      </div>
+      <div id="srcPill"></div>
+    </div>
+  </div>
+  <div id="settingsOverlay" class="hidden">
+    <div id="settingsCard">
+      <div id="settingsTitle">Settings</div>
+      <button id="micPickBtn" class="pickRow" type="button">
+        <span class="pickName">Microphone</span><span id="micPickVal" class="pickVal"></span><span class="pickChevron">›</span>
+      </button>
+      <div class="srow" id="pauseRow"><span class="slabel">Voice pause tolerance</span>
+        <button id="pauseMinus" class="stepBtn" type="button">–</button>
+        <span id="pauseVal" class="stepVal"></span>
+        <button id="pausePlus" class="stepBtn" type="button">+</button></div>
+      <p class="hint" id="pauseHint" style="margin:0 0 12px">Pause tolerance = how long you can go quiet mid-sentence before the utterance is sent for translation (AI provider).</p>
+      <div class="srow" style="justify-content:flex-end;margin:0"><button id="settingsClose" type="button">Done</button></div>
+    </div>
+  </div>
+  <div id="devOverlay" class="hidden">
+    <div id="devCard">
+      <div id="devTitleRow"><div id="devTitle">Microphone</div><button id="devCancel" type="button">Cancel</button></div>
+      <div id="devListWrap">
+        <div id="devList"></div>
+        <div id="devScrollBtns">
+          <button id="devScrollUp" class="projScrollBtn" type="button">▲</button>
+          <button id="devScrollDown" class="projScrollBtn" type="button">▼</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <script src="claudevoice-vad.js"></script>
+  <script src="livetranslateview.js"></script>
+</body>
+</html>

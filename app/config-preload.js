@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   getAppVersion() { return ipcRenderer.invoke('getAppVersion'); },
   getApps() { return ipcRenderer.invoke('getApps'); },
   saveConfig(config) { return ipcRenderer.invoke('saveConfigFromEditor', config); },
+  // Fired when something outside the editor changed config (an accepted AI panel, a counter tile).
+  onConfigChangedExternally(cb) { ipcRenderer.on('configChangedExternally', () => cb()); },
   listOAuthProviders() { return ipcRenderer.invoke('listOAuthProviders'); },
   connectOAuthProvider(provider, scopes) { return ipcRenderer.invoke('connectOAuthProvider', provider, scopes); },
   disconnectOAuthProvider(provider) { return ipcRenderer.invoke('disconnectOAuthProvider', provider); },
@@ -32,8 +34,14 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   setLighting(lighting) { ipcRenderer.send('setLighting', lighting); },
   saveLightingToDevice() { return ipcRenderer.invoke('saveLightingToDevice'); },
   listRunningApps() { return ipcRenderer.invoke('listRunningApps'); },
+  getVoiceModes() { return ipcRenderer.invoke('getVoiceModes'); },
+  runRoutine(id) { return ipcRenderer.invoke('runRoutine', id); },
+  focusPage(id) { return ipcRenderer.invoke('focusPage', id); },
+  // Run-mode picker: reopen the first-run welcome window. A mode change applies live on Save.
+  openWelcome() { return ipcRenderer.invoke('openWelcome'); },
   // Global Home Assistant cache: registries + dashboards in main's memory; per-entity states lazy.
   getHaCache() { return ipcRenderer.invoke('getHaCache'); },
+  getEmojiIndex() { return ipcRenderer.invoke('getEmojiIndex'); },
   refreshHaCache() { return ipcRenderer.invoke('refreshHaCache'); },
   fetchHaEntityState(entityId) { return ipcRenderer.invoke('fetchHaEntityState', entityId); },
   // Claude Code voice app: candidate project directories under the configured projects root (Phase 3).
@@ -48,6 +56,9 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   probeVoiceCli(appId) { return ipcRenderer.invoke('probeVoiceCli', appId); },
   // Auth tab: test the saved Open WebUI connection (normalize URL + list models with the key).
   probeOwui(url, apiKey) { return ipcRenderer.invoke('probeOwui', url, apiKey); },
+  probeApiModels(url, apiKey) { return ipcRenderer.invoke('probeApiModels', url, apiKey); },
+  // Screensaver: open the effective photos/videos folder in Explorer (auto-creating it first).
+  openScreensaverMedia(dir, kind) { return ipcRenderer.invoke('openScreensaverMedia', dir, kind); },
   pathToFileURL(filePath) {
     try { return pathToFileURL(filePath).href; }
     catch (e) { return ''; }

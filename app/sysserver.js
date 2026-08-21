@@ -62,6 +62,8 @@ const STATIC_FILES = {
   '/owui-widget.css': 'text/css; charset=utf-8',
   '/musicview.js': 'application/javascript; charset=utf-8',
   '/meetingview.js': 'application/javascript; charset=utf-8',
+  '/lucidtypeview.js': 'application/javascript; charset=utf-8',
+  '/lucidtype-dictate.js': 'application/javascript; charset=utf-8',
   '/chatview-config.js': 'application/javascript; charset=utf-8',
   '/chatview-main.js': 'application/javascript; charset=utf-8',
   '/chatview-ptt.js': 'application/javascript; charset=utf-8',
@@ -73,10 +75,13 @@ const STATIC_FILES = {
   '/schedule-app.js': 'application/javascript; charset=utf-8',
   '/keyshortcutsview.js': 'application/javascript; charset=utf-8',
   '/claudevoiceview.js': 'application/javascript; charset=utf-8',
+  '/livetranslateview.js': 'application/javascript; charset=utf-8',
+  '/screensaverview.js': 'application/javascript; charset=utf-8',
   '/claudevoice-vad.js': 'application/javascript; charset=utf-8',
   '/recorderview.js': 'application/javascript; charset=utf-8',
   '/system-audio-capture.js': 'application/javascript; charset=utf-8',
   '/slidecapture-view.js': 'application/javascript; charset=utf-8',
+  '/diagnosticsview.js': 'application/javascript; charset=utf-8',
 };
 for (const appId of ['teams', 'outlook', 'word', 'excel', 'powerpoint', 'onenote', 'onedrive', 'office']) {
   STATIC_FILES['/office-icons/' + appId + '.svg'] = 'image/svg+xml; charset=utf-8';
@@ -86,7 +91,13 @@ let server = null, onMedia = null, onLaunch = null, getGridTiles = null, getAppC
 let getMeetingState = null, onMeetingRecord = null;   // meeting recorder: panel poller + start/stop/setMic remote
 let onMeetingLibrary = null, resolveMeetingAudio = null;   // recordings library + transcription/analysis remotes
 let onSlide = null;   // slide capture: window list / select / start / stop / manual remote
-let musicHtml = FALLBACK, chatHtml = FALLBACK, officeHtml = FALLBACK, hascheduleHtml = FALLBACK, agendaHtml = FALLBACK, eventsHtml = FALLBACK, meetingHtml = FALLBACK, keyshortcutsHtml = FALLBACK, recorderHtml = FALLBACK, slideHtml = FALLBACK;
+let onHighlight = null;   // mid-meeting highlights: start / stop / cancel remote
+let getDeviceDiagnostics = null;   // Device Diagnostics served app: live Display/Touch/Knob snapshot
+let getLucidState = null, onLucidDictation = null, onLucidApply = null, onLucidEdit = null, onLucidSetMic = null;   // LucidType dictation: panel poller + start/stop + apply + edit-sync + on-panel mic pick
+let onLucidCleanup = null, onLucidRewrite = null, onLucidReview = null, onLucidSetMode = null;   // LucidType cleanup/rewrite (Phase 2): run + review apply/refine/cancel + rewrite-mode pick
+const lucidSubscribers = new Set();   // open SSE responses for the LucidType page (pushed by main via lucidBroadcast)
+let diagnosticsHtml = FALLBACK;
+let musicHtml = FALLBACK, chatHtml = FALLBACK, officeHtml = FALLBACK, hascheduleHtml = FALLBACK, agendaHtml = FALLBACK, eventsHtml = FALLBACK, meetingHtml = FALLBACK, keyshortcutsHtml = FALLBACK, recorderHtml = FALLBACK, slideHtml = FALLBACK, lucidtypeHtml = FALLBACK, lucidtypeDictateHtml = FALLBACK;
 // Claude Code voice app wiring (all optional, supplied via start(opts) -- see main.js).
 // Voice-panel app registry: appId (also the URL path prefix) -> { handlers, voiceToken, htmlFile,
 // htmlContent }. `handlers` is a voicepanel-host.js handlers object; every voice app shares the
@@ -169,6 +180,9 @@ const MIME = {
   '.woff2': 'font/woff2',
   '.ttf': 'font/ttf',
   '.otf': 'font/otf',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',   // plays only when the codecs are H.264/AAC (Electron's ffmpeg)
 };
 function mimeFor(file) { return MIME[path.extname(file).toLowerCase()] || 'application/octet-stream'; }
 function serveDropInApp(url, res) {
@@ -192,6 +206,33 @@ function serveDropInApp(url, res) {
     res.end(body);
   });
   return true;
+}
+
+// Shared Range-capable file streamer (meeting audio, screensaver media). Chromium <audio>/<video>
+// seek with single-range requests, so honor bytes=a-b with a 206; anything else gets the whole
+// file. A null path, missing file, or non-file 404s.
+function streamFileRange(req, res, filePath, contentType) {
+  let st = null;
+  if (filePath) { try { st = fs.statSync(filePath); } catch (e) {} }
+  if (!st || !st.isFile()) { res.writeHead(404); res.end(); return; }
+  const h = headers(contentType);
+  h['Accept-Ranges'] = 'bytes';
+  const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  if (m && (m[1] || m[2])) {
+    let first = m[1] ? parseInt(m[1], 10) : st.size - parseInt(m[2], 10);
+    let last = (m[1] && m[2]) ? parseInt(m[2], 10) : st.size - 1;
+    if (!Number.isFinite(first) || first < 0) first = 0;
+    if (!Number.isFinite(last) || last >= st.size) last = st.size - 1;
+    if (first > last || first >= st.size) { res.writeHead(416, { 'Content-Range': 'bytes */' + st.size }); res.end(); return; }
+    h['Content-Range'] = 'bytes ' + first + '-' + last + '/' + st.size;
+    h['Content-Length'] = last - first + 1;
+    res.writeHead(206, h);
+    fs.createReadStream(filePath, { start: first, end: last }).pipe(res);
+  } else {
+    h['Content-Length'] = st.size;
+    res.writeHead(200, h);
+    fs.createReadStream(filePath).pipe(res);
+  }
 }
 
 function requestingAppId(req) {
@@ -437,9 +478,14 @@ const VOICE_POST_SUFFIXES = new Set([
   '/session/start',
   '/session/stop',
   '/permission-mode',
+  '/profile',
+  '/panel-accept',
+  '/routine-save',
+  '/panel-cancel',
   '/model',
   '/tts',
   '/option',
+  '/append-line',
 ]);
 
 // TTS handoff: reply text can be many KB -- far beyond what fits in a GET query string (Node
@@ -473,14 +519,33 @@ async function handler(req, res) {
   const full = req.url || '/';
   const url = full.split('?')[0];
   // Voice-app dispatch: /<appId>/<suffix> where <appId> is a registered voice-panel app. All voice
-  // apps share identical suffixes; everything about the request below is resolved per-app.
-  const voiceApp = voiceApps[url.split('/')[1]] || null;
-  const voicePath = voiceApp ? (url.slice(url.split('/')[1].length + 1) || '/') : null;
-  const isAllowedPost = req.method === 'POST' && voiceApp && (VOICE_POST_SUFFIXES.has(voicePath) || voicePath === '/approval-request');
+  // apps share identical suffixes; everything about the request below is resolved per-app. A
+  // multi-backend app (AI Voice) adds one segment: /<appId>/<backend>/<suffix> — the page itself
+  // still serves at /<appId>, and an unknown backend segment falls through to 404/405.
+  const seg1 = url.split('/')[1] || '';
+  let voiceApp = voiceApps[seg1] || null;
+  let voicePrefixLen = seg1.length + 1;
+  if (voiceApp && voiceApp.backends) {
+    const seg2 = url.split('/')[2] || '';
+    const backendEntry = voiceApp.backends[seg2] || null;
+    if (backendEntry) {
+      voiceApp = { handlers: backendEntry.handlers, voiceToken: backendEntry.voiceToken, htmlContent: voiceApp.htmlContent };
+      voicePrefixLen += seg2.length + 1;
+    } else if (seg2) {
+      voiceApp = null;   // /ai-voice/<not-a-backend>/... is nobody's route
+    }
+    // seg2 === '' -> the bare /<appId> page request; the parent entry (page HTML, no handlers) serves it.
+  }
+  const voicePath = voiceApp ? (url.slice(voicePrefixLen) || '/') : null;
+  const isAllowedPost = (req.method === 'POST' && voiceApp && (VOICE_POST_SUFFIXES.has(voicePath) || voicePath === '/approval-request'))
+    || (req.method === 'POST' && (url === '/lucidtype-edit' || url === '/lucidtype-review/apply' || url === '/lucidtype-review/refine'));   // LucidType edit-sync + review apply/refine (same-origin gated below)
   if (req.method !== 'GET' && !isAllowedPost) { res.writeHead(405); res.end(); return; }
   if (url === '/' || url === '/index.html') return html(res, RETIRED_HTML);   // retired SystemView page
   if (url === '/music') return html(res, musicHtml);
   if (url === '/meeting') return html(res, meetingHtml);
+  if (url === '/diagnostics') return html(res, diagnosticsHtml);
+  if (url === '/lucidtype') return html(res, lucidtypeHtml);
+  if (url === '/lucidtype-dictate') return html(res, lucidtypeDictateHtml);   // hidden LucidType capture page
   if (url === '/recorder') return html(res, recorderHtml);   // hidden meeting-recorder capture page
   if (url === '/slidecapture') return html(res, slideHtml);  // hidden slide-capture window
   if (url === '/chat') return html(res, chatHtml);
@@ -579,6 +644,28 @@ async function handler(req, res) {
       let ok = false; try { ok = !!h.setOption(key, String(body.value)); } catch (e) {}
       return done(res, ok);
     }
+    // Live Translate (Soniox provider): mint a short-lived temp key server-side so the real key never
+    // reaches the renderer; the page authenticates its Soniox WebSocket with it. GET, same-origin-gated.
+    if (voicePath === '/soniox-token') {
+      if (!h.sonioxToken) return json(res, { ok: false });
+      let out; try { out = await h.sonioxToken(); } catch (e) { out = { ok: false, error: e.message }; }
+      return json(res, out || { ok: false });
+    }
+    // Live Translate (AI provider): pre-flight before the mic starts — is the endpoint configured
+    // and the local STT actually listening? Returns the first blocking problem as a human sentence.
+    if (voicePath === '/ai-ready') {
+      if (!h.aiReady) return json(res, { ok: true });
+      let out; try { out = await h.aiReady(); } catch (e) { out = { ok: false, error: e.message }; }
+      return json(res, out || { ok: true });
+    }
+    // Live Translate: persist the streamed translation to the save file (posted on stop).
+    if (voicePath === '/append-line' && req.method === 'POST') {
+      let body; try { body = await readJsonBody(req); } catch (e) { return done(res, false); }
+      const text = body && typeof body.text === 'string' ? body.text : '';
+      if (!text || !h.appendLine) return done(res, false);
+      let ok = false; try { ok = !!(h.appendLine(text) || {}).ok; } catch (e) {}
+      return done(res, ok);
+    }
     if (voicePath === '/tts' && req.method === 'POST') {
       let body; try { body = await readJsonBody(req); } catch (e) { return done(res, false); }
       const text = body && typeof body.text === 'string' ? body.text.trim() : '';
@@ -609,11 +696,52 @@ async function handler(req, res) {
       const browsePath = queryValue(full, 'path');
       return json(res, h.getProjects ? h.getProjects(browsePath) : { root: '', parent: null, dirs: [], current: '', recents: [] });
     }
+    // Screensaver media: one validated file from the page's configured photos (k=p) or videos
+    // (k=v) folder, streamed with Range support for <video> seeking/looping. Name -> path
+    // containment lives in the host's resolveMedia; an inactive page (or any rejected name)
+    // resolves null and 404s.
+    if (voicePath === '/media') {
+      let p = null;
+      if (h.resolveMedia) { try { p = h.resolveMedia(queryValue(full, 'f'), queryValue(full, 'k')); } catch (e) {} }
+      return streamFileRange(req, res, p, p ? mimeFor(p) : 'application/octet-stream');
+    }
     if (voicePath === '/permission-mode' && req.method === 'POST') {
       let body; try { body = await readJsonBody(req); } catch (e) { return done(res, false); }
       const mode = body && typeof body.mode === 'string' ? body.mode : '';
       if (!mode || !h.setPermissionMode) return done(res, false);
       let ok = false; try { ok = !!h.setPermissionMode(mode); } catch (e) {}
+      return done(res, ok);
+    }
+    // AI profile switch (Smart Profiles): the page's picker posts the chosen profile id.
+    if (voicePath === '/profile' && req.method === 'POST') {
+      let body; try { body = await readJsonBody(req); } catch (e) { return done(res, false); }
+      const id = body && typeof body.id === 'string' ? body.id : null;
+      if (id == null || !h.setProfile) return done(res, false);
+      let ok = false; try { ok = !!h.setProfile(id); } catch (e) {}
+      return done(res, ok);
+    }
+    // "+ Routine" beside Send: save what's in the message field, or (empty field) the last request
+    // that was sent, as a reusable routine. Returns the auto-generated name for the on-screen
+    // confirmation -- the panel has no keyboard, so naming happens here, not in a dialog.
+    if (voicePath === '/routine-save' && req.method === 'POST') {
+      let body; try { body = await readJsonBody(req); } catch (e) { return done(res, false); }
+      if (!h.saveRoutine) return done(res, false);
+      let out = null;
+      try { out = h.saveRoutine(body && typeof body.text === 'string' ? body.text : ''); } catch (e) { out = { ok: false, error: e.message }; }
+      return json(res, out || { ok: false });
+    }
+    // Panel Builder: accept the page the AI proposed. `confirm` is the user's informed second yes,
+    // sent only after the panel has shown them the actual commands a risky panel would run.
+    if (voicePath === '/panel-accept' && req.method === 'POST') {
+      let body; try { body = await readJsonBody(req); } catch (e) { return done(res, false); }
+      if (!h.panelAccept) return done(res, false);
+      let r = null; try { r = h.panelAccept(!!(body && body.confirm), !!(body && body.replace)); } catch (e) {}
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return res.end(JSON.stringify(r || { ok: false }));
+    }
+    if (voicePath === '/panel-cancel' && req.method === 'POST') {
+      if (!h.panelCancel) return done(res, false);
+      let ok = false; try { ok = !!(h.panelCancel() || {}).ok; } catch (e) {}
       return done(res, ok);
     }
     if (voicePath === '/model' && req.method === 'POST') {
@@ -658,8 +786,83 @@ async function handler(req, res) {
     return json(res, result);
   }
   // Meeting recorder: the panel page polls /meeting-state and drives start/stop/setMic here.
+  if (url === '/device-diagnostics') {
+    return json(res, typeof getDeviceDiagnostics === 'function' ? getDeviceDiagnostics() : { mode: 'software', channels: {} });
+  }
   if (url === '/meeting-state') {
     return json(res, typeof getMeetingState === 'function' ? getMeetingState() : { recording: false });
+  }
+  // LucidType dictation: the panel page subscribes to /lucidtype-events (SSE, real-time push) and
+  // falls back to polling /lucidtype-state; it drives start/stop/apply/edit here.
+  if (url === '/lucidtype-events') {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
+    res.write(': connected\n\n');
+    if (typeof getLucidState === 'function') { try { res.write('data: ' + JSON.stringify(getLucidState()) + '\n\n'); } catch (e) {} }   // fresh subscriber gets the current state at once
+    lucidSubscribers.add(res);
+    req.on('close', () => { lucidSubscribers.delete(res); });
+    return;
+  }
+  if (url === '/lucidtype-state') {
+    return json(res, typeof getLucidState === 'function' ? getLucidState() : { dictating: false, transcript: '', seq: 0 });
+  }
+  if (url === '/lucidtype-dictation/start' || url === '/lucidtype-dictation/stop') {
+    const cmd = url.endsWith('/start') ? 'start' : 'stop';
+    const mode = new URL(full, 'http://local').searchParams.get('mode') || '';   // clear | append (start only)
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onLucidDictation === 'function') {
+      try { result = await onLucidDictation(cmd, mode); } catch (e) { result = { ok: false, error: e.message || 'dictation command failed' }; }
+    }
+    return json(res, result);
+  }
+  if (url === '/lucidtype-apply') {
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onLucidApply === 'function') {
+      try { result = await onLucidApply(); } catch (e) { result = { ok: false, error: e.message || 'apply failed' }; }
+    }
+    return json(res, result);
+  }
+  if (url.indexOf('/lucidtype-set-mic/') === 0) {
+    const label = decodeURIComponent(url.slice('/lucidtype-set-mic/'.length));
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onLucidSetMic === 'function') {
+      try { result = await onLucidSetMic(label); } catch (e) { result = { ok: false, error: e.message || 'set-mic failed' }; }
+    }
+    return json(res, result);
+  }
+  if (url === '/lucidtype-edit' && req.method === 'POST') {
+    const body = await readJsonBody(req).catch(() => null);
+    let result = { ok: false };
+    if (typeof onLucidEdit === 'function') {
+      try { result = await onLucidEdit(body && typeof body.text === 'string' ? body.text : ''); } catch (e) { result = { ok: false, error: e.message }; }
+    }
+    return json(res, result);
+  }
+  // Cleanup / Rewrite (Phase 2): kick off the transform (opens a review), then apply/refine/cancel it.
+  if (url === '/lucidtype-cleanup' || url === '/lucidtype-rewrite') {
+    const fn = url.endsWith('cleanup') ? onLucidCleanup : onLucidRewrite;
+    let result = { ok: false, error: 'not wired' };
+    if (typeof fn === 'function') { try { result = await fn(); } catch (e) { result = { ok: false, error: e.message }; } }
+    return json(res, result);
+  }
+  if (url === '/lucidtype-review/apply' || url === '/lucidtype-review/refine') {
+    const op = url.endsWith('apply') ? 'apply' : 'refine';
+    const body = await readJsonBody(req).catch(() => null);
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onLucidReview === 'function') {
+      try { result = await onLucidReview(op, body && typeof body.text === 'string' ? body.text : undefined); } catch (e) { result = { ok: false, error: e.message }; }
+    }
+    return json(res, result);
+  }
+  if (url === '/lucidtype-review/cancel') {
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onLucidReview === 'function') { try { result = await onLucidReview('cancel'); } catch (e) { result = { ok: false, error: e.message }; } }
+    return json(res, result);
+  }
+  if (url.indexOf('/lucidtype-set-mode/') === 0) {
+    const mode = decodeURIComponent(url.slice('/lucidtype-set-mode/'.length));
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onLucidSetMode === 'function') { try { result = await onLucidSetMode(mode); } catch (e) { result = { ok: false, error: e.message }; } }
+    return json(res, result);
   }
   // Slide capture: window list + select/start/stop/manual. GET (matching the recorder remotes),
   // same-origin-gated above. Slide state itself rides in /meeting-state so the column polls with it.
@@ -673,11 +876,29 @@ async function handler(req, res) {
     }
     return json(res, result);
   }
+  // Mid-meeting highlights: start / stop the span in progress, or clear it. GET like the slide and
+  // recorder remotes; the state itself rides in /meeting-state so the column polls with everything else.
+  if (url === '/highlight/start' || url === '/highlight/stop' || url === '/highlight/cancel') {
+    const cmd = url.slice('/highlight/'.length);
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onHighlight === 'function') {
+      try { result = await onHighlight(cmd); } catch (e) { result = { ok: false, error: e.message || 'highlight command failed' }; }
+    }
+    return json(res, result);
+  }
   if (url === '/meeting-record/start' || url === '/meeting-record/stop') {
     const cmd = url.endsWith('/start') ? 'start' : 'stop';
     let result = { ok: false, error: 'not wired' };
     if (typeof onMeetingRecord === 'function') {
       try { result = await onMeetingRecord(cmd); } catch (e) { result = { ok: false, error: e.message || 'record command failed' }; }
+    }
+    return json(res, result);
+  }
+  if (url.indexOf('/meeting-set-panels/') === 0) {
+    const csv = decodeURIComponent(url.slice('/meeting-set-panels/'.length));
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onMeetingRecord === 'function') {
+      try { result = await onMeetingRecord('setPanels', csv); } catch (e) { result = { ok: false, error: e.message || 'set-panels failed' }; }
     }
     return json(res, result);
   }
@@ -706,28 +927,7 @@ async function handler(req, res) {
   if (url === '/meeting-audio') {
     const q = new URL(full, 'http://local').searchParams;
     const p = typeof resolveMeetingAudio === 'function' ? resolveMeetingAudio(q.get('kind') || '', q.get('name') || '') : null;
-    let st = null;
-    if (p) { try { st = fs.statSync(p); } catch (e) {} }
-    if (!st || !st.isFile()) { res.writeHead(404); res.end(); return; }
-    const h = headers('audio/wav');
-    h['Accept-Ranges'] = 'bytes';
-    const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
-    if (m && (m[1] || m[2])) {
-      let first = m[1] ? parseInt(m[1], 10) : st.size - parseInt(m[2], 10);
-      let last = (m[1] && m[2]) ? parseInt(m[2], 10) : st.size - 1;
-      if (!Number.isFinite(first) || first < 0) first = 0;
-      if (!Number.isFinite(last) || last >= st.size) last = st.size - 1;
-      if (first > last || first >= st.size) { res.writeHead(416, { 'Content-Range': 'bytes */' + st.size }); res.end(); return; }
-      h['Content-Range'] = 'bytes ' + first + '-' + last + '/' + st.size;
-      h['Content-Length'] = last - first + 1;
-      res.writeHead(206, h);
-      fs.createReadStream(p, { start: first, end: last }).pipe(res);
-    } else {
-      h['Content-Length'] = st.size;
-      res.writeHead(200, h);
-      fs.createReadStream(p).pipe(res);
-    }
-    return;
+    return streamFileRange(req, res, p, 'audio/wav');
   }
   if (url.indexOf('/api/office/action/') === 0) {
     if (url === '/api/office/action/meeting') {
@@ -776,8 +976,19 @@ function start(opts) {
   getMeetingState = opts.getMeetingState || null;
   onMeetingRecord = opts.onMeetingRecord || null;
   onSlide = opts.onSlide || null;
+  onHighlight = opts.onHighlight || null;
+  getDeviceDiagnostics = opts.getDeviceDiagnostics || null;
   onMeetingLibrary = opts.onMeetingLibrary || null;
   resolveMeetingAudio = opts.resolveMeetingAudio || null;
+  getLucidState = opts.getLucidState || null;
+  onLucidDictation = opts.onLucidDictation || null;
+  onLucidApply = opts.onLucidApply || null;
+  onLucidEdit = opts.onLucidEdit || null;
+  onLucidSetMic = opts.onLucidSetMic || null;
+  onLucidCleanup = opts.onLucidCleanup || null;
+  onLucidRewrite = opts.onLucidRewrite || null;
+  onLucidReview = opts.onLucidReview || null;
+  onLucidSetMode = opts.onLucidSetMode || null;
   onOfficeAction = opts.onOfficeAction || null;
   getShortcuts = opts.getShortcuts || null;
   voiceApps = {};
@@ -787,6 +998,15 @@ function start(opts) {
       voiceToken: (v && v.voiceToken) || null,
       htmlFile: (v && v.htmlFile) || null,
       htmlContent: FALLBACK,
+      // Multi-backend app (AI Voice): the page serves at /<id>, every other route carries the
+      // backend as a sub-prefix (/<id>/<backend>/turn, …) resolved in the dispatch below. Each
+      // backend brings its own handlers (and optionally its own voiceToken).
+      backends: (v && v.backends)
+        ? Object.fromEntries(Object.entries(v.backends).map(([b, e]) => [b, {
+            handlers: (e && e.handlers) || {},
+            voiceToken: (e && e.voiceToken) || null,
+          }]))
+        : null,
     };
   });
   setAppFolders(opts.appFolders);
@@ -795,6 +1015,9 @@ function start(opts) {
     if (server) return resolve(server.address().port);
     try { musicHtml = fs.readFileSync(path.join(__dirname, 'musicview.html'), 'utf8'); } catch (e) {}
     try { meetingHtml = fs.readFileSync(path.join(__dirname, 'meetingview.html'), 'utf8'); } catch (e) {}
+    try { diagnosticsHtml = fs.readFileSync(path.join(__dirname, 'diagnosticsview.html'), 'utf8'); } catch (e) {}
+    try { lucidtypeHtml = fs.readFileSync(path.join(__dirname, 'lucidtypeview.html'), 'utf8'); } catch (e) {}
+    try { lucidtypeDictateHtml = fs.readFileSync(path.join(__dirname, 'lucidtype-dictate.html'), 'utf8'); } catch (e) {}
     try { recorderHtml = fs.readFileSync(path.join(__dirname, 'recorderview.html'), 'utf8'); } catch (e) {}
     try { slideHtml = fs.readFileSync(path.join(__dirname, 'slidecapture.html'), 'utf8'); } catch (e) {}
     try { chatHtml = fs.readFileSync(path.join(__dirname, 'chatview.html'), 'utf8'); } catch (e) {}
@@ -837,4 +1060,11 @@ function stop() {
   officeCapabilityTtlMs = DEFAULT_OFFICE_CAPABILITY_TTL_MS;
 }
 
-module.exports = { start, stop, setActivePage, setAppFolders, issueOfficeCapability, clearOfficeCapability };
+// Push a LucidType state payload to every open /lucidtype-events subscriber (called by main on each
+// dictation state change). Dropped writes prune themselves from the set.
+function lucidBroadcast(payload) {
+  const line = 'data: ' + JSON.stringify(payload) + '\n\n';
+  for (const res of lucidSubscribers) { try { res.write(line); } catch (e) { lucidSubscribers.delete(res); } }
+}
+
+module.exports = { start, stop, setActivePage, setAppFolders, issueOfficeCapability, clearOfficeCapability, lucidBroadcast };

@@ -9,7 +9,8 @@
 // It does NOT open the mic itself; it inspects other apps' sessions. open-quake still records using
 // its own selected mic + system loopback once this fires.
 //
-// Protocol: one JSON line per state transition (plus an initial line), flushed immediately:
+// Protocol: one JSON line per state transition, flushed immediately. Nothing is emitted until a
+// real transition is observed — there is deliberately no initial baseline line (see Main).
 //   {"active":true,"app":"Zoom.exe"}
 //   {"active":false}
 // Args: allowlist exe names, comma- or space-separated (one or many args). Defaults to
@@ -160,8 +161,11 @@ class MicSessionMonitor {
             allow.Add("zoom.exe"); allow.Add("teams.exe"); allow.Add("ms-teams.exe");
         }
 
+        // No synthetic idle baseline: the parent starts from a known-idle recorder, and emitting
+        // {"active":false} here read as a call-ended transition — respawning the monitor during a
+        // meeting stopped the recording in progress and split it into a new file. The first poll
+        // below reports an already-active call within one second anyway.
         bool lastActive = false; string lastApp = null;
-        Emit(false, null);   // announce the initial (idle) state so the parent has a baseline
         while (true) {
             string app = null;
             try { app = ActiveAllowlistedApp(allow); } catch { app = null; }

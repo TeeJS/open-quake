@@ -19,6 +19,7 @@
 //     settings.spotify.refreshToken                   (NOT settings.spotify.clientId — clientId is public)
 //     settings.haAuth.token                           (NOT settings.haAuth.url — the URL is not sensitive)
 //     settings.owui.apiKey                            (NOT settings.owui.url/model — those are not secrets)
+//     settings.meeting.joplinToken                    (NOT settings.meeting.joplinUrl/joplinNotebook)
 //     settings.oauth.providers[*].clientSecret        (optional confidential OAuth clients)
 //     settings.oauth.tokens[*].accessToken / refreshToken
 const MARKER = 'oqenc:v1:';    // legacy: Electron safeStorage — still decrypted, never written on Windows
@@ -107,6 +108,10 @@ function createSecretStore({ safeStorage, dpapi, loadApps, log = () => {} }) {
     const ow = config && config.settings && config.settings.owui;
     if (ow && typeof ow === 'object' && typeof ow.apiKey === 'string' && ow.apiKey !== '') {
       ow.apiKey = fn(ow.apiKey);
+    }
+    const me = config && config.settings && config.settings.meeting;
+    if (me && typeof me === 'object' && typeof me.joplinToken === 'string' && me.joplinToken !== '') {
+      me.joplinToken = fn(me.joplinToken);
     }
     const oauth = config && config.settings && config.settings.oauth;
     if (oauth && typeof oauth === 'object') {

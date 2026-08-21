@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; base-uri 'none'; form-action 'none';">
+<style>
+  :root { --bg1:#0e1b2e; --bg2:#05080d; --card1:#18293d; --card2:#0c141f; --card-bd:#243a55;
+    --fg:#e8eef6; --muted:#9fb3c8; --accent:#7CFFB2; --accent-ink:#04121f; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: radial-gradient(140% 160% at 0% 0%, var(--bg1) 0%, var(--bg2) 70%);
+    color: var(--fg); font-family: 'Segoe UI', system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 28px; user-select: none; }
+  h1 { font-size: 26px; margin: 0 0 4px; font-weight: 800; }
+  .sub { color: var(--muted); font-size: 15px; margin: 0 0 22px; text-align: center; max-width: 560px; }
+  .cards { display: flex; gap: 14px; width: 100%; max-width: 720px; }
+  .card { flex: 1; background: linear-gradient(160deg, var(--card1), var(--card2));
+    border: 2px solid var(--card-bd); border-radius: 16px; padding: 18px 16px; cursor: pointer;
+    transition: border-color .1s, transform .06s; text-align: center; }
+  .card:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--card-bd)); }
+  .card.sel { border-color: var(--accent); box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 35%, transparent); }
+  .card:active { transform: scale(.98); }
+  .ic { font-size: 46px; line-height: 1; margin-bottom: 10px; }
+  .name { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .desc { font-size: 13px; color: var(--muted); line-height: 1.35; }
+  .badge { display: inline-block; margin-top: 10px; font-size: 11px; color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); border-radius: 999px; padding: 2px 9px; }
+  .row { margin-top: 24px; display: flex; align-items: center; gap: 14px; }
+  button.go { font-size: 17px; font-weight: 700; color: var(--accent-ink); background: var(--accent);
+    border: none; border-radius: 12px; padding: 12px 44px; cursor: pointer;
+    box-shadow: 0 0 24px color-mix(in srgb, var(--accent) 40%, transparent); }
+  button.go:active { transform: scale(.97); }
+  button.go:disabled { opacity: .5; cursor: default; box-shadow: none; }
+  .hint { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>Welcome to open-quake</h1>
+  <p class="sub">How are you running open-quake? You can change this any time in Settings → Software.</p>
+  <div class="cards" id="cards">
+    <div class="card" data-mode="panel">
+      <div class="ic">🎛️</div>
+      <div class="name">Panel</div>
+      <div class="desc">Running on the DK-QUAKE / open-bedrock touchscreen-and-knob hardware.</div>
+    </div>
+    <div class="card" data-mode="software">
+      <div class="ic">🪟</div>
+      <div class="name">Software</div>
+      <div class="desc">In a normal desktop window — no special hardware. Meetings and apps work anywhere.</div>
+    </div>
+    <div class="card" data-mode="monitor">
+      <div class="ic">🖥️</div>
+      <div class="name">Monitor</div>
+      <div class="desc">Use the QUAKE as a regular monitor showing the Windows desktop.</div>
+    </div>
+  </div>
+  <div class="row">
+    <button class="go" id="go" disabled>Continue</button>
+    <span class="hint" id="hint"></span>
+  </div>
+<script src="welcome.js"></script>
+</body>
+</html>

@@ -7,9 +7,9 @@ server. Add it from the editor via
 their own apps later.
 
 > Looking for streaming replies, voice via the Wyoming pipeline, a live model picker, and
-> multi-turn memory? That's the newer **[Open WebUI Voice](owui-voice.md)** app, built on the
-> agent-panel framework and configured once on **Settings → Auth**. This widget keeps its own
-> per-page endpoint fields for now; a future release may consolidate the two.
+> multi-turn memory? That's the newer **[AI Voice](ai-voice.md)** app (Open WebUI backend), built
+> on the agent-panel framework and configured once on **Settings → Auth**. This widget keeps its
+> own per-page endpoint fields for now; a future release may consolidate the two.
 
 ## Setup
 

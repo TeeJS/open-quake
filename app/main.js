@@ -31,6 +31,8 @@ const crypto = require('crypto');
 const { exec, execFile, spawn } = require('child_process');
 const { pathToFileURL } = require('url');
 const HID = require('node-hid');
+const emojilib = require('emojilib');   // emoji -> keyword array (MIT, muan/emojilib) — powers the tile editor's emoji search
+const EMOJI_INDEX = Object.entries(emojilib).map(([em, kws]) => [em, kws.join(' ').toLowerCase()]);
 const MultiKnob = require('./multiKnob');                                           // owns Aris68Connector + BedrockConnector; routes to whichever device is plugged in
 const http = require('http');
 const actionRunner = require('./actionRunner');
@@ -49,7 +51,14 @@ const haClient = require('./haClient');       // Global HA cache (registries + d
 const touchSetup = require('./touchSetup');   // Bind a touchscreen to its physical display via tabcal.exe (Windows)
 const meetingControl = require('./meetingControl');   // Zoom/Teams call-control keystrokes (Meeting app page)
 const { createMeetingRecorder } = require('./meetingRecorder'); // hidden-window meeting recorder (mic + system loopback -> WAV)
+const { createMeetingHighlights } = require('./meetingHighlights'); // mid-meeting highlight spans -> the recording's sidecar
+const routines = require('./routines');       // saved AI routines: a prompt + which AI Chat page runs it
+const deviceDiagnostics = require('./deviceDiagnostics'); // pure: classify the console's Display/Touch/Knob channels
 const { createSlideCapture } = require('./slideCapture');       // hidden-window slide capture (getDisplayMedia -> screenshots)
+const { createLucidDictation } = require('./lucidtypeDictation'); // hidden-window LucidType dictation (mic + VAD -> Wyoming STT -> text)
+const lucidWyoming = require('./claudevoice-wyoming');          // Wyoming STT client (transcribe) for dictation
+const lucidAImod = require('./lucidtypeAI');                    // LucidType cleanup/rewrite AI routing (agents / OWUI / direct endpoint)
+const lucidAI = lucidAImod.createLucidAI({ log: msg => console.log('[lucidtype-ai] ' + msg) });
 const { enableLoopbackAudioCapture } = require('./loopback-audio'); // system-audio loopback display-media handler (recorder session only)
 const desktopFocus = require('./desktopFocus');   // tracks the PC's OS-level foreground app; auto-switches the panel to a mapped page
 const ahk = require('./ahk');                  // macro "ahk" step backend (shells out to an installed AutoHotkey.exe)
@@ -60,7 +69,13 @@ const { createCodexVoiceAdapter, findCodexExe } = require('./codexvoice-session'
 const { createCopilotVoiceAdapter, findCopilotExe } = require('./copilotvoice-session'); // GitHub Copilot CLI session adapter (ACP JSON-RPC over stdio)
 const { findClaudeExe } = require('./claudevoice-session'); // CLI presence probe for the editor's voice-app warning
 const { createOwuiVoiceAdapter } = require('./owuivoice-session'); // Open WebUI chat adapter (HTTP/SSE, no CLI)
+const { createApiVoiceAdapter } = require('./apivoice-session'); // OpenAI-compatible API chat adapter (bring your own key, no CLI)
+const { createLiveTranslateHost } = require('./livetranslate-host'); // Live Translate app host (Soniox token mint + save-to-file, no LLM)
+const { createScreensaverHost } = require('./screensaver-host'); // Screensaver app host (media list + name->path resolution, no LLM)
+const saverIdle = require('./screensaver-idle'); // pure screensaver auto-start/wake/swallow decisions
 const owuiClient = require('./owuiClient'); // shared OWUI URL normalization + model-list probe
+const { resolveRunMode, reservedDisplayEnabled } = require('./runMode'); // pure run-mode helpers (panel/software/monitor)
+const voiceConfig = require('./voiceConfig'); // global TTS/STT endpoints + per-page override resolution + legacy migration
 const claudeVoiceApprovals = require('./claudevoice-approvals'); // required directly ONLY for the boot-time leftover-hook sweep below
 const HA_SCHEDULE_APPS = ['haschedule', 'agenda', 'events'];   // dev apps backed by the shared HA /haschedule-data snapshot
 
@@ -80,8 +95,12 @@ const actionDeps = { fs, shell, exec, execFile, spawn, platform: process.platfor
 const mediaKeys = createMediaKeys({ log: message => console.log(message) });
 let firstRun = false;     // set by loadConfig when there was no prior config (fresh install)
 let micState = false;     // current device mic state (LED follows it)
+let lastDeviceState = {};  // cached from the connector's 'state' events (firmware/luminance/mic) for the diagnostics page
 let meetingRecorder = null;   // hidden-window meeting recorder (created once the panel server is up)
 let slideCapture = null;      // hidden-window slide capture controller (created alongside the recorder)
+let meetingHighlights = null; // mid-meeting highlight spans (created alongside the recorder)
+let lucidDictation = null;    // hidden-window LucidType dictation controller (created alongside the recorder)
+let lucidApplyFocusProc = '';  // foreground process captured at dictation start, so Apply can restore focus in software mode
 const completedRecordings = new Set();   // basenames whose finalize (header patch) has finished — the only safe time to rename
 let meetingLibrary = null;    // recordings list/delete/resolve for the panel's library screens
 let meetingTranscriber = null; // FIFO diarizer-upload queue (meetingTranscribe.js)
@@ -92,6 +111,12 @@ let lastRingEffect = LED_DEFAULT.effect; // remembered so the tray on/off toggle
 let rotateRunning = false;               // screen-rotation runtime on/off (starts per settings on launch)
 let rotationSuspended = false;           // temporarily held off by desktop-focus (a mapped app currently has focus)
 let rotTimer = null;
+// Screensaver auto-start state. saverActive is ONLY ever set by the idle auto-start path — manual
+// visits and rotation stops on the screensaver page never set it, so input is never swallowed there.
+let saverActive = false, saverPrevGridId = null;   // auto-entered screensaver: swallow input + where wake returns
+let saverSwallowUntil = 0, saverTouchHeld = false; // wake-gesture swallow state (grace window + finger-up tracking)
+let saverTimer = null;                             // the 10s idle-check interval
+let lastPanelInputAt = Date.now();                 // boot counts as input, so the saver waits one full idle period
 let monitorMode = false;                 // monitor mode: panel UI hidden so the device shows the Windows desktop
 // Global HA cache — registries + dashboards in memory, per-entity states populated on demand.
 // `ok=false, ts=0` is the "never loaded" initial state. Refreshed on whenReady (if useHa) and on
@@ -102,7 +127,7 @@ let touchDown = false, touchIdle = null; // monitor-mode touch -> OS mouse butto
 let sysserver = null;                    // SystemView/Music local server (lazy-required in whenReady)
 let serverPort = 0;                      // the local server's ephemeral port (for music-page routing)
 let config = loadConfig();
-let panelWin = null, configWin = null, tray = null;
+let panelWin = null, configWin = null, tray = null, welcomeWin = null;
 let dashSession = null, cookieFlushT = null;   // dashboard webview session + a debounced cookie-store flush
 const dev = new MultiKnob({ hid: HID });
 let reservedRefreshTimer = null;
@@ -110,13 +135,15 @@ const reservedDisplay = createReservedDisplay({
   getDisplayState: reservedDisplayState,
   log: message => console.log('[reserved-display] ' + message),
 });
-// The Claude Code voice app = the generic voice-panel host (state/transcript/SSE/speech/STT-TTS,
-// see voicepanel-host.js) driven by the Claude session adapter (CLI spawn, stream-json events,
-// approval hook lifecycle -- see claudevoice-adapter.js). A second agent app (codex-voice) is a
-// second host instance with its own adapter; the deps are shared closures over main.js state.
-const claudeVoiceLog = message => console.log('[claude-voice] ' + message);
+// The AI Voice app = ONE app id ('ai-voice') with a per-page backend option, served by one generic
+// voice-panel host instance PER BACKEND (state/transcript/SSE/speech/STT-TTS, see
+// voicepanel-host.js), each driven by its own session adapter. Requests route to the backend host
+// via the /ai-voice/<backend>/* sub-prefix (sysserver.js), and every host's deps only "own" grids
+// whose options.backend matches — so a backgrounded backend never reads the active page's endpoints
+// or repaints the ring (same isolation the four separate apps had before consolidation).
+const claudeVoiceLog = message => console.log('[ai-voice:claude] ' + message);
 const claudeVoiceHost = createVoicePanelHost({
-  appId: 'claude-voice',
+  appId: 'ai-voice',
   storageKey: 'claudeVoice',
   log: claudeVoiceLog,
   branding: {
@@ -129,11 +156,11 @@ const claudeVoiceHost = createVoicePanelHost({
     getUserDataPath: () => app.getPath('userData'),
     log: claudeVoiceLog,
   }),
-  deps: voicePanelDeps('claude-voice'),
+  deps: voiceBackendDeps('claude'),
 });
-const codexVoiceLog = message => console.log('[codex-voice] ' + message);
+const codexVoiceLog = message => console.log('[ai-voice:codex] ' + message);
 const codexVoiceHost = createVoicePanelHost({
-  appId: 'codex-voice',
+  appId: 'ai-voice',
   storageKey: 'codexVoice',
   log: codexVoiceLog,
   branding: {
@@ -142,11 +169,11 @@ const codexVoiceHost = createVoicePanelHost({
     turnFailedText: 'Turn failed to send — no folder set, or codex CLI not found.',
   },
   adapter: createCodexVoiceAdapter({ log: codexVoiceLog }),
-  deps: voicePanelDeps('codex-voice'),
+  deps: voiceBackendDeps('codex'),
 });
-const copilotVoiceLog = message => console.log('[copilot-voice] ' + message);
+const copilotVoiceLog = message => console.log('[ai-voice:copilot] ' + message);
 const copilotVoiceHost = createVoicePanelHost({
-  appId: 'copilot-voice',
+  appId: 'ai-voice',
   storageKey: 'copilotVoice',
   log: copilotVoiceLog,
   branding: {
@@ -155,30 +182,80 @@ const copilotVoiceHost = createVoicePanelHost({
     turnFailedText: 'Turn failed to send — no folder set, or copilot CLI not found.',
   },
   adapter: createCopilotVoiceAdapter({ log: copilotVoiceLog }),
-  deps: voicePanelDeps('copilot-voice'),
+  deps: voiceBackendDeps('copilot'),
 });
-// Fourth agent app: Open WebUI over its OpenAI-compatible HTTP API — no CLI child, the adapter
-// streams chat completions against the shared Auth-tab connection (settings.owui).
-const owuiVoiceLog = message => console.log('[owui-voice] ' + message);
+// Open WebUI over its OpenAI-compatible HTTP API — no CLI child, the adapter streams chat
+// completions against the shared Auth-tab connection (settings.owui).
+const owuiVoiceLog = message => console.log('[ai-voice:owui] ' + message);
 const owuiVoiceHost = createVoicePanelHost({
-  appId: 'owui-voice',
+  appId: 'ai-voice',
   storageKey: 'owuiVoice',
   log: owuiVoiceLog,
   branding: {
     title: 'Open WebUI',
     approvalTitle: '⚠ Open WebUI wants to do something',   // never shown — the adapter emits no approvals
     turnFailedText: "Turn failed to send — Open WebUI connection not configured (editor's Auth tab).",
+    hasProject: false,
   },
   adapter: createOwuiVoiceAdapter({ resolveOwui: () => owuiSettings(), log: owuiVoiceLog }),
-  deps: voicePanelDeps('owui-voice'),
+  deps: voiceBackendDeps('owui'),
+});
+// API endpoint — bring your own OpenAI-compatible endpoint + key (per-page options; the key stays
+// in the main process, encrypted at rest).
+const apiVoiceLog = message => console.log('[ai-voice:api] ' + message);
+const apiVoiceHost = createVoicePanelHost({
+  appId: 'ai-voice',
+  storageKey: 'apiVoice',
+  log: apiVoiceLog,
+  branding: {
+    title: 'AI Chat',
+    approvalTitle: '⚠ The model wants to do something',    // never shown — the adapter emits no approvals
+    turnFailedText: 'Turn failed to send — API endpoint not configured (this page’s settings).',
+    hasProject: false,
+  },
+  adapter: createApiVoiceAdapter({ resolveApi: () => apiVoiceSettings(), log: apiVoiceLog }),
+  deps: voiceBackendDeps('api'),
+});
+// The api backend's live connection config: the ACTIVE ai-voice page's options when its backend is
+// 'api' (activeServedAppConfig fills manifest defaults and carries decrypted secrets).
+function apiVoiceSettings() {
+  const c = activeServedAppConfig('ai-voice');
+  const o = c && c.options;
+  if (!o || (o.backend || 'claude') !== 'api') return {};
+  return { apiBaseUrl: o.apiBaseUrl, apiKey: o.apiKey, apiModel: o.apiModel };
+}
+// Live Translate (Tier 1): a captions page, NOT an agent -- a lightweight host with no LLM adapter,
+// just Wyoming STT -> text + optional file save. Reuses the voice-panel deps for STT endpoint
+// resolution (global settings.voice, or this page's Advanced override) and config persistence.
+const liveTranslateHost = createLiveTranslateHost({
+  appId: 'livetranslate',
+  log: message => console.log('[livetranslate] ' + message),
+  deps: voicePanelDeps('livetranslate'),
+});
+// Screensaver: media lists + name->path resolution for /screensaver/media (sysserver streams the
+// bytes). Photos and videos live in separate folders; the defaults ship empty and are
+// auto-created on first use.
+const screensaverHost = createScreensaverHost({
+  appId: 'screensaver',
+  log: message => console.log('[screensaver] ' + message),
+  deps: voicePanelDeps('screensaver'),
+  defaultPhotosDir: path.join(app.getPath('userData'), 'screensaver-media', 'photos'),
+  defaultVideosDir: path.join(app.getPath('userData'), 'screensaver-media', 'videos'),
 });
 // Shared main.js plumbing for a voice-panel host. The ring guards are the two-app arbitration:
 // only the ON-SCREEN voice app may drive (or clear) the ring override -- a background app's
 // session finishing must never repaint the ring under the active page. (Page changes already
 // clear any override via gotoGrid.)
+// Effective STT/TTS endpoints for the CURRENTLY-ACTIVE instance of `appId`: the global
+// config.settings.voice unless that page overrides it (grid.options.voiceOverride). Returns blank
+// hosts when the app isn't the active served page, so a backgrounded app never dials out.
+function resolveVoiceEndpoints(appId) {
+  return voiceConfig.resolveVoiceEndpoints(config.settings, (activeServedAppConfig(appId) || {}).options || null);
+}
 function voicePanelDeps(appId) {
   return {
     activeServedAppConfig: id => activeServedAppConfig(id),
+    voiceEndpoints: () => resolveVoiceEndpoints(appId),
     activeGrid: () => activeGrid(),
     getConfig: () => config,
     saveConfig: () => saveConfig(),
@@ -187,7 +264,47 @@ function voicePanelDeps(appId) {
     getDocumentsPath: () => app.getPath('documents'),
   };
 }
+// Backend-scoped deps for the AI Voice hosts: each backend host only "owns" ai-voice grids whose
+// options.backend matches, so config resolution, endpoint dialing, and ring overrides stay isolated
+// per backend exactly as they were per app before the consolidation.
+function aiVoiceOwnsGrid(backend) {
+  return g => !!(g && g.kind === 'app' && g.app === 'ai-voice' && ((g.options && g.options.backend) || 'claude') === backend);
+}
+function voiceBackendDeps(backend) {
+  const owns = aiVoiceOwnsGrid(backend);
+  return {
+    activeServedAppConfig: () => (owns(activeGrid()) ? activeServedAppConfig('ai-voice') : null),
+    voiceEndpoints: () => voiceConfig.resolveVoiceEndpoints(config.settings,
+      owns(activeGrid()) ? ((activeServedAppConfig('ai-voice') || {}).options || null) : null),
+    activeGrid: () => activeGrid(),
+    getConfig: () => config,
+    saveConfig: () => saveConfig(),
+    setRingState: state => { if (aiVoiceOwnsGrid(backend)(activeGrid())) setRingState(state); },
+    clearRingOverride: () => { if (aiVoiceOwnsGrid(backend)(activeGrid())) clearRingOverride(); },
+    getDocumentsPath: () => app.getPath('documents'),
+    ownsGrid: owns,
+    // Panel Builder: after the user accepts a generated page, land on it so they see what they built.
+    gotoGrid: id => gotoGrid(id, true),
+  };
+}
 function appSettings() { return Object.assign({}, DEFAULT_SETTINGS, config.settings || {}); }
+// Persisted run mode: how the app presents itself. 'panel' (frameless on the DK-QUAKE display),
+// 'software' (normal resizable desktop window, no hardware needed), or 'monitor' (device shows the
+// Windows desktop). Unset defaults to 'panel' so existing installs are unchanged — only a fresh
+// install (firstRun) gets the welcome picker. Chosen at first run, changeable in Settings.
+function runMode() { return resolveRunMode(config.settings); }
+// Keep-display-awake: 'prevent-display-sleep' also stops the Windows screensaver, and there is no
+// per-display option — so honor it ONLY in Panel mode and ONLY when the user turns it on in Settings.
+// Off by default, so the OS screensaver works normally in Software/Monitor mode (and in Panel until opted in).
+let displayBlockerId = -1;
+function applyDisplayBlocker() {
+  const want = !!(config.settings && config.settings.keepDisplayAwake) && runMode() === 'panel';
+  try {
+    const active = displayBlockerId !== -1 && powerSaveBlocker.isStarted(displayBlockerId);
+    if (want && !active) displayBlockerId = powerSaveBlocker.start('prevent-display-sleep');
+    else if (!want && active) { powerSaveBlocker.stop(displayBlockerId); displayBlockerId = -1; }
+  } catch (e) {}
+}
 // ---- theme (global light/dark + accent, with per-card overrides) ----
 function themeGlobal() { return Object.assign({}, THEME_DEFAULT, (config.settings || {}).theme || {}); }
 function isValidHex(h) { return typeof h === 'string' && /^#[0-9a-fA-F]{6}$/.test(h); }
@@ -257,6 +374,10 @@ function migrateConfig(c) {
       }
     }
   });
+  voiceConfig.migrateVoiceConfig(c);   // legacy per-page wyoming* -> global config.settings.voice + per-page override
+  voiceConfig.ensureAiProfiles(c);     // seed the Smart Profiles library once (user edits are never touched)
+  voiceConfig.ensurePanelProfile(c);   // add Panel Builder to libraries that predate it (once — deletions stick)
+  voiceConfig.ensureRoutines(c);       // drop half-saved routines so the tile picker never offers a dud
   return c;
 }
 // SystemView (System Monitor) is RETIRED: its metrics layer spawned continuous PowerShell
@@ -652,14 +773,33 @@ function activeServedAppConfig(appId) {
 function saveConfig() {
   const temporaryPath = CONFIG_PATH + '.tmp';
   try {
-    const serialized = JSON.stringify(secretStore.encryptConfig(config), null, 2);
+    // While the screensaver AUTO-started itself, the live activeGridId is the screensaver page —
+    // persist the page the user was actually on instead, so a save (option write, editor save)
+    // followed by a crash/relaunch never boots the panel into the screensaver. encryptConfig
+    // clones, so the overlay object never touches the in-memory config.
+    const persisted = (saverActive && saverIdle.isScreensaverGrid(activeGrid()))
+      ? Object.assign({}, config, { activeGridId: saverIdle.saverRestoreTarget(config, saverPrevGridId) || config.activeGridId })
+      : config;
+    const serialized = JSON.stringify(secretStore.encryptConfig(persisted), null, 2);
     fs.writeFileSync(temporaryPath, serialized);
     fs.renameSync(temporaryPath, CONFIG_PATH);
+    notifyEditorConfigChanged();
     return true;
   } catch (e) {
     try { fs.rmSync(temporaryPath, { force: true }); } catch (cleanupError) {}
     console.log('config save error: secure persistence failed');
     return false;
+  }
+}
+// The editor holds its own snapshot of config and only writes it back on Save, so anything that
+// changes config from OUTSIDE the editor (an accepted AI panel, a counter tile, a panel option) is
+// invisible to an open editor — and worse, that editor's next Save would write the stale copy back
+// and drop the change. Tell it to re-read. Suppressed while the editor's own save is in flight.
+let editorSaveInFlight = false;
+function notifyEditorConfigChanged() {
+  if (editorSaveInFlight) return;
+  if (configWin && !configWin.isDestroyed()) {
+    try { configWin.webContents.send('configChangedExternally'); } catch (e) {}
   }
 }
 function activeGrid() { return config.grids.find(g => g.id === config.activeGridId) || config.grids[0] || { cols: 8, rows: 2, tiles: [] }; }
@@ -701,6 +841,81 @@ function oauthProviderPayload() {
       enabled: id === 'microsoft',
     });
   });
+}
+
+// Device Diagnostics served app: a live snapshot of the console's three physical channels
+// (Display / Touch / Knob), device-agnostic across DK-QUAKE and bedrock-console. Reads the current
+// HID enumeration + attached displays + cached firmware; the pure classifier decides pass/fail.
+function getDeviceDiagnostics() {
+  let hidDevices = [];
+  try { hidDevices = HID.devices(); } catch (e) {}
+  let displays = [];
+  try { displays = screen.getAllDisplays().map(d => ({ width: d.bounds.width, height: d.bounds.height, id: d.id })); } catch (e) {}
+  let activeName = null;
+  try { activeName = dev && dev.activeName ? dev.activeName() : null; } catch (e) {}
+  const snap = deviceDiagnostics.classify({ hidDevices, displays, activeName, firmware: lastDeviceState.firmware || null });
+  snap.runMode = runMode();   // panel / software / monitor — the page notes when you're not on the device
+  return snap;
+}
+
+// Short sentence on the panel's flash overlay. The only main-side way to tell someone standing at
+// the device that a tap did not do what they expected -- a Windows toast is on the wrong screen.
+function panelNotice(text) {
+  if (!text) return;
+  if (panelWin && !panelWin.isDestroyed()) { try { panelWin.webContents.send('notice', String(text)); } catch (e) {} }
+}
+// One of the five AI Voice hosts, by the backend its page is set to.
+function voiceHostForBackend(backend) {
+  return backend === 'codex' ? codexVoiceHost
+    : backend === 'copilot' ? copilotVoiceHost
+    : backend === 'owui' ? owuiVoiceHost
+    : backend === 'api' ? apiVoiceHost
+    : claudeVoiceHost;
+}
+// AI Routine tile (and macro step): switch the panel to the routine's AI Chat page and send its
+// saved prompt as an ordinary turn -- so it answers with that agent's real tools and approvals.
+//
+// Order matters and is not incidental: onTurn refuses unless the target page is ALREADY the active
+// grid (activeServedAppConfig), and gotoGrid sets config.activeGridId synchronously, so the two
+// must run in this order in the same tick. The webview may still be navigating; that is fine,
+// claudevoiceview replays the host-held transcript from /state when it finishes loading.
+function runRoutine(routineId) {
+  const r = routines.resolveRoutine(routineId, {
+    routines: (config.settings || {}).routines,
+    grids: config.grids,
+  });
+  if (!r.ok) { panelNotice(r.error); console.log('[routine] ' + r.error); return; }
+  if (r.warning) panelNotice(r.warning);
+  gotoGrid(r.pageId, true);
+  const page = (config.grids || []).find(g => g.id === r.pageId) || {};
+  const host = voiceHostForBackend((page.options && page.options.backend) || 'claude');
+  if (!page.options) page.options = {};
+
+  // Apply the routine's profile / mode / folder by writing them onto the page's options and letting
+  // the session START read them -- NEVER via the live setProfile / setPermissionMode switches. On
+  // claude those restart the process with `--resume <id>` to keep the conversation; before the first
+  // turn there is nothing persisted to resume, so that path dies repeatedly with "No conversation
+  // found with session ID". A fresh `start()` mints a new id and passes `--permission-mode` /
+  // `--append-system-prompt` at launch -- clean, and it can never hit that error.
+  let st = {};
+  try { st = host.handlers.getState() || {}; } catch (e) {}
+  const running = !!st.running;
+  const curProfile = page.options.profilePick || '';
+  const curMode = running ? (st.permissionMode || '') : (page.options.permissionMode || '');
+
+  const plan = routines.planRoutineRun({ routine: r.routine, folder: r.folder, running, curProfile, curMode });
+  Object.assign(page.options, plan.options);
+  if (plan.persist) saveConfig();
+  // A LIVE session only picks up a new profile / mode / folder by restarting; do it fresh (new id,
+  // no `--resume`). A cold page needs no restart -- onTurn's lazy start reads the options just set.
+  if (plan.restart) {
+    try { host.handlers.sessionStart(r.folder || undefined); } catch (e) { console.log('[routine] session restart failed: ' + e.message); }
+  }
+  // speak:true -- the page's own speaker toggle decides whether the stream is actually played.
+  let sent = null;
+  try { sent = host.handlers.onTurn(r.routine.prompt, true); } catch (e) { console.log('[routine] ' + e.message); }
+  if (!sent || !sent.ok) panelNotice('Could not start that routine on this page.');
+  else console.log('[routine] ran "' + r.routine.name + '" on page ' + r.pageId);
 }
 
 async function pushToPanel() {
@@ -1152,6 +1367,7 @@ async function runStep(step) {
     case 'text': if (!mediaKeys.typeString(value)) pasteText(value); break;   // type literally; fall back to clipboard paste
     case 'delay': await sleep(Math.max(0, Math.min(60000, parseInt(value, 10) || 0))); break;
     case 'ahk': ahk.run(value, { ahkPath: appSettings().ahkPath }); break;   // AutoHotkey script (inline or .ahk path), Windows-only
+    case 'routine': runRoutine(value); break;   // switch to the AI Chat page and send the saved prompt
     case 'counter': break;   // counter changes are saved by the panel directly via saveTileValue IPC
   }
 }
@@ -1249,13 +1465,143 @@ async function onMeetingActionRequest(platform, action) {
 // Settings live under config.settings.meeting (global, like config.settings.monitor) so auto-record
 // works regardless of which app the panel is showing — the meeting page's per-grid options only
 // exist while it's the active app, which is useless for background recording.
-const MEETING_DEFAULTS = { folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30 };
+const MEETING_DEFAULTS = { folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', joplinEnabled: false, joplinUrl: '', joplinToken: '', joplinNotebook: 'NW Pipe', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30, highlightEnabled: false, panelsOpen: '' };
 function meetingSettings() { return Object.assign({}, MEETING_DEFAULTS, (config.settings || {}).meeting || {}); }
 // Open WebUI connection (config.settings.owui, edited on the Auth tab): shared by the meeting
 // Analysis-AI backend and the owui-voice panel app. apiKey is a secret — encrypted at rest by
 // secretStore, plaintext in memory like haAuth.token.
 const OWUI_DEFAULTS = { url: '', apiKey: '', model: '' };
 function owuiSettings() { return Object.assign({}, OWUI_DEFAULTS, (config.settings || {}).owui || {}); }
+// ---- LucidType dictation (Phase 1) ----
+// Settings live on the lucidtype PAGE's own options (grid.options), like every other app — mic,
+// hotkeys and notifications are all per-page. Dictation runs in the background, so it reads the
+// lucidtype grid's options directly (not activeServedAppConfig, which is only the ACTIVE grid).
+const LUCIDTYPE_DEFAULTS = { micDevice: '', notifyColorChange: false, notifyBeep: false, switchOnDictate: true, dictationHotkey: '', applyHotkey: '', applyStopsRecording: true, silenceMs: 400, startMode: 'clear',
+  // Phase 2 — cleanup/rewrite AI
+  aiBackend: 'claude', useEndpoint: false, endpoint: '', endpointKey: '', overrideModel: false, model: '', aiTimeoutMs: 30000,
+  cleanupHotkey: '', cleanupPrompt: '', rewriteHotkey: '', rewriteMode: 'professional', rewriteCustomPrompt: '',
+  rewritePromptProfessional: '', rewritePromptConcise: '', rewritePromptConfident: '' };
+function lucidtypeGrid() { return (config.grids || []).find(x => x && x.kind === 'app' && x.app === 'lucidtype') || null; }
+function lucidtypeSettings() { const g = lucidtypeGrid(); return Object.assign({}, LUCIDTYPE_DEFAULTS, (g && g.options) || {}); }
+// STT/TTS endpoints for dictation: the lucidtype page's per-page override (Advanced settings) over the
+// global config.settings.voice.
+function lucidtypeVoiceEndpoints() { return voiceConfig.resolveLucidEndpoints(config.settings, config.grids); }
+// Panel poller/SSE payload: dictation state + review state + the resolved STT endpoint + mic label.
+function lucidStateForPanel() {
+  const st = lucidDictation ? lucidDictation.state() : { dictating: false, transcript: '', seq: 0, review: { active: false } };
+  const ep = lucidtypeVoiceEndpoints();
+  const s = lucidtypeSettings();
+  return { dictating: !!st.dictating, transcript: st.transcript || '', seq: st.seq || 0,
+    review: st.review || { active: false }, rewriteMode: s.rewriteMode || 'professional',
+    sttHost: ep.sttHost, sttPort: ep.sttPort, mic: s.micDevice || '' };
+}
+// Cleanup/Rewrite (Phase 2): kick off the transform, or drive the open review (apply/refine/cancel),
+// or set the default rewrite mode from the panel's mode picker.
+function onLucidCleanupRequest() { return lucidDictation ? lucidDictation.runCleanup() : { ok: false, error: 'not ready' }; }
+function onLucidRewriteRequest() { return lucidDictation ? lucidDictation.runRewrite() : { ok: false, error: 'not ready' }; }
+function onLucidReviewRequest(op, text) {
+  if (!lucidDictation) return { ok: false, error: 'not ready' };
+  if (op === 'apply') {
+    const r = lucidDictation.applyReview(text);
+    // Applying always drops the result on the clipboard too, so it can be pasted anywhere.
+    if (r && r.ok) {
+      try { clipboard.writeText(lucidDictation.currentText() || ''); }
+      catch (e) { console.log('[lucidtype] clipboard copy on apply failed: ' + e.message); }
+    }
+    return r;
+  }
+  if (op === 'refine') return lucidDictation.refineReview(text);
+  if (op === 'cancel') return lucidDictation.cancelReview();
+  return { ok: false, error: 'unknown review op' };
+}
+function onLucidSetModeRequest(mode) {
+  const m = ['professional', 'concise', 'confident', 'custom'].includes(mode) ? mode : 'professional';
+  const g = lucidtypeGrid();
+  if (!g) return { ok: false, error: 'no lucidtype page' };
+  if (!g.options) g.options = {};
+  g.options.rewriteMode = m;
+  saveConfig();
+  try { if (sysserver && sysserver.lucidBroadcast) sysserver.lucidBroadcast(lucidStateForPanel()); } catch (e) {}
+  return { ok: true };
+}
+// Resolve the system prompt + backend options for a cleanup/rewrite call (injected into the controller).
+// Rewrite prompt for a mode: the user's edited prompt for that style if set, else the built-in preset
+// (custom falls back to the professional preset if the custom box is empty).
+function lucidRewritePrompt(mode, s) {
+  if (mode === 'custom') return String(s.rewriteCustomPrompt || '').trim() || lucidAImod.REWRITE_PRESETS.professional;
+  const key = 'rewritePrompt' + mode.charAt(0).toUpperCase() + mode.slice(1);
+  return String(s[key] || '').trim() || lucidAImod.REWRITE_PRESETS[mode] || lucidAImod.REWRITE_PRESETS.professional;
+}
+function lucidRunTransform({ kind, mode, text }) {
+  const s = lucidtypeSettings();
+  const systemPrompt = kind === 'rewrite'
+    ? lucidRewritePrompt(mode, s)
+    : (String(s.cleanupPrompt || '').trim() || lucidAImod.DEFAULT_CLEANUP_PROMPT);
+  return lucidAI.transform(systemPrompt, text, {
+    useEndpoint: !!s.useEndpoint, endpoint: s.endpoint, endpointKey: s.endpointKey,
+    backend: s.aiBackend, model: (s.overrideModel || s.useEndpoint) ? String(s.model || '') : '',
+    timeoutMs: Number(s.aiTimeoutMs) || 30000, owui: owuiSettings(),
+  });
+}
+function onLucidDictationRequest(cmd, mode) {
+  if (!lucidDictation) return { ok: false, error: 'not ready' };
+  if (cmd === 'start') return lucidDictation.start(mode === 'append' || mode === 'clear' ? mode : '');
+  if (cmd === 'stop') return lucidDictation.stop();
+  return { ok: false, error: 'unknown command' };
+}
+function toggleLucidDictation() { if (lucidDictation) lucidDictation.toggle(); }
+// Apply-text hotkey — mirrors the on-screen Apply. If a Cleanup/Rewrite review is open (Apply button
+// showing), accept its proposal into the box (which also copies it to the clipboard). Otherwise just
+// copy the box text to the clipboard so it can be pasted anywhere. No auto-paste at the cursor.
+function lucidApply() {
+  if (!lucidDictation) return { ok: false, error: 'not ready' };
+  // "Apply text stops recording" (default on): end an in-progress dictation before applying.
+  if (lucidtypeSettings().applyStopsRecording && lucidDictation.isDictating()) lucidDictation.stop();
+  const st = lucidDictation.state();
+  if (st.review && st.review.active) {
+    if (st.review.status !== 'ready') return { ok: false, error: 'review not ready' };
+    return onLucidReviewRequest('apply', st.review.proposed);
+  }
+  const text = lucidDictation.currentText();
+  if (!text) return { ok: false, error: 'nothing to apply' };
+  try { clipboard.writeText(text); } catch (e) { console.log('[lucidtype] clipboard write failed: ' + e.message); }
+  return { ok: true };
+}
+function onLucidEditRequest(text) { if (lucidDictation) lucidDictation.setTranscript(text); return { ok: true }; }
+// On-panel mic pick (Settings overlay): persist the label on the lucidtype page's options; applies on
+// the next dictation start (same store the editor's mic picker writes to).
+function onLucidSetMicRequest(label) {
+  const g = lucidtypeGrid();
+  if (!g) return { ok: false, error: 'no lucidtype page' };
+  if (!g.options) g.options = {};
+  g.options.micDevice = String(label == null ? '' : label);
+  saveConfig();
+  try { if (sysserver && sysserver.lucidBroadcast) sysserver.lucidBroadcast(lucidStateForPanel()); } catch (e) {}
+  return { ok: true };
+}
+// State-change hook: capture the paste target + optionally switch to the page on the idle->dictating
+// edge, and drive the tray recording indicator. (Tray swap + beep gating land with the settings/hotkey
+// step; the tray helper is a safe no-op until then.)
+let lucidWasDictating = false;
+function onLucidState(st) {
+  try { if (sysserver && sysserver.lucidBroadcast) sysserver.lucidBroadcast(lucidStateForPanel()); } catch (e) {}   // real-time push to the page (SSE)
+  const now = !!(st && st.dictating);
+  if (now && !lucidWasDictating) {
+    try { lucidApplyFocusProc = desktopFocus.getCommittedProcess() || ''; } catch (e) { lucidApplyFocusProc = ''; }
+    if (lucidtypeSettings().switchOnDictate) { const g = lucidtypeGrid(); if (g) gotoGrid(g.id, true); }
+    setLucidTrayRecording(true);
+  } else if (!now && lucidWasDictating) {
+    setLucidTrayRecording(false);
+  }
+  lucidWasDictating = now;
+}
+function setLucidTrayRecording(on) {
+  if (!lucidtypeSettings().notifyColorChange || !tray) return;   // only when the user enabled the indicator
+  try {
+    tray.setImage(on ? (trayImgRecording || trayImgNormal) : (trayImgNormal || nativeImage.createEmpty()));
+    tray.setToolTip(on ? 'open-quake — dictating…' : 'open-quake');
+  } catch (e) {}
+}
 function defaultMeetingFolder() { return path.join(app.getPath('documents'), 'OpenQuake Meetings', 'unprocessed'); }
 function defaultProcessedFolder() { return path.join(app.getPath('documents'), 'OpenQuake Meetings', 'processed'); }
 // Blank folder settings mean "use the default", same convention as the recorder.
@@ -1346,7 +1692,17 @@ function meetingStateForPanel() {
   ensureVolumeWatcher();       // keeps the persistent volume watcher alive while the panel polls
   st.volume = sysVolCache;     // 0-100, or null when unavailable (panel shows "—")
   st.slide = slideCapture ? slideCapture.getState() : { enabled: false };   // drives the slide-capture column
+  st.highlight = meetingHighlights ? meetingHighlights.getState() : { enabled: false };   // drives the highlight column
+  st.panelsOpen = m.panelsOpen || '';   // which utility columns to restore on page load
   return st;
+}
+// Panel remote for mid-meeting highlights (start/stop/cancel), reached over HTTP via sysserver.
+function onHighlightRequest(cmd) {
+  if (!meetingHighlights) return { ok: false, error: 'highlights unavailable' };
+  if (cmd === 'start') return { ok: true, state: meetingHighlights.start() };
+  if (cmd === 'stop') return { ok: true, state: meetingHighlights.stop() };
+  if (cmd === 'cancel') return { ok: true, state: meetingHighlights.cancel() };
+  return { ok: false, error: 'unknown highlight command: ' + cmd };
 }
 // Panel remote for slide capture (windows/select/start/stop/manual), reached over HTTP via sysserver.
 async function onSlideRequest(cmd, arg) {
@@ -1365,7 +1721,19 @@ function onMeetingRecordRequest(cmd, arg) {
   if (cmd === 'stop') return { ok: true, state: meetingRecorder.stop('manual') };
   if (cmd === 'state') return { ok: true, state: meetingStateForPanel() };
   if (cmd === 'setMic') { setMeetingMic(arg); return { ok: true, state: meetingStateForPanel() }; }
+  if (cmd === 'setPanels') { setMeetingPanels(arg); return { ok: true, state: meetingStateForPanel() }; }
   return { ok: false, error: 'unknown record command: ' + cmd };
+}
+// Which utility columns the meeting page has open, remembered across app restarts. It can't live in
+// the page's localStorage: the panel server binds an ephemeral port (listen(0)), so the origin —
+// and with it any web storage — is new on every launch.
+const PANEL_KEYS = ['ctl', 'slide', 'hl'];
+function setMeetingPanels(csv) {
+  const open = String(csv || '').split(',').map(s => s.trim()).filter(s => PANEL_KEYS.includes(s));
+  if (!config.settings) config.settings = {};
+  if (!config.settings.meeting) config.settings.meeting = {};
+  config.settings.meeting.panelsOpen = open.join(',');
+  saveConfig();
 }
 function setMeetingMic(label) {
   if (!config.settings) config.settings = {};
@@ -1405,6 +1773,15 @@ function writeOutlookMeetingInfo(wavName) {   // wavName = basename (recorder st
       if (!info) { console.log('[meeting] calendar: no meeting scheduled now — no info file'); return; }
       info = fixNames(info);
       const dest = path.join(resolveMeetingFolders().unprocessed, wavName.replace(/\.wav$/i, '') + '.json');
+      // The calendar lookup is async and can land after highlights were already flushed to this
+      // same sidecar (short recording, or a slow Outlook/Graph call). Carry any spans across so
+      // the later writer never wins by wiping the other's field.
+      try {
+        if (fs.existsSync(dest)) {
+          const prior = JSON.parse(fs.readFileSync(dest, 'utf8')) || {};
+          if (Array.isArray(prior.highlights) && prior.highlights.length) info.highlights = prior.highlights;
+        }
+      } catch (e) { /* unreadable prior sidecar — the fresh calendar info still wins */ }
       fs.writeFileSync(dest, JSON.stringify(info, null, 2));
       console.log('[meeting] meeting info saved: ' + path.basename(dest) + ' (' + (info.subject || '') + ')');
       // If the lookup completed after a short recording already FINISHED (onRecordingComplete ran
@@ -1503,6 +1880,7 @@ function startMicMonitor() {
     micMonitorProc = spawn(MIC_MONITOR_EXE, [allow], { stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { console.log('[meeting] mic monitor spawn failed:', e.message); micMonitorProc = null; return; }
   let buf = '';
+  let firstLine = true;   // a freshly spawned monitor announces its initial state before polling
   micMonitorProc.stdout.on('data', d => {
     buf += d.toString();
     let nl;
@@ -1510,7 +1888,12 @@ function startMicMonitor() {
       const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
       if (!line) continue;
       let msg; try { msg = JSON.parse(line); } catch (e) { continue; }
+      const wasFirst = firstLine; firstLine = false;
       if (!meetingRecorder) continue;
+      // That opening announcement is a baseline, not a transition. Treating an idle baseline as
+      // "the call ended" stopped recordings mid-meeting and split them into a second file every
+      // time the monitor was respawned. Only a later idle is a real call-ended.
+      if (wasFirst && !msg.active) continue;
       if (msg.active) meetingRecorder.autoStart(msg.app || null);
       else meetingRecorder.autoStop('call-ended');
     }
@@ -1596,6 +1979,7 @@ function placePanel() {
     panelWin.on('move', () => refreshReservedDisplay('panel moved', 350));
     panelWin.on('resize', () => refreshReservedDisplay('panel bounds changed', 350));
     panelWin.once('ready-to-show', () => {
+      if (monitorMode) { pushToPanel(); return; }   // monitor mode was set before first show -> stay hidden (desktop shows)
       const dd = deviceDisplay() || d;
       applyPanelDisplayMode(dd); panelWin.setAlwaysOnTop(true); panelWin.show(); panelWin.focus();
       setTimeout(() => panelWin.setAlwaysOnTop(false), 1500);
@@ -1605,6 +1989,82 @@ function placePanel() {
       refreshReservedDisplay('panel placed', 350);
     });
   } else { applyPanelDisplayMode(d); panelWin.show(); pushToPanel(); refreshReservedDisplay('panel placed', 350); }
+}
+
+// ---- software mode: the panel UI in a normal desktop window (no QUAKE hardware) ----
+// Same served UI as the device panel, loaded with ?mode=software so the page scales its 1920x480
+// stage to fit and shows a mouse-driven page menu. Reuses the panelWin variable so every existing
+// `panelWin && !panelWin.isDestroyed()` path (touch/knob sends, pushToPanel, meeting IPC) just works.
+// The window aspect is locked to 1920:480; closing it drops to the tray (reopen from the tray).
+function createSoftwareWindow() {
+  if (panelWin && !panelWin.isDestroyed()) { panelWin.show(); panelWin.focus(); return; }
+  const wa = screen.getPrimaryDisplay().workArea;
+  const width = Math.max(760, Math.min(1280, wa.width - 80));
+  const height = Math.round(width * 480 / 1920);
+  panelWin = new BrowserWindow({
+    width, height,
+    x: wa.x + Math.round((wa.width - width) / 2),
+    y: wa.y + Math.round((wa.height - height) / 2),
+    minWidth: 760, minHeight: Math.round(760 * 480 / 1920),
+    title: 'open-quake', frame: true, show: false, resizable: true, movable: true,
+    minimizable: true, maximizable: true, fullscreenable: false, autoHideMenuBar: true,
+    backgroundColor: '#000000',
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'panel-preload.js'),
+      webviewTag: true,
+    },
+  });
+  const win = panelWin;   // capture: a live mode switch destroys this window while creating another — the
+                          // stale window's events must not clobber the module-level panelWin of the new one.
+  try { win.setAspectRatio(1920 / 480); } catch (e) {}
+  win.loadFile(path.join(__dirname, 'index.html'), { query: { mode: 'software' } });
+  win.once('ready-to-show', () => { if (win.isDestroyed()) return; win.show(); win.focus(); if (panelWin === win) pushToPanel(); });
+  win.on('closed', () => { if (panelWin === win) panelWin = null; });
+  console.log('software mode: window created (' + width + 'x' + height + ')');
+}
+
+// Create/show the UI window for the current run mode and set reserved-display accordingly. Shared by
+// the initial launch and the live mode switch, so both go through exactly the same placement path.
+function placeUiForMode() {
+  const mode = runMode();
+  if (mode === 'software') {
+    createSoftwareWindow();                              // a desktop window has no device display to protect
+  } else {
+    placePanel();                                        // panel + monitor both live on the QUAKE display
+    if (mode === 'monitor' && panelWin && !panelWin.isDestroyed()) enterMonitorMode();   // boot straight into monitor mode
+  }
+  reservedDisplay.setEnabled(reservedDisplayEnabled(appSettings()));   // forced off in software mode; per-setting otherwise
+}
+
+// Show the UI per the persisted run mode, then apply the launch-time settings that are mode-independent.
+// Called directly on a returning launch, or from the welcome window's Continue on first run.
+function applyRunModeAndLaunch() {
+  placeUiForMode();
+  reservedDisplay.start();
+  if (rotationCfg().enabled) setRotation(true);          // auto-start cycling on launch when enabled
+  applyFocusFollowSettings();                             // auto-start foreground-app polling on launch when enabled
+  applyShortcuts();                                       // register per-page global hotkeys
+  applyTheme();                                           // set OS theme source (drives dashboards) + paint panel + knob accent
+  const ls = appSettings();
+  if (firstRun || ls.launchMode === 'editor') openConfigWindow();
+  else if (ls.launchMode === 'minimized') { openConfigWindow(); if (configWin && !configWin.isDestroyed()) configWin.minimize(); }
+  // 'tray' -> stay quiet (tray + panel/window only)
+}
+
+// Switch run mode WITHOUT relaunching. A relaunch (app.relaunch + app.exit) races the single-instance
+// lock — the new process sees the old lock still held and force-exits, leaving no window — and app.exit
+// skips before-quit so the device keep-alive dies and the panel goes dark. Instead, tear the current
+// window down and rebuild it for the new mode in-process. Persist runMode BEFORE calling this.
+function applyRunModeLive() {
+  if (monitorMode) { monitorMode = false; reservedDisplay.setSuspended(false); releaseTouch(); }   // drop monitor state without re-showing the old panel
+  const old = panelWin; panelWin = null;
+  if (old && !old.isDestroyed()) { try { old.destroy(); } catch (e) {} }
+  placeUiForMode();
+  refreshTray();
+  applyDisplayBlocker();   // leaving Panel releases the blocker; entering Panel re-applies it (if enabled)
+  console.log('run mode switched live -> ' + runMode());
 }
 
 // ---- monitor mode: use the device as a normal monitor ----
@@ -1638,6 +2098,16 @@ function exitMonitorMode(reason) {
   console.log('monitor mode: OFF (' + (reason || '') + ')');
 }
 function toggleMonitorMode() { monitorMode ? exitMonitorMode('tray') : enterMonitorMode(); }
+
+// Persisted run-mode switch from the tray. Applies live in-process (see applyRunModeLive) — no relaunch.
+function switchRunMode(m) {
+  if (m !== 'panel' && m !== 'software' && m !== 'monitor') return;
+  if (runMode() === m) return;
+  if (!config.settings) config.settings = {};
+  config.settings.runMode = m;
+  saveConfig();
+  applyRunModeLive();
+}
 
 // Monitor-mode touch -> OS cursor: tap = left-click, drag = move with the button held, lift = release.
 // Maps the panel's bottom-left-origin coords (x:0..1920, y:0..480) onto the device monitor's screen rect.
@@ -1678,6 +2148,28 @@ function monitorKnob(k) {
   }
 }
 
+// First-run / re-run run-mode picker. A small centered window; its Continue button invokes the
+// setRunMode IPC, which persists the choice, closes this window, and resumes the launch.
+function createWelcomeWindow() {
+  if (welcomeWin && !welcomeWin.isDestroyed()) { welcomeWin.show(); welcomeWin.focus(); return; }
+  const wa = screen.getPrimaryDisplay().workArea;
+  const width = 800, height = 460;
+  welcomeWin = new BrowserWindow({
+    width, height,
+    x: wa.x + Math.round((wa.width - width) / 2),
+    y: wa.y + Math.round((wa.height - height) / 2),
+    title: 'Welcome to open-quake', backgroundColor: '#05080d',
+    resizable: false, minimizable: false, maximizable: false, fullscreenable: false, autoHideMenuBar: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'welcome-preload.js'),
+    },
+  });
+  welcomeWin.loadFile(path.join(__dirname, 'welcome.html'));
+  welcomeWin.on('closed', () => { welcomeWin = null; });
+}
+
 function openConfigWindow() {
   if (configWin && !configWin.isDestroyed()) { configWin.show(); configWin.focus(); return; }
   const wa = screen.getPrimaryDisplay().workArea;   // full usable screen height (minus taskbar)
@@ -1714,12 +2206,31 @@ function applyKnobSettings() {
   const lig = (config.settings && config.settings.lighting) || {};
   let hue = L.hue, sat = L.sat;
   if (!lig.accentOverride) { const hs = hexToHsv255(themeGlobal().accent); if (hs) { hue = hs.hue; sat = hs.sat; } }   // ring follows the accent unless its color is overridden
-  try { dev.setKnobLed(true); } catch (e) {}              // keep the ring from idle-sleeping (effect 0 = visually off)
-  try { dev.setLedEffect(L.effect & 0xFF); } catch (e) {}
-  try { dev.setLedBrightness(L.brightness & 0xFF); } catch (e) {}
+  try { dev.setKnobLed(true); } catch (e) {}              // keep the ring from idle-sleeping
+  // "All Off" (settings effect 0) is sent to the DEVICE as the last live effect at brightness 0,
+  // not as matrix effect 0: with effect 0 the firmware blacks out the whole LED subsystem
+  // INCLUDING the mic indicator, so the mic LED stopped following mic toggles (confirmed on
+  // hardware — the screenOn+setMic re-assert did not revive it). The ring stays visually dark
+  // either way; the stored setting remains 0 so the on/off toggle logic is unchanged.
+  const allOff = (L.effect & 0xFF) === 0;
+  try { dev.setLedEffect((allOff ? (lastRingEffect || 1) : L.effect) & 0xFF); } catch (e) {}
+  try { dev.setLedBrightness((allOff ? 0 : L.brightness) & 0xFF); } catch (e) {}
   try { dev.setLedSpeed(L.speed & 0xFF); } catch (e) {}
   try { dev.setLedColor(hue & 0xFF, sat & 0xFF); } catch (e) {}
   if (L.effect) lastRingEffect = L.effect;
+  // "All Off" (effect 0) repaints the matrix dark and can drop the firmware's mic indicator with
+  // it (same latch class as the connect-time re-assert below in whenReady). Re-assert the mic
+  // state after the effect settles so a lit mic LED survives switching the ring off.
+  if ((L.effect & 0xFF) === 0) setTimeout(() => reassertMicLed('ring set to All Off'), 400);
+}
+// The firmware occasionally drops the mic LED (never the audio toggle) when the LED subsystem is
+// asleep or mid-repaint — proven at connect time, and reported again with the ring on "All Off"
+// (effect 0). The workaround mirrors the connect path: wake the panel, then re-send the current
+// mic state so the LED latches. Harmless when the LED already agrees.
+function reassertMicLed(why) {
+  try { dev.screenOn(); } catch (e) {}
+  try { dev.setMic(micState); } catch (e) {}
+  console.log('mic LED re-assert (' + why + '):', micState);
 }
 // ---- ring override (Claude Code voice states) ----
 // A served page signals its state via console.log('OQX_RING::<state>') (caught in index.js, funneled
@@ -1756,7 +2267,13 @@ function clearRingOverride() {
   ringOverrideState = null;
   applyKnobSettings();
 }
-function applyMic(on) { try { dev.setMic(on); } catch (e) {} micState = !!on; refreshTray(); }
+function applyMic(on) {
+  try { dev.setMic(on); } catch (e) {}
+  micState = !!on; refreshTray();
+  // With the ring on "All Off" the LED subsystem can be idle and the single setMic above toggles
+  // the audio but the mic LED never follows — wake it and re-assert (see reassertMicLed).
+  if ((lighting().effect & 0xFF) === 0 && !ringOverrideState) setTimeout(() => reassertMicLed('mic toggle at ring All Off'), 350);
+}
 function toggleMic() { applyMic(!micState); }
 function toggleKnobRing() {
   if (!config.settings) config.settings = {};
@@ -1780,6 +2297,10 @@ function pageCategory(g) { return g.kind === 'web' ? 'dashboards' : g.kind === '
 function rotationList() { const c = rotationCfg(); return config.grids.filter(g => g.rotate && c.cats[pageCategory(g)] && !g.hidden); }
 function gotoGrid(id, persist) {
   if (!config.grids.some(g => g.id === id)) return;
+  // Any OTHER navigation while the screensaver auto-started itself (page hotkey, focus-follow,
+  // a tile action) simply ends the saver — no restore, the navigation wins. The saver's own
+  // enter/wake calls never trip this: enter sets saverActive after this call, wake clears it before.
+  if (saverActive && id !== config.activeGridId) dissolveSaver();
   clearRingOverride();   // leaving whatever page set the override (if any) — always restore the normal ring
   config.activeGridId = id; if (persist) saveConfig(); pushToPanel();
 }
@@ -1825,6 +2346,20 @@ function applyShortcuts() {
       if (!ok) console.log('shortcut already in use, not registered:', g.shortcut, '->', g.id);
     } catch (e) { console.log('shortcut register error:', g.shortcut, '-', e.message); }
   }
+  // Live Translate: a per-page hotkey that toggles translation (start/stop listening). Global, so it
+  // fires from any app; if the page isn't on-screen it is switched to first, then the mic toggles.
+  for (const g of (config.grids || [])) {
+    if (!(g.kind === 'app' && g.app === 'livetranslate' && g.options && g.options.micHotkey)) continue;
+    try {
+      const ok = globalShortcut.register(g.options.micHotkey, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(g.options.micHotkey).forEach(m => mediaKeys.keyUp(m));
+        const active = activeGrid();
+        if (!(active && active.id === g.id)) gotoGrid(g.id, true);   // bring the page on-screen (loads it)
+        if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('micToggle');
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', g.options.micHotkey, '-> livetranslate toggle', g.id);
+    } catch (e) { console.log('shortcut register error:', g.options.micHotkey, '-', e.message); }
+  }
   // Rotation toggle hotkey: same start/stop path as the knob, tray, and panel, so all three stay in sync.
   // Only registered while auto-rotate is enabled — matches the tray item (which hides when it's off) and
   // avoids holding a global combo hostage for a feature that can't run. Page hotkeys register first, so a
@@ -1849,6 +2384,59 @@ function applyShortcuts() {
       });
       if (!ok) console.log('shortcut already in use, not registered:', dashReload.hotkey, '-> dashboard reload');
     } catch (e) { console.log('shortcut register error:', dashReload.hotkey, '-', e.message); }
+  }
+  // Screen forward/back hotkeys: step the panel through the visible pages from anywhere. No toggle;
+  // registered whenever a combo is set.
+  const pageStep = pageStepCfg();
+  [['nextHotkey', 1, 'page forward'], ['prevHotkey', -1, 'page back']].forEach(function (spec) {
+    const combo = pageStep[spec[0]];
+    if (!combo) return;
+    try {
+      const ok = globalShortcut.register(combo, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(combo).forEach(m => mediaKeys.keyUp(m));
+        stepPage(spec[1]);
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', combo, '->', spec[2]);
+    } catch (e) { console.log('shortcut register error:', combo, '-', e.message); }
+  });
+  // LucidType dictation hotkeys: toggle dictation + apply text. Global (fire regardless of focus) so
+  // dictation starts from any app and Apply pastes into whatever window is foreground.
+  const lt = lucidtypeSettings();
+  if (lt.dictationHotkey) {
+    try {
+      const ok = globalShortcut.register(lt.dictationHotkey, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(lt.dictationHotkey).forEach(m => mediaKeys.keyUp(m));
+        toggleLucidDictation();
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', lt.dictationHotkey, '-> lucidtype dictation');
+    } catch (e) { console.log('shortcut register error:', lt.dictationHotkey, '-', e.message); }
+  }
+  if (lt.applyHotkey) {
+    try {
+      const ok = globalShortcut.register(lt.applyHotkey, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(lt.applyHotkey).forEach(m => mediaKeys.keyUp(m));
+        lucidApply();
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', lt.applyHotkey, '-> lucidtype apply');
+    } catch (e) { console.log('shortcut register error:', lt.applyHotkey, '-', e.message); }
+  }
+  if (lt.cleanupHotkey) {
+    try {
+      const ok = globalShortcut.register(lt.cleanupHotkey, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(lt.cleanupHotkey).forEach(m => mediaKeys.keyUp(m));
+        if (lucidDictation) lucidDictation.runCleanup();
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', lt.cleanupHotkey, '-> lucidtype cleanup');
+    } catch (e) { console.log('shortcut register error:', lt.cleanupHotkey, '-', e.message); }
+  }
+  if (lt.rewriteHotkey) {
+    try {
+      const ok = globalShortcut.register(lt.rewriteHotkey, () => {
+        if (process.platform === 'win32') modifiersInAccelerator(lt.rewriteHotkey).forEach(m => mediaKeys.keyUp(m));
+        if (lucidDictation) lucidDictation.runRewrite();
+      });
+      if (!ok) console.log('shortcut already in use, not registered:', lt.rewriteHotkey, '-> lucidtype rewrite');
+    } catch (e) { console.log('shortcut register error:', lt.rewriteHotkey, '-', e.message); }
   }
   registerSlideHotkeys();   // last, after the unregisterAll above, so a settings change re-arms them
 }
@@ -1883,13 +2471,15 @@ function rotateTick() {
 }
 function scheduleRotation() {
   if (rotTimer) { clearTimeout(rotTimer); rotTimer = null; }
-  if (!rotateRunning || rotationSuspended) return;
+  // saverActive: auto-rotation holds off while the screensaver auto-started itself (wake re-arms).
+  // rotationSuspended stays exclusively owned by focus-follow, which re-derives it.
+  if (!rotateRunning || rotationSuspended || saverActive) return;
   rotTimer = setTimeout(() => { rotateTick(); scheduleRotation(); }, rotationCfg().interval * 1000);
 }
 function pushRotationState() {
   if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('rotation', { enabled: rotationCfg().enabled, running: rotateRunning });
 }
-function setRotation(on) { rotateRunning = !!on && rotationCfg().enabled; scheduleRotation(); refreshTray(); pushRotationState(); }
+function setRotation(on) { rotateRunning = !!on; scheduleRotation(); refreshTray(); pushRotationState(); }
 function toggleRotation() { setRotation(!rotateRunning); }
 // Re-evaluate after a settings change: a fresh off->on starts it, off stops it, on->on keeps the runtime state
 // (so a manual pause survives an unrelated save). interval/page changes are picked up by the (re)schedule.
@@ -1898,6 +2488,66 @@ function applyRotationSettings(wasEnabled) {
   if (!enabled) rotateRunning = false;
   else if (!wasEnabled) rotateRunning = true;
   scheduleRotation(); refreshTray(); pushRotationState();
+}
+
+// ---- screensaver auto-start (idle -> screensaver page, any input -> back where you were) ----
+// All DECISIONS live in screensaver-idle.js (pure, unit-tested); this is the thin stateful shell.
+// The 10s interval re-reads live config every tick, so editor changes need no re-arm dance.
+function voiceSessionBusy() {
+  // The active page mid listening/thinking/speaking/approval drives the ring override (all five
+  // ai-voice backends AND Live Translate's captioning set it) — the one main-side signal that a
+  // conversation is actually in flight. Backgrounded agent sessions still THINKING are caught via
+  // host status; an idle background session deliberately does not block the screensaver.
+  if (ringOverrideState) return true;
+  return [claudeVoiceHost, codexVoiceHost, copilotVoiceHost, owuiVoiceHost, apiVoiceHost]
+    .some(h => {
+      try { const s = h.handlers.getState().status; return s === 'thinking' || s === 'approval'; }
+      catch (e) { return false; }
+    });
+}
+function saverTick() {
+  // Self-heal: an editor save can swap the active page without gotoGrid — never keep swallowing.
+  if (saverActive && !saverIdle.isScreensaverGrid(activeGrid())) dissolveSaver();
+  const d = saverIdle.evaluateSaverTick({
+    runMode: runMode(), monitorMode, saverActive,
+    activeGridId: config.activeGridId, grids: config.grids || [],
+    now: Date.now(), lastInputAt: lastPanelInputAt,
+    voiceBusy: voiceSessionBusy(),
+    meetingRecording: !!(meetingRecorder && meetingRecorder.getState().recording),
+  });
+  if (d.enter) enterSaver(d.enter);
+}
+function enterSaver(id) {
+  saverPrevGridId = config.activeGridId;
+  gotoGrid(id, false);            // before setting saverActive, so gotoGrid's dissolve guard stays quiet
+  saverActive = true;
+  scheduleRotation();             // rotation holds off via the saverActive guard
+}
+function dissolveSaver() {
+  saverActive = false; saverPrevGridId = null; saverSwallowUntil = 0; saverTouchHeld = false;
+  scheduleRotation();
+}
+function wakeFromSaver() {
+  saverActive = false;            // before gotoGrid, so the dissolve guard doesn't fire
+  const target = saverIdle.saverRestoreTarget(config, saverPrevGridId);
+  saverPrevGridId = null;
+  if (target) gotoGrid(target, false);   // explicit fallback chain — gotoGrid silently no-ops on a dead id
+  scheduleRotation();
+}
+// Runs on every hardware touch/knob event (after monitor-mode handling). Returns true when the
+// event must NOT reach the panel renderer: the wake input and its whole gesture get eaten so they
+// can't toggle a mic, move the selector, or flip pages on the page being restored.
+function saverConsumesInput(kind, evt) {
+  if (!saverActive && !saverTouchHeld && !saverSwallowUntil) return false;   // fast path
+  const d = saverIdle.swallowDecision({
+    saverActive, activeIsSaver: saverIdle.isScreensaverGrid(activeGrid()),
+    touchHeld: saverTouchHeld, swallowUntil: saverSwallowUntil,
+  }, kind, evt, Date.now());
+  saverTouchHeld = d.touchHeld;
+  saverSwallowUntil = d.swallowUntil;
+  if (d.dissolve) dissolveSaver();
+  if (d.wake) wakeFromSaver();
+  return d.swallow;
 }
 
 // ---- keyboard shortcuts (System/Pages/Custom cheat-sheet app) ----
@@ -1918,9 +2568,27 @@ function keyboardShortcutsSnapshot() {
   const pages = (config.grids || [])
     .filter(g => g.shortcut)
     .map(g => ({ id: g.id, name: g.name || g.id, shortcut: g.shortcut, stopsRotation: !!g.shortcutStopsRotation }));
+  // Each app's OWN hotkeys (not the page-jump shortcut above): action label + the page/app name.
+  const apps = [];
+  const addApp = (shortcut, action, app) => { if (shortcut) apps.push({ shortcut, action, app }); };
+  (config.grids || []).filter(g => g.kind === 'app' && g.app === 'lucidtype').forEach(g => {
+    const o = g.options || {}, nm = g.name || 'LucidType';
+    addApp(o.dictationHotkey, 'Start / stop dictation', nm);
+    addApp(o.applyHotkey, 'Apply text', nm);
+    addApp(o.cleanupHotkey, 'Cleanup', nm);
+    addApp(o.rewriteHotkey, 'Rewrite', nm);
+  });
+  const mtg = meetingSettings();
+  if (mtg.slideCaptureEnabled) {
+    addApp(mtg.slideHotkeyToggle, 'Slide capture — start / stop', 'Meeting');
+    addApp(mtg.slideHotkeySelect, 'Slide capture — select window', 'Meeting');
+    addApp(mtg.slideHotkeyManual, 'Slide capture — capture now', 'Meeting');
+  }
+  addApp(dashboardReloadCfg().hotkey, 'Reload the current dashboard', 'Dashboards');
   return {
     rotation: (rot.enabled && rot.hotkey) ? { hotkey: rot.hotkey } : null,
     pages,
+    apps,
     custom: customShortcutsCfg(),
   };
 }
@@ -1933,6 +2601,18 @@ function focusFollowCfg() { const f = (config.settings && config.settings.focusF
 // src unchanged when the URL matches, so sessions/scroll state survive page switches) -- this is the
 // deliberate way to force one anyway. Only acts on a currently-showing dashboard/web page.
 function dashboardReloadCfg() { const d = (config.settings && config.settings.dashboardReload) || {}; return { hotkey: typeof d.hotkey === 'string' ? d.hotkey : '' }; }
+// Screen forward/back global hotkeys: step through the visible pages (gridList already excludes
+// hidden ones) in editor order, wrapping. dir = +1 forward, -1 back.
+function pageStepCfg() { const p = (config.settings && config.settings.pageStep) || {}; return { nextHotkey: typeof p.nextHotkey === 'string' ? p.nextHotkey : '', prevHotkey: typeof p.prevHotkey === 'string' ? p.prevHotkey : '' }; }
+function stepPage(dir) {
+  const list = gridList();                       // {id,name}[] of non-hidden pages, config order
+  if (!list.length) return;
+  let idx = list.findIndex(p => p.id === config.activeGridId);
+  if (idx < 0) idx = 0;                           // active page hidden/unknown -> start from the first
+  const next = list[((idx + dir) % list.length + list.length) % list.length];
+  gotoGrid(next.id, true);
+  if (rotateRunning) scheduleRotation();          // a manual step resets the rotation timer, like the knob/tray
+}
 function reloadActiveDashboard() {
   const g = activeGrid();
   if (g && g.kind === 'web' && panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('reloadDashboard');
@@ -1976,16 +2656,49 @@ function trayMenu() {
     { label: micState ? 'Mic: on — click to disable' : 'Mic: off — click to enable', click: () => toggleMic() },
     { label: ringOn ? 'Knob ring: on — click to turn off' : 'Knob ring: off — click to turn on', click: () => toggleKnobRing() },
   ];
-  if (rotationCfg().enabled) items.push({ label: rotateRunning ? 'Auto-rotate: on — click to pause' : 'Auto-rotate: off — click to start', click: () => toggleRotation() });
+  if (rotationCfg().enabled || rotateRunning) items.push({ label: rotateRunning ? 'Auto-rotate: on — click to pause' : 'Auto-rotate: off — click to start', click: () => toggleRotation() });
+  const rm = runMode();
+  items.push({
+    label: 'Run mode',
+    submenu: [
+      { label: 'Panel (QUAKE hardware)', type: 'radio', checked: rm === 'panel', click: () => switchRunMode('panel') },
+      { label: 'Software window', type: 'radio', checked: rm === 'software', click: () => switchRunMode('software') },
+      { label: 'Monitor (device as display)', type: 'radio', checked: rm === 'monitor', click: () => switchRunMode('monitor') },
+    ],
+  });
+  if (rm === 'software') {
+    // Software mode: the window may have been closed (app stays in the tray) -> offer to reopen it.
+    items.push({ label: (panelWin && !panelWin.isDestroyed()) ? 'Show window' : 'Open window', click: () => createSoftwareWindow() });
+  } else {
+    items.push(
+      { label: monitorMode ? 'Monitor mode: on — click to return to panel' : 'Switch to monitor mode (use device as a normal monitor)', click: () => toggleMonitorMode() },
+      { label: 'Re-place panel on device', enabled: !monitorMode, click: () => { try { dev.screenOn(); } catch (e) {} placePanel(); } },
+    );
+  }
   items.push(
-    { label: monitorMode ? 'Monitor mode: on — click to return to panel' : 'Switch to monitor mode (use device as a normal monitor)', click: () => toggleMonitorMode() },
-    { label: 'Re-place panel on device', enabled: !monitorMode, click: () => { try { dev.screenOn(); } catch (e) {} placePanel(); } },
     { type: 'separator' },
     { label: 'Quit', click: () => { try { dev.stop(); } catch (e) {} app.quit(); } },
   );
   return Menu.buildFromTemplate(items);
 }
 function refreshTray() { if (tray) tray.setContextMenu(trayMenu()); }
+let trayImgNormal = null, trayImgRecording = null;
+// Red-tinted copy of the tray icon for the LucidType "dictating" state — derived from the app icon at
+// startup (no separate asset), so it's unmistakably the same app in a recording state. Windows only;
+// the macOS menu-bar icon is a template glyph that can't carry color.
+function tintIconRed(img) {
+  try {
+    const size = img.getSize();
+    if (!size.width || !size.height) return img;
+    const bmp = img.toBitmap();   // BGRA
+    for (let i = 0; i < bmp.length; i += 4) {
+      bmp[i] = Math.round(bmp[i] * 0.20);                            // B
+      bmp[i + 1] = Math.round(bmp[i + 1] * 0.20);                    // G
+      bmp[i + 2] = Math.min(255, Math.round(bmp[i + 2] * 0.5 + 150)); // R (boosted)
+    }
+    return nativeImage.createFromBitmap(bmp, { width: size.width, height: size.height });
+  } catch (e) { return img; }
+}
 function createTray() {
   if (tray) return;
   let img;
@@ -1996,6 +2709,8 @@ function createTray() {
       img.setTemplateImage(true);                      // monochrome menu-bar glyph that adapts to light/dark (macOS HIG)
     }
   } catch (e) { img = nativeImage.createEmpty(); }
+  trayImgNormal = img;
+  trayImgRecording = process.platform === 'darwin' ? img : tintIconRed(img);
   tray = new Tray(img);
   tray.setToolTip('open-quake');
   refreshTray();
@@ -2010,7 +2725,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
 app.on('second-instance', () => {
   try { dev.screenOn(); } catch (e) {}
-  placePanel();
+  if (runMode() === 'software') createSoftwareWindow(); else placePanel();
   if (configWin && !configWin.isDestroyed()) { configWin.show(); configWin.focus(); }
   else openConfigWindow();
 });
@@ -2063,7 +2778,7 @@ app.whenReady().then(async () => {
   if (secretStore.available()) {
     if (needsMigration) saveConfig();                        // migrate plaintext/legacy config to current at-rest form
   } else if (needsMigration) console.log('secret encryption unavailable — refusing to rewrite config secrets');
-  try { powerSaveBlocker.start('prevent-display-sleep'); } catch (e) {}
+  applyDisplayBlocker();   // keep-display-awake only when enabled + in Panel mode; otherwise the screensaver works
   createTray();
   // SystemView: live local metrics server on 127.0.0.1 (OS-assigned port) + ensure the dashboard page.
   // Lazy-required so a metrics/load failure can never crash the rest of the app.
@@ -2075,38 +2790,55 @@ app.whenReady().then(async () => {
       onOpenExternal: openExternalUrl, onMeetingAction: onMeetingActionRequest, appFolders: discoveredServedApps(),
       getMeetingState: meetingStateForPanel, onMeetingRecord: onMeetingRecordRequest,
       onMeetingLibrary: onMeetingLibraryRequest, resolveMeetingAudio: resolveMeetingAudioPath,
-      onSlide: onSlideRequest,
+      onSlide: onSlideRequest, onHighlight: onHighlightRequest,
+      getDeviceDiagnostics: getDeviceDiagnostics,
+      getLucidState: lucidStateForPanel, onLucidDictation: onLucidDictationRequest,
+      onLucidApply: lucidApply, onLucidEdit: onLucidEditRequest, onLucidSetMic: onLucidSetMicRequest,
+      onLucidCleanup: onLucidCleanupRequest, onLucidRewrite: onLucidRewriteRequest,
+      onLucidReview: onLucidReviewRequest, onLucidSetMode: onLucidSetModeRequest,
       getShortcuts: keyboardShortcutsSnapshot,
       // Voice-panel app registry: each entry gets the full /<appId>/* route surface (see
       // sysserver.js). voiceToken gates the claude approval hook's /approval-request long-poll.
       voiceApps: {
-        'claude-voice': {
+        // AI Voice: ONE app id, one page, five backends. The page serves at /ai-voice; every other
+        // route carries the backend as a sub-prefix (/ai-voice/<backend>/turn, …) so requests bind
+        // to the right host with no dependence on which page is active. Only the claude backend has
+        // a voiceToken (its approvals arrive from an external hook; the others are in-band or none).
+        'ai-voice': {
           htmlFile: 'claudevoiceview.html',
-          handlers: claudeVoiceHost.handlers,
-          voiceToken: claudeVoiceHost.adapter.hookToken(),
+          backends: {
+            claude: { handlers: claudeVoiceHost.handlers, voiceToken: claudeVoiceHost.adapter.hookToken() },
+            codex: { handlers: codexVoiceHost.handlers },
+            copilot: { handlers: copilotVoiceHost.handlers },
+            owui: { handlers: owuiVoiceHost.handlers },
+            api: { handlers: apiVoiceHost.handlers },
+          },
         },
-        // Same page, same route surface, codex adapter behind it. No voiceToken: codex approvals
-        // are in-band protocol requests, so the external-hook route doesn't exist for it.
-        'codex-voice': {
-          htmlFile: 'claudevoiceview.html',
-          handlers: codexVoiceHost.handlers,
+        // Live Translate: a captions page, not an agent. Only transcribe/getState/setOption are
+        // implemented; no voiceToken and none of the LLM turn/SSE/speech routes are used.
+        'livetranslate': {
+          htmlFile: 'livetranslateview.html',
+          handlers: liveTranslateHost.handlers,
         },
-        // Same page again, copilot's ACP adapter behind it. No voiceToken: same in-band posture as codex.
-        'copilot-voice': {
-          htmlFile: 'claudevoiceview.html',
-          handlers: copilotVoiceHost.handlers,
-        },
-        // Same page a fourth time, the Open WebUI HTTP adapter behind it. No voiceToken: it
-        // never emits approvals at all.
-        'owui-voice': {
-          htmlFile: 'claudevoiceview.html',
-          handlers: owuiVoiceHost.handlers,
+        // Screensaver: scenes render in the page; the host only lists/streams the media folder
+        // (getState/setOption/resolveMedia/getProjects) — no voiceToken, no LLM routes.
+        'screensaver': {
+          htmlFile: 'screensaverview.html',
+          handlers: screensaverHost.handlers,
         },
       },
     });
     ensureSystemViewPage(serverPort); ensureMusicPage(); ensureDropInDir();
     const haUrl = configureHaSchedule();
     console.log('SystemView + Music on http://127.0.0.1:' + serverPort + (haUrl ? ' · HA Schedule -> ' + haUrl : ''));
+
+    // Highlights ride the recorder's state edges (reset on start, auto-close + flush on stop), so
+    // build them first — the recorder's onState below hands every change straight over.
+    meetingHighlights = createMeetingHighlights({
+      resolveFolders: resolveMeetingFolders,
+      resolveSettings: meetingSettings,
+      log: msg => console.log('[meeting] ' + msg),
+    });
 
     // Meeting recorder: hidden capture window on its OWN session partition (persist:recorder) with
     // the loopback handler registered ONLY there (never the shared dashboards session). Created once
@@ -2128,6 +2860,10 @@ app.whenReady().then(async () => {
         return st => {
           if (st.recording && !wasRecording && st.file) { try { writeOutlookMeetingInfo(st.file); } catch (e) {} }
           if (!st.recording && wasRecording && slideCapture) { try { slideCapture.onRecordingStopped(); } catch (e) {} }
+          // Runs on both edges: arms the span list against this recording, and on the stopping
+          // edge auto-closes + writes the sidecar. Synchronous, so it lands before the stream-close
+          // callback renames that sidecar in appendMeetingNameToRecording.
+          if (meetingHighlights) { try { meetingHighlights.onRecordingState(st); } catch (e) {} }
           wasRecording = !!st.recording;
         };
       })(),
@@ -2183,6 +2919,38 @@ app.whenReady().then(async () => {
     });
     applySlideHotkeys();
 
+    // LucidType dictation: a hidden capture window on its own session (persist:lucidtype) with a mic
+    // grant, running the shared VAD; each utterance is transcribed via Wyoming and appended to the
+    // running transcript the /lucidtype page shows and Apply pastes. Independent of the meeting recorder.
+    lucidDictation = createLucidDictation({
+      createWindow: () => {
+        const sess = session.fromPartition('persist:lucidtype');
+        sess.setPermissionRequestHandler(handleDashboardPermissionRequest);   // grants getUserMedia mic for our local page
+        const w = new BrowserWindow({
+          show: false, width: 320, height: 200, skipTaskbar: true,
+          webPreferences: {
+            nodeIntegration: false, contextIsolation: true, backgroundThrottling: false,
+            preload: path.join(__dirname, 'lucidtype-dictate-preload.js'), session: sess,
+          },
+        });
+        try { w.loadURL('http://127.0.0.1:' + serverPort + '/lucidtype-dictate'); } catch (e) { console.log('[lucidtype] loadURL error: ' + e.message); }
+        return w;
+      },
+      resolveSettings: () => { const s = lucidtypeSettings(); return { micDevice: s.micDevice, silenceMs: s.silenceMs, notifyBeep: !!s.notifyBeep, startMode: s.startMode, rewriteMode: s.rewriteMode }; },
+      resolveEndpoints: () => lucidtypeVoiceEndpoints(),
+      transcribe: async ({ host, port, audio }) => {
+        const t = await lucidWyoming.transcribe({ host, port, audio, rate: 16000, width: 2, channels: 1, log: m => console.log('[lucidtype] ' + m) });
+        return voiceConfig.isSttNoisePhrase(t) ? '' : t;
+      },
+      transform: lucidRunTransform,                                    // cleanup/rewrite AI (Phase 2)
+      readClipboard: () => { try { return clipboard.readText(); } catch (e) { return ''; } },
+      onState: onLucidState,
+      log: msg => console.log('[lucidtype] ' + msg),
+    });
+    lucidDictation.ensureWindow();   // arm the hidden window so a hotkey can start dictation instantly
+    ipcMain.on('lucid-pcm', (e, bytes) => { try { if (lucidDictation && bytes) lucidDictation.onUtterance(Buffer.from(bytes)); } catch (er) {} });
+    ipcMain.on('lucid-log', (e, msg) => console.log('[lucidtype] ' + msg));
+
     // Transcription pipeline: library (list/delete), diarizer upload queue, and CLI analysis.
     // Lazy-required + individually try/caught like the recorder so a failure here can never take
     // down call control or recording.
@@ -2216,6 +2984,10 @@ app.whenReady().then(async () => {
         resolveTaskList: () => {
           const m = meetingSettings();
           return { enabled: !!m.taskListEnabled, folder: m.taskListFolder || '' };
+        },
+        resolveJoplin: () => {
+          const m = meetingSettings();
+          return { enabled: !!m.joplinEnabled, url: m.joplinUrl || '', token: m.joplinToken || '', notebook: m.joplinNotebook || '' };
         },
         log: msg => console.log('[meeting] ' + msg),
       });
@@ -2280,6 +3052,16 @@ app.whenReady().then(async () => {
   ipcMain.on('volume', (e, v) => { if (!isFrom(e, panelWin)) return; mediaKeys.volume(v); });
   ipcMain.on('media', (e, cmd) => { if (!isFrom(e, panelWin)) return; mediaKey(cmd); });   // knob 'enter' on the music page -> play/pause
   ipcMain.on('switchGrid', (e, id) => { if (!isFrom(e, panelWin)) return; gotoGrid(id, true); if (rotateRunning) scheduleRotation(); });   // a manual pick resets the rotation timer
+  // Focus a page ON THE DEVICE from the editor. Only pages already in main's config (i.e. saved) can
+  // be focused -- the editor blocks this when it has unsaved changes, so an id we don't know is an
+  // error, not a silent no-op. This is the one place the editor is allowed to move the live page.
+  ipcMain.handle('focusPage', (e, id) => {
+    if (!isFrom(e, configWin)) return { ok: false, error: 'not authorized' };
+    if (!config.grids.some(g => g.id === id)) return { ok: false, error: 'That page is not saved yet.' };
+    gotoGrid(String(id), true);
+    if (rotateRunning) scheduleRotation();
+    return { ok: true };
+  });
   ipcMain.on('toggleRotation', (e) => { if (!isFrom(e, panelWin)) return; toggleRotation(); });
   ipcMain.on('startRotation', (e) => { if (!isFrom(e, panelWin)) return; setRotation(true); });
   ipcMain.on('stopRotation', (e) => { if (!isFrom(e, panelWin)) return; setRotation(false); });
@@ -2337,20 +3119,22 @@ app.whenReady().then(async () => {
     } catch (err) { return []; }
   });
   ipcMain.handle('getHaCache', (e) => isFrom(e, configWin) ? haCache : null);
+  ipcMain.handle('getEmojiIndex', (e) => isFrom(e, configWin) ? EMOJI_INDEX : null);
   ipcMain.handle('refreshHaCache', (e) => isFrom(e, configWin) ? refreshHaCache() : null);
   // Editor voice-app options: is the page's CLI actually installed? Lets the editor warn at
   // add-time instead of the user discovering a dead page on the panel later.
-  ipcMain.handle('probeVoiceCli', (e, appId) => {
+  ipcMain.handle('probeVoiceCli', (e, backend) => {
     if (!isFrom(e, configWin)) return null;
     try {
-      if (appId === 'claude-voice') return findClaudeExe() || null;
-      if (appId === 'codex-voice') return findCodexExe() || null;
-      if (appId === 'copilot-voice') return findCopilotExe() || null;
-      // owui-voice has no CLI — "found" means a usable URL is configured on the Auth tab.
-      if (appId === 'owui-voice') {
+      if (backend === 'claude') return findClaudeExe() || null;
+      if (backend === 'codex') return findCodexExe() || null;
+      if (backend === 'copilot') return findCopilotExe() || null;
+      // owui has no CLI — "found" means a usable URL is configured on the Auth tab.
+      if (backend === 'owui') {
         const ep = owuiClient.normalizeOwuiUrl(owuiSettings().url);
         return ep ? ep.origin : null;
       }
+      // api: nothing to probe here — the page's own URL/key fields carry the connection.
     } catch (err) {}
     return null;
   });
@@ -2366,6 +3150,21 @@ app.whenReady().then(async () => {
       return { ok: true, origin: ep.origin, models };
     } catch (err) {
       if (err && (err.statusCode === 401 || err.statusCode === 403)) return { ok: false, error: 'Open WebUI rejected the API key (HTTP ' + err.statusCode + ')' };
+      return { ok: false, error: (err && err.message) || 'connection failed' };
+    }
+  });
+  // Model list for the AI Voice API backend's editor dropdown: hit the endpoint's standard
+  // OpenAI-compatible /models with the page's own URL + key (probeOwui's pattern, minus the
+  // OWUI-specific URL normalization — the base here is entered verbatim).
+  ipcMain.handle('probeApiModels', async (e, url, apiKey) => {
+    if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
+    const base = String(url || '').trim().replace(/\/+$/, '');
+    if (!base) return { ok: false, error: 'no base URL' };
+    try {
+      const models = await owuiClient.listModels(base + '/models', String(apiKey || ''));
+      return { ok: true, models };
+    } catch (err) {
+      if (err && (err.statusCode === 401 || err.statusCode === 403)) return { ok: false, error: 'the endpoint rejected the key (HTTP ' + err.statusCode + ')' };
       return { ok: false, error: (err && err.message) || 'connection failed' };
     }
   });
@@ -2414,6 +3213,8 @@ app.whenReady().then(async () => {
     const previousConfig = config;
     const active = config.activeGridId;                          // the knob owns the live page — editor edits never change it
     const wasRot = rotationCfg().enabled;                        // detect a fresh off->on to auto-start (else keep the runtime pause)
+    const prevMode = runMode();                                  // detect a run-mode change to rebuild the window live
+    const prevMeeting = meetingSettings();                       // recorder-affecting fields, read before config is swapped
     const oauth = config.settings && config.settings.oauth;
     if (oauth) {
       if (!newCfg.settings) newCfg.settings = {};
@@ -2422,12 +3223,23 @@ app.whenReady().then(async () => {
     config = newCfg;
     if (config.grids.some(g => g.id === active)) config.activeGridId = active;
     else if (!config.grids.some(g => g.id === config.activeGridId)) config.activeGridId = (config.grids[0] || {}).id || null;
-    if (!saveConfig()) { config = previousConfig; return { ok: false, error: 'secure persistence failed' }; }
+    editorSaveInFlight = true;                                   // this save came FROM the editor — don't tell it to re-read
+    const saved = saveConfig();
+    editorSaveInFlight = false;
+    if (!saved) { config = previousConfig; return { ok: false, error: 'secure persistence failed' }; }
     pushToPanel(); applyKnobSettings(); refreshTray(); applyRotationSettings(wasRot); applyFocusFollowSettings(); applyShortcuts(); applyTheme();
-    reservedDisplay.setEnabled(!!appSettings().reservedDisplay);
+    reservedDisplay.setEnabled(reservedDisplayEnabled(appSettings()));   // stays off in software mode
+    applyDisplayBlocker();                                               // keep-display-awake: only Panel mode + when enabled
     configureHaSchedule();                                          // pick up any haAuth edits without a restart
-    startMicMonitor();                                              // re-arm with any edited app allowlist
-    if (meetingRecorder) meetingRecorder.setMic(meetingSettings().micDevice);   // push an edited mic to the recorder
+    // Both of these disturb a live recording — respawning the monitor makes it re-announce its
+    // state, and setMic tears down and re-acquires the capture. Saving unrelated settings (slide
+    // capture, theme, anything) must not do either, so they fire only on a real change.
+    const nextMeeting = meetingSettings();
+    if (nextMeeting.recordApps !== prevMeeting.recordApps) startMicMonitor();   // re-arm with an edited app allowlist
+    if (meetingRecorder && nextMeeting.micDevice !== prevMeeting.micDevice) {
+      meetingRecorder.setMic(nextMeeting.micDevice);                            // push an edited mic to the recorder
+    }
+    if (runMode() !== prevMode) applyRunModeLive();                 // run mode changed on the Software tab -> rebuild the window in-place
     return { ok: true };
   });
   ipcMain.handle('pickProgram', async (e) => {
@@ -2454,6 +3266,20 @@ app.whenReady().then(async () => {
     if (!isFrom(e, configWin)) return null;
     const r = await dialog.showOpenDialog(configWin, { properties: ['openDirectory'] });
     return (r.canceled || !r.filePaths.length) ? null : r.filePaths[0];
+  });
+  // Screensaver "Open photos/videos folder": resolve the effective folder (custom or the app's
+  // own default for that kind), create it if needed, and show it in Explorer. Directory-only —
+  // never opens (= executes) a file.
+  ipcMain.handle('openScreensaverMedia', (e, dir, kind) => {
+    if (!isFrom(e, configWin)) return { ok: false };
+    const dflt = path.join(app.getPath('userData'), 'screensaver-media', kind === 'videos' ? 'videos' : 'photos');
+    const target = String(dir || '').trim() || dflt;
+    try {
+      fs.mkdirSync(target, { recursive: true });
+      if (!fs.statSync(target).isDirectory()) return { ok: false };
+      shell.openPath(target);
+      return { ok: true, dir: target };
+    } catch (err) { return { ok: false }; }
   });
   // Drop-in app manager (Settings → Drop-In Apps)
   ipcMain.handle('listDropInApps', (e) => isFrom(e, configWin) ? listDropInApps() : []);
@@ -2536,26 +3362,72 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('saveLightingToDevice', (e) => { if (!isFrom(e, configWin)) return false; try { return dev.saveLighting(); } catch (er) { return false; } });
   ipcMain.handle('listRunningApps', async (e) => isFrom(e, configWin) ? await desktopFocus.listRunningApps() : []);
+  // Per-backend permission modes for the Routines tab's Mode picker. Read straight from each
+  // backend host's adapter (the same list the panel's Mode button shows) so the editor never
+  // duplicates the mode presets. Chat-only backends (owui/api) report [] and get no Mode picker.
+  // Run routine NOW from the editor's Routines tab. The editor saves first when dirty, so main's
+  // config already holds the on-screen version by the time this fires. resolveRoutine gives the
+  // editor a yes/no (e.g. no AI Chat page, empty prompt) to show in its status line; runRoutine does
+  // the actual work and shows its own notice on the panel.
+  ipcMain.handle('runRoutine', (e, id) => {
+    if (!isFrom(e, configWin)) return { ok: false, error: 'not authorized' };
+    const r = routines.resolveRoutine(String(id || ''), { routines: (config.settings || {}).routines, grids: config.grids });
+    if (!r.ok) return { ok: false, error: r.error };
+    try { runRoutine(String(id || '')); } catch (err) { return { ok: false, error: err.message }; }
+    return { ok: true, name: r.routine.name || '', page: ((config.grids || []).find(g => g.id === r.pageId) || {}).name || '' };
+  });
+  ipcMain.handle('getVoiceModes', (e) => {
+    if (!isFrom(e, configWin)) return {};
+    const modesFor = host => { try { return (host.handlers.getState().meta.modes) || []; } catch (er) { return []; } };
+    return {
+      claude: modesFor(claudeVoiceHost),
+      codex: modesFor(codexVoiceHost),
+      copilot: modesFor(copilotVoiceHost),
+      owui: [], api: [],
+    };
+  });
 
-  placePanel();
-  reservedDisplay.setEnabled(!!appSettings().reservedDisplay);
-  reservedDisplay.start();
-  if (rotationCfg().enabled) setRotation(true);          // auto-start cycling on launch when enabled
-  applyFocusFollowSettings();                             // auto-start foreground-app polling on launch when enabled
-  applyShortcuts();                                       // register per-page global hotkeys
-  applyTheme();                                           // set OS theme source (drives dashboards) + paint panel + knob accent
+  // ---- run-mode picker (welcome window) + Settings re-run/relaunch ----
+  ipcMain.handle('getWelcomeInfo', (e) => {
+    if (!isFrom(e, welcomeWin)) return {};
+    return { deviceDisplayPresent: !!deviceDisplay(), currentMode: (config.settings || {}).runMode || null };
+  });
+  ipcMain.handle('setRunMode', (e, mode) => {
+    if (!isFrom(e, welcomeWin)) return false;
+    const m = (mode === 'software' || mode === 'monitor') ? mode : 'panel';
+    if (!config.settings) config.settings = {};
+    const uiUp = !!(panelWin && !panelWin.isDestroyed());
+    const changed = config.settings.runMode !== m;
+    config.settings.runMode = m;
+    saveConfig();
+    try { if (welcomeWin && !welcomeWin.isDestroyed()) welcomeWin.close(); } catch (er) {}
+    if (!uiUp) applyRunModeAndLaunch();                    // first run: nothing placed yet -> launch now
+    else if (changed) applyRunModeLive();                  // re-run while UI is up: rebuild the window in-process
+    return true;
+  });
+  ipcMain.handle('openWelcome', (e) => { if (!isFrom(e, configWin)) return false; createWelcomeWindow(); return true; });
+
   nativeTheme.on('updated', () => { if (themeGlobal().appearance === 'system') applyTheme(); });   // follow the OS light/dark in System mode
-  const ls = appSettings();
-  if (firstRun || ls.launchMode === 'editor') openConfigWindow();
-  else if (ls.launchMode === 'minimized') { openConfigWindow(); if (configWin && !configWin.isDestroyed()) configWin.minimize(); }
-  // 'tray' -> stay quiet (tray + panel only)
+  // First run with no prior config -> ask which run mode before placing any UI; the welcome window's
+  // Continue resumes into applyRunModeAndLaunch(). Returning installs (runMode defaults to 'panel')
+  // launch straight away.
+  if (firstRun) createWelcomeWindow();
+  else applyRunModeAndLaunch();
+
+  // Screensaver idle check: one always-running interval; every tick re-reads live config, so page
+  // adds/removes and setting edits apply with no re-arm. All gates live in screensaver-idle.js.
+  saverTimer = setInterval(saverTick, 10000);
 
   dev.on('touch', pts => {
+    lastPanelInputAt = Date.now();                                             // presence stamp (all modes) — feeds the screensaver idle timer
     if (monitorMode) { const p = pts.find(q => q.action === 1) || pts[0]; if (p) injectTouch(p); return; }   // monitor mode: touch drives the Windows cursor
+    if (saverConsumesInput('touch', pts)) return;                              // waking the screensaver eats the whole gesture
     if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('touch', pts);
   });
   dev.on('knob', k => {
+    lastPanelInputAt = Date.now();
     if (monitorMode) return monitorKnob(k);                                    // monitor mode: knob does the configured action (exit is tray-only)
+    if (saverConsumesInput('knob', k)) return;                                 // waking the screensaver eats the flick's tail detents too
     if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send('knob', k);   // panel owns knob logic
   });
   dev.on('connect', async i => {
@@ -2570,27 +3442,40 @@ app.whenReady().then(async () => {
     }
     applyKnobSettings();
     applyMic(appSettings().micOnLaunch);
+    try { dev.queryFirmware(); } catch (e) {}   // async; the 'state' handler caches the reply for the diagnostics page
     // The mic indicator LED only latches once the panel is fully awake. At connect the device is still
     // mid screen-on activation (screenOn fires at 0/300/800/1500ms), so this first setMic toggles the
     // audio but the LED is dropped. Re-assert after activation settles — screenOn then setMic — which
     // mirrors what a display re-wake does and forces the LED to follow the mic state.
     setTimeout(() => { try { dev.screenOn(); } catch (e) {} applyMic(micState); console.log('mic LED re-assert:', micState); }, 2000);
   });
+  dev.on('state', s => { if (s && typeof s === 'object') Object.assign(lastDeviceState, s); });
   dev.on('error', e => console.log('dev error:', e.message));
   dev.start();
 
-  screen.on('display-added', () => { dev.screenOn(); refreshReservedDisplay('display added'); setTimeout(placePanel, 800); });
+  screen.on('display-added', () => {
+    dev.screenOn(); refreshReservedDisplay('display added');
+    // Panel/monitor mode place the panel when the QUAKE display appears. In monitor mode, enter it
+    // once the panel exists so a later-connected device boots into desktop-passthrough as configured.
+    setTimeout(() => {
+      if (runMode() === 'software') return;
+      placePanel();
+      if (runMode() === 'monitor' && !monitorMode && panelWin && !panelWin.isDestroyed()) enterMonitorMode();
+    }, 800);
+  });
   screen.on('display-removed', () => { dev.screenOn(); refreshReservedDisplay('display removed'); });
   screen.on('display-metrics-changed', () => { refreshReservedDisplay('display metrics changed'); setTimeout(placePanel, 500); });
 });
 }
 app.on('window-all-closed', () => {});
 app.on('before-quit', () => {
+  try { clearInterval(saverTimer); } catch (e) {}             // stop the screensaver idle check
   try { reservedDisplay.stop(); } catch (e) {}                // release WinEvent hooks and terminate the native helper
   try { claudeVoiceHost.shutdown(); } catch (e) {}       // terminate the claude CLI child, release held approvals, remove the global hook
   try { codexVoiceHost.shutdown(); } catch (e) {}        // terminate the codex app-server child
   try { copilotVoiceHost.shutdown(); } catch (e) {}      // terminate the copilot app-server child
   try { owuiVoiceHost.shutdown(); } catch (e) {}         // abort any in-flight OWUI stream
+  try { apiVoiceHost.shutdown(); } catch (e) {}          // abort any in-flight API-endpoint stream
   try { claudeVoiceApprovals.ensureHookRemoved(claudeVoiceLog); } catch (e) {}    // belt-and-braces: never leave our entry behind in the user's global Claude settings
   try { dev.stop(); } catch (e) {}                       // close HID devices + clear keep-alive/rescan timers — an open node-hid handle blocks process exit (Cmd+Q would hang -> force-quit)
   try { oauthHandler.stop(); } catch (e) {}              // stop OAuth callback server + background refresh timers

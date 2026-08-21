@@ -1,0 +1,10 @@
+{
+  "_comment": "Flux Schnell text-to-image at panel resolution. Edit node 2 text + node 5 seed.",
+  "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "flux1-schnell-fp8.safetensors"}},
+  "2": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": "SCENE PROMPT HERE, ultra-wide panoramic"}},
+  "3": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["1", 1], "text": ""}},
+  "4": {"class_type": "EmptySD3LatentImage", "inputs": {"width": 1920, "height": 480, "batch_size": 1}},
+  "5": {"class_type": "KSampler", "inputs": {"model": ["1", 0], "positive": ["2", 0], "negative": ["3", 0], "latent_image": ["4", 0], "seed": 1, "steps": 4, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+  "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["1", 2]}},
+  "7": {"class_type": "SaveImage", "inputs": {"images": ["6", 0], "filename_prefix": "ss_still"}}
+}

@@ -21,14 +21,17 @@ function row(key, desc, sub) {
     + (sub ? '<span class="sub">' + esc(sub) + '</span>' : '') + '</div></div>';
 }
 
-// One flat list, combined from all three sources — no separate System/Pages/Custom sections.
-// Order: the rotation toggle, then per-page jump shortcuts, then the custom cheat-sheet.
+// One flat list, combined from every source — no separate sections. Order: the rotation toggle,
+// per-page jump shortcuts, each app's own hotkeys (LucidType, slide capture, …), then the custom rows.
 function render(data) {
   data = data || {};
   var rows = [];
   if (data.rotation && data.rotation.hotkey) rows.push(row(data.rotation.hotkey, 'Start/stop auto-rotation'));
   (Array.isArray(data.pages) ? data.pages : []).forEach(function (p) {
     rows.push(row(p.shortcut, p.name || p.id, p.stopsRotation ? 'Also stops rotation' : ''));
+  });
+  (Array.isArray(data.apps) ? data.apps : []).forEach(function (a) {
+    rows.push(row(a.shortcut, a.action, a.app));
   });
   (Array.isArray(data.custom) ? data.custom : []).forEach(function (c) {
     rows.push(row(c.shortcut, c.description));

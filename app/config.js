@@ -1,8 +1,22 @@
   const configApi = window.openQuakeConfig;
+  const VOICE_APPS = ['ai-voice'];   // apps with STT/TTS voice (one app, five backends)
+  // Mirrors DEFAULT_CLEANUP_PROMPT + REWRITE_PRESETS in lucidtypeAI.js — pre-filled in the editable prompt boxes.
+  const LT_DEFAULT_CLEANUP_PROMPT = "Fix the grammar, spelling, and punctuation in the user's text. Preserve the author's original wording, tone, and voice as much as possible. Remove filler words (uh, er, ah, um, mm, like when unnecessary), combine fragmented or run-on sentences into clear ones, and drop false starts and repeated words, while keeping the original meaning and voice. Output only the corrected text, with no preamble, quotes, or explanation.";
+  const LT_REWRITE_PRESETS = {
+    professional: "Rewrite the user's text in a clear, professional tone suitable for workplace communication. Fix grammar and punctuation, keep the original meaning, and avoid slang. Output only the rewritten text.",
+    concise: "Rewrite the user's text to be as concise as possible without losing meaning. Cut redundancy and filler; keep it clear and correct. Output only the rewritten text.",
+    confident: "Rewrite the user's text in a confident, direct, assertive tone. Remove hedging and qualifiers, fix grammar, and keep the original meaning. Output only the rewritten text.",
+  };
   let config = { activeGridId: null, grids: [] };
   let gi = 0, ti = -1, selEnd = -1, dragFrom = -1, dirty = false, appDefs = [], view = 'pages', ledState = null, settingsTab = 'software', dashTab = 'page';
+  let voiceModes = null;   // { claude:[{id,label}], codex:[...], copilot:[...], owui:[], api:[] } — lazy-loaded for the Routines tab's Mode picker
+  let selRoutineId = null, routineQuery = '';   // Routines tab master-detail: selection tracked by stable id, plus the search box text
   // Left sidebar tab (Pages vs Groups list) + which group is currently being edited when view='groups'.
   let leftTab = 'pages', groupIndex = -1;
+  // Per-page Advanced <details> open state — persisted across re-renders so toggling an override
+  // checkbox inside it (which calls render()) doesn't collapse the section out from under the user.
+  let advOpen = false;
+  let ltMeterStop = null;   // teardown for the LucidType mic test meter (getUserMedia); stopped on any editor re-render
   // QMK RGB-Matrix effect names — index is the value written to the device (0 = ring off).
   const LED_EFFECTS = ['All Off (ring off)', 'Solid Color', 'Alphas Mods', 'Gradient Up/Down', 'Gradient Left/Right', 'Breathing', 'Band Sat.', 'Band Val.', 'Pinwheel Sat.', 'Pinwheel Val.', 'Spiral Sat.', 'Spiral Val.', 'Cycle All', 'Cycle Left/Right', 'Cycle Up/Down', 'Rainbow Moving Chevron', 'Cycle Out/In', 'Cycle Out/In Dual', 'Cycle Pinwheel', 'Cycle Spiral', 'Dual Beacon', 'Rainbow Beacon', 'Rainbow Pinwheels', 'Raindrops', 'Jellybean Raindrops', 'Hue Breathing', 'Hue Pendulum', 'Hue Wave', 'Pixel Rain', 'Pixel Flow', 'Pixel Fractal', 'Typing Heatmap', 'Digital Rain', 'Solid Reactive Simple', 'Solid Reactive', 'Solid Reactive Wide', 'Solid Reactive Multi Wide', 'Solid Reactive Cross', 'Solid Reactive Multi Cross', 'Solid Reactive Nexus', 'Solid Reactive Multi Nexus', 'Splash', 'Multi Splash', 'Solid Splash', 'Solid Multi Splash'];
   const LED_DEFAULT = { effect: 1, brightness: 200, speed: 128, hue: 128, sat: 255 };
@@ -25,7 +39,7 @@
   }
   const appIconCache = {};   // app value -> dataURL | false (failed) | null (in-flight)
   const urlIconPreview = {}; // iconCache path -> dataURL of a just-fetched URL icon (editor preview only; dodges file:// browser-cache staleness on Refresh)
-  const TYPES = [['', 'Empty'], ['app', 'App / Program'], ['url', 'Website (URL)'], ['page', 'Go to open-quake page'], ['cmd', 'Shell command'], ['open', 'Open file/folder'], ['system', 'System (lock/config)'], ['counter', 'Counter'], ['paste_text', 'Paste Text'], ['key', 'Send keystroke'], ['macro', 'Macro / Steps'], ['ha', 'HA entity']];
+  const TYPES = [['', 'Empty'], ['app', 'App / Program'], ['url', 'Website (URL)'], ['page', 'Go to open-quake page'], ['cmd', 'Shell command'], ['open', 'Open file/folder'], ['system', 'System (lock/config)'], ['counter', 'Counter'], ['paste_text', 'Paste Text'], ['key', 'Send keystroke'], ['macro', 'Macro / Steps'], ['ha', 'HA entity'], ['routine', 'AI Routine']];
   // Curated per-domain service catalog for HA entity tiles. Lookup falls back to HA_SERVICES_DEFAULT
   // for any domain we don't have a more specific list for. First entry is the default service when
   // the user picks an entity of that domain.
@@ -46,7 +60,7 @@
   };
   const HA_SERVICES_DEFAULT = [['toggle', 'Toggle'], ['turn_on', 'Turn on'], ['turn_off', 'Turn off']];
   // Step kinds inside a Macro tile (value semantics mirror the matching tile types).
-  const STEP_KINDS = [['key', 'Keystroke'], ['text', 'Type text'], ['delay', 'Delay (ms)'], ['app', 'App / Program'], ['open', 'Open file/folder'], ['url', 'Website (URL)'], ['cmd', 'Shell command'], ['page', 'Go to page'], ['system', 'System'], ['ahk', 'AutoHotkey']];
+  const STEP_KINDS = [['key', 'Keystroke'], ['text', 'Type text'], ['delay', 'Delay (ms)'], ['app', 'App / Program'], ['open', 'Open file/folder'], ['url', 'Website (URL)'], ['cmd', 'Shell command'], ['page', 'Go to page'], ['system', 'System'], ['ahk', 'AutoHotkey'], ['routine', 'AI Routine']];
   // Knob behavior options (per page-type, with per-page override). Defaults: turn=Scroll pages, click=Start/stop rotation.
   const KNOB_TURN_OPTS = [['pages', 'Scroll pages'], ['volume', 'System volume'], ['scroll', 'Scroll in window'], ['select', 'Select button']];
   const KNOB_CLICK_OPTS = [
@@ -210,6 +224,51 @@
   }
   function haDomainEmoji(domain) { return HA_DOMAIN_EMOJI[domain] || '🏠'; }
 
+  // ---- Emoji lookup-by-word (the tile editor's emoji search picker) ----
+  // Backed by the real emojilib dataset (main process loads it from node_modules and serves it
+  // over IPC — config.js runs sandboxed and can't require() it directly). Fetched once and cached.
+  let emojiIndexCache = null;
+  async function getEmojiIndex() {
+    if (!emojiIndexCache) {
+      // Tokenize each entry's keyword blob once (split on space AND underscore, since emojilib uses
+      // compound keys like "grinning_face"). Ranked search below matches whole tokens, not the blob.
+      const raw = (await configApi.getEmojiIndex()) || [];
+      emojiIndexCache = raw.map(([em, kw]) => [em, String(kw).split(/[\s_]+/).filter(Boolean)]);
+    }
+    return emojiIndexCache;
+  }
+  // Rank a candidate's keyword TOKENS against the query words: exact token (3) beats a prefix (2)
+  // beats a mid-word substring (1). Every query word must score, or the candidate is out. Matching
+  // whole tokens — not the joined blob — is what keeps "car" off "s-car-ed" and "cat" off
+  // "intoxi-cat-ed"; the exact-first ranking is what floats 🚗 above 🥕/🎠 for "car".
+  function emojiScore(toks, words) {
+    let total = 0;
+    for (const w of words) {
+      let best = 0;
+      for (const t of toks) {
+        if (t === w) { best = 3; break; }
+        if (t.startsWith(w)) best = best < 2 ? 2 : best;
+        else if (t.indexOf(w) !== -1) best = best < 1 ? 1 : best;
+      }
+      if (!best) return 0;
+      total += best;
+    }
+    return total;
+  }
+  // Empty query -> a browsable starter set (emojilib's own order, which is Unicode's canonical
+  // order -- smileys/people first).
+  function emojiSearchIn(index, query) {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return index.slice(0, 40).map(e => e[0]);
+    const words = q.split(/\s+/).filter(Boolean);
+    return index
+      .map(e => [e[0], emojiScore(e[1], words)])
+      .filter(x => x[1] > 0)
+      .sort((a, b) => b[1] - a[1])   // stable sort keeps Unicode order within a score tier
+      .map(x => x[0])
+      .slice(0, 60);
+  }
+
   // HA's frontend domain-default MDI icons (mirror of FIXED_DOMAIN_ICONS in
   // home-assistant/frontend/src/common/const.ts). Used when an entity has no explicit override
   // -- picks the same glyph HA's UI would draw. Same table as main.js.
@@ -369,7 +428,7 @@
     const hasApr = g.appearance === 'light' || g.appearance === 'dark';
     const hasAcc = /^#[0-9a-fA-F]{6}$/.test(g.accent || '');
     const isHome = config.homePageId === g.id;
-    return `<details class="advsec" style="margin-top:12px"${(hasApr || hasAcc || isHome) ? ' open' : ''}>
+    return `<details class="advsec" id="pageAdvSec" style="margin-top:12px"${advOpen ? ' open' : ''}>
       <summary style="cursor:pointer;color:#9fb3c8;font-size:13px;user-select:none">Advanced settings</summary>
       <div class="row" style="margin-top:8px"><label style="width:auto">Home page</label>
         <label class="iconopt" style="width:auto"><input type="checkbox" id="gHome" ${isHome ? 'checked' : ''}> Set as home page</label></div>
@@ -390,6 +449,17 @@
       <div class="row" style="margin-top:8px"><label style="width:auto">Knob</label>
         <label class="iconopt" style="width:auto"><input type="checkbox" id="gKnobOn" ${g.knobOverride ? 'checked' : ''}> Override</label></div>
       ${g.knobOverride ? `<div class="row"><label style="width:auto">Turn / Click / Dbl</label>${knobSelHtml('gKnobTurn', KNOB_TURN_OPTS, (g.knob && g.knob.turn) || 'pages')} ${knobSelHtml('gKnobClick', KNOB_CLICK_OPTS, (g.knob && g.knob.click) || 'rotation')} ${knobSelHtml('gKnobDblclick', KNOB_DBLCLICK_OPTS, (g.knob && g.knob.dblclick) || 'selector')}</div>` : ''}
+      ${(VOICE_APPS.includes(g.app) || g.app === 'lucidtype') ? `
+      <div class="row" style="margin-top:8px"><label style="width:auto">STT / TTS</label>
+        <label class="iconopt" style="width:auto"><input type="checkbox" id="gVoiceOn" ${g.options && g.options.voiceOverride ? 'checked' : ''}> Override default TTS/STT servers</label></div>
+      ${g.options && g.options.voiceOverride ? `
+      <div class="row"><label style="width:auto">STT host / port</label>
+        <input id="gVoiceSttHost" value="${esc(optVal(g, 'voiceSttHost', ''))}" placeholder="127.0.0.1" style="flex:1">
+        <input id="gVoiceSttPort" value="${esc(optVal(g, 'voiceSttPort', ''))}" placeholder="10300" style="width:90px;margin-left:8px"></div>
+      <div class="row"><label style="width:auto">TTS host / port</label>
+        <input id="gVoiceTtsHost" value="${esc(optVal(g, 'voiceTtsHost', ''))}" placeholder="127.0.0.1" style="flex:1">
+        <input id="gVoiceTtsPort" value="${esc(optVal(g, 'voiceTtsPort', ''))}" placeholder="10200" style="width:90px;margin-left:8px"></div>` : ''}
+      <p class="hint">Off = use the global <b>Settings → TTS/STT</b> servers. On = this page dials its own STT/TTS host + port.</p>` : ''}
       ${focusRowHtml(g)}
       ${advCloneHtml(g)}
     </details>`;
@@ -449,6 +519,248 @@
       const inputs = host.querySelectorAll('.scShortcut');
       if (inputs.length) inputs[inputs.length - 1].focus();
     };
+  }
+  // ---- AI Profiles rows (Settings -> AI Profiles): name + prompt per row, add/remove ----
+  // Same live-edit model as the custom-shortcut rows: mutate config.settings.aiProfiles in place,
+  // markDirty(), Save persists. Ids are stable (never edited); new rows mint one.
+  function aiProfileRowsHtml(list) {
+    const rows = Array.isArray(list) ? list : [];
+    if (!rows.length) return '<p class="hint">No profiles yet — add one below.</p>';
+    return rows.map((p, i) => `<div class="row" data-idx="${i}" style="margin-top:10px;align-items:flex-start">
+        <input class="apName" placeholder="Profile name" value="${esc(p.name || '')}" style="width:200px">
+        <textarea class="apPrompt" placeholder="Instruction for the AI (empty = plain chat)" rows="2" style="flex:1;margin-left:8px;font-family:inherit">${esc(p.prompt || '')}</textarea>
+        <button class="apRemove" type="button" data-rm="${i}" title="Remove" style="margin-left:8px">✕</button>
+      </div>`).join('');
+  }
+  function wireAiProfileRows() {
+    const host = document.getElementById('sAiProfileRows');
+    if (!host) return;
+    const list = () => { if (!config.settings) config.settings = {}; if (!Array.isArray(config.settings.aiProfiles)) config.settings.aiProfiles = []; return config.settings.aiProfiles; };
+    const redraw = () => { host.innerHTML = aiProfileRowsHtml(list()); wireRows(); };
+    function wireRows() {
+      host.querySelectorAll('.apName').forEach((inp, i) => {
+        inp.oninput = e => { const l = list(); if (l[i]) { l[i].name = e.target.value; markDirty(); } };
+      });
+      host.querySelectorAll('.apPrompt').forEach((ta, i) => {
+        ta.oninput = e => { const l = list(); if (l[i]) { l[i].prompt = e.target.value; markDirty(); } };
+      });
+      host.querySelectorAll('.apRemove').forEach(btn => {
+        btn.onclick = () => { list().splice(parseInt(btn.getAttribute('data-rm'), 10), 1); markDirty(); redraw(); };
+      });
+    }
+    wireRows();
+    const addBtn = document.getElementById('sAiProfileAdd');
+    if (addBtn) addBtn.onclick = () => {
+      list().push({ id: 'p' + Date.now().toString(36), name: '', prompt: '' });
+      markDirty(); redraw();
+      const inputs = host.querySelectorAll('.apName');
+      if (inputs.length) inputs[inputs.length - 1].focus();
+    };
+  }
+  // ---- Routines (Settings -> Routines): searchable master-detail editor ----
+  // Presentation only. Storage is unchanged: config.settings.routines, referenced by stable id
+  // from tiles. Everything here selects and binds by routine ID, never array position, so filtering
+  // or reordering the visible list can never write edits into the wrong routine.
+  function aiChatPagesForPicker() {
+    return (config.grids || []).filter(g => g && g.kind === 'app' && g.app === 'ai-voice');
+  }
+  function backendOfPage(page) { return (page && page.options && page.options.backend) || 'claude'; }
+  function routineListArr() { if (!config.settings) config.settings = {}; if (!Array.isArray(config.settings.routines)) config.settings.routines = []; return config.settings.routines; }
+  function routinePlural(n) { return n + ' routine' + (n === 1 ? '' : 's'); }
+
+  // Search matches name, prompt, target page name, and folder. `q` is already lowercased.
+  function routineMatches(r, q, pages) {
+    if (!q) return true;
+    const page = pages.find(g => g.id === r.appPageId);
+    return [r.name, r.prompt, page && page.name, r.folder]
+      .map(x => String(x || '').toLowerCase()).join('  ').indexOf(q) !== -1;
+  }
+  // Keep the selection valid against what's actually visible: if the current pick was filtered out
+  // (or never set), fall to the first visible result -- never a hidden or stale id.
+  function resolveRoutineSel(filtered) {
+    if (!filtered.some(r => r.id === selRoutineId)) selRoutineId = filtered.length ? filtered[0].id : null;
+  }
+  function routineItemHtml(r, pages) {
+    const page = pages.find(g => g.id === r.appPageId);
+    const pageName = page ? (page.name || '(unnamed page)') : '(no page)';
+    const preview = String(r.prompt || '').replace(/\s+/g, ' ').trim() || '(no prompt yet)';
+    return '<div class="rtItem' + (r.id === selRoutineId ? ' sel' : '') + '" data-id="' + esc(r.id) + '">'
+      + '<div class="rtiName">' + esc(r.name || '(unnamed routine)') + '</div>'
+      + '<div class="rtiSub"><span class="rtiPage">' + esc(pageName) + '</span> · <span class="rtiPrev">' + esc(preview) + '</span></div>'
+      + '</div>';
+  }
+  function routineItemsHtml(filtered, rows, pages) {
+    if (filtered.length) return filtered.map(r => routineItemHtml(r, pages)).join('');
+    return '<div class="rtEmpty">' + (rows.length ? 'No routines match your search.' : 'No routines yet — add one, or save one from the panel with <b>+ Routine</b>.') + '</div>';
+  }
+  // Folder + Mode live only on the agent backends (claude/codex/copilot); chat-only pages (owui/api)
+  // get the same explanatory note the AI Chat page shows. Detail widgets carry no data-index -- the
+  // detail edits exactly one routine, looked up by selRoutineId at event time.
+  function routineDetailFolderHtml(r, page) {
+    if (['claude', 'codex', 'copilot'].indexOf(backendOfPage(page)) === -1) {
+      return '<div class="rtField"><span class="hint" style="margin:0">' + esc(page ? (page.name || 'That page') : 'That page') + ' is chat-only — no folder or permission mode.</span></div>';
+    }
+    return '<div class="rtField"><label>Folder</label>'
+      + '<div class="rtFolderRow">'
+      + '<input id="rtdFolder" placeholder="Folder (blank = page’s current)" value="' + esc(r.folder || '') + '">'
+      + '<button id="rtdFolderBrowse" type="button" title="Browse">…</button>'
+      + '</div></div>';
+  }
+  function routineDetailModeHtml(r, page) {
+    const list = (voiceModes && voiceModes[backendOfPage(page)]) || [];
+    if (!list.length) return '';   // chat-only backend, or modes not loaded yet
+    return '<div class="rtField"><label>Mode</label>'
+      + '<select id="rtdMode"><option value="">(page’s current mode)</option>'
+      + list.map(m => '<option value="' + esc(m.id) + '" ' + (m.id === r.mode ? 'selected' : '') + '>' + esc(m.label || m.id) + '</option>').join('')
+      + '</select></div>';
+  }
+  function routineDetailHtml(pages) {
+    const r = routineListArr().find(x => x.id === selRoutineId) || null;
+    if (!r) {
+      return '<div class="rtEmpty">' + (routineQuery.trim() ? 'No routine selected — nothing matches your search.' : 'Select a routine on the left, or add one.') + '</div>';
+    }
+    const page = pages.find(g => g.id === r.appPageId) || pages[0];
+    const profiles = ((config.settings || {}).aiProfiles) || [];
+    return ''
+      + '<div class="rtDetailHead"><div class="sectitle" style="margin:0">Edit routine</div>'
+      + '<div class="rtHeadBtns"><button id="rtdDelete" type="button" class="danger">Delete routine</button>'
+      + '<button id="rtdRun" type="button" class="rtRun">Run routine</button></div></div>'
+      + '<div class="rtField"><label>Name</label><input id="rtdName" placeholder="Routine name" value="' + esc(r.name || '') + '"></div>'
+      + '<div class="rtField"><label>AI Chat page</label>'
+      + '<select id="rtdPage">' + pages.map(g => '<option value="' + g.id + '" ' + (g.id === r.appPageId ? 'selected' : '') + '>' + esc(g.name || '(unnamed page)') + '</option>').join('') + '</select></div>'
+      + '<div class="rtField"><label>Profile</label>'
+      + '<select id="rtdProfile"><option value="">(page’s current profile)</option>' + profiles.map(p => '<option value="' + esc(p.id) + '" ' + (p.id === r.profileId ? 'selected' : '') + '>' + esc(p.name || '(unnamed)') + '</option>').join('') + '</select></div>'
+      + routineDetailFolderHtml(r, page)
+      + routineDetailModeHtml(r, page)
+      + '<div class="rtField"><label>Prompt</label>'
+      + '<textarea id="rtdPrompt" rows="6" placeholder="What to ask the AI, e.g. Summarize my unread email and list anything needing a reply" style="font-family:inherit">' + esc(r.prompt || '') + '</textarea></div>';
+  }
+  function routineEditorHtml() {
+    const pages = aiChatPagesForPicker();
+    if (!pages.length) return '<p class="hint">No AI Chat page yet — add one (Pages → + App page → AI Voice) and a routine will have somewhere to run.</p>';
+    const rows = routineListArr();
+    const q = routineQuery.trim().toLowerCase();
+    const filtered = rows.filter(r => routineMatches(r, q, pages));
+    resolveRoutineSel(filtered);
+    const count = q ? (filtered.length + ' of ' + routinePlural(rows.length)) : routinePlural(rows.length);
+    return '<div class="rtSplit">'
+      + '<div class="rtList">'
+      + '<div class="rtListHead"><span class="rtCount" id="rtCount">' + esc(count) + '</span><button id="sRoutineAdd" type="button">+ Add routine</button></div>'
+      + '<input id="rtSearch" class="rtSearch" placeholder="Search name, prompt, page, folder" value="' + esc(routineQuery) + '">'
+      + '<div class="rtItems" id="rtItems">' + routineItemsHtml(filtered, rows, pages) + '</div>'
+      + '</div>'
+      + '<div class="rtDetail" id="rtDetail">' + routineDetailHtml(pages) + '</div>'
+      + '</div>';
+  }
+  function wireRoutineRows() {
+    const host = document.getElementById('sRoutineRows');
+    if (!host) return;
+    const list = routineListArr;
+    const curRoutine = () => list().find(r => r.id === selRoutineId) || null;
+
+    // Per-backend mode lists come from main; fetch once, then refresh the detail (the only place a
+    // Mode picker shows). Rows render fine before it lands -- chat-only routines never need it.
+    if (!voiceModes && configApi.getVoiceModes) {
+      configApi.getVoiceModes().then(m => { voiceModes = m || {}; if (document.getElementById('sRoutineRows')) renderDetailOnly(); }).catch(() => { voiceModes = {}; });
+    }
+
+    function redraw() { host.innerHTML = routineEditorHtml(); wireAll(); }
+    function renderDetailOnly() {
+      const d = document.getElementById('rtDetail');
+      if (!d) return;
+      d.innerHTML = routineDetailHtml(aiChatPagesForPicker());
+      wireDetail();
+    }
+    // Rebuild the list items + count in place. The #rtSearch box and #rtDetail pane are untouched,
+    // so this is safe to call from a search keystroke, or a name/prompt edit in the detail pane,
+    // without stealing focus from whatever field the user is typing in.
+    function renderListOnly() {
+      const pages = aiChatPagesForPicker();
+      const rows = list();
+      const q = routineQuery.trim().toLowerCase();
+      const filtered = rows.filter(r => routineMatches(r, q, pages));
+      const before = selRoutineId;
+      resolveRoutineSel(filtered);
+      const itemsEl = document.getElementById('rtItems');
+      if (itemsEl) itemsEl.innerHTML = routineItemsHtml(filtered, rows, pages);
+      const countEl = document.getElementById('rtCount');
+      if (countEl) countEl.textContent = q ? (filtered.length + ' of ' + routinePlural(rows.length)) : routinePlural(rows.length);
+      wireItems();
+      if (selRoutineId !== before) renderDetailOnly();   // the search hid the old pick -> show the new one
+    }
+
+    function wireItems() {
+      host.querySelectorAll('.rtItem').forEach(el => {
+        el.onclick = () => {
+          if (el.dataset.id === selRoutineId) return;
+          selRoutineId = el.dataset.id;
+          host.querySelectorAll('.rtItem').forEach(x => x.classList.toggle('sel', x.dataset.id === selRoutineId));
+          renderDetailOnly();
+        };
+      });
+    }
+    function wireDetail() {
+      const name = document.getElementById('rtdName');
+      if (name) name.oninput = e => { const r = curRoutine(); if (r) { r.name = e.target.value; markDirty(); renderListOnly(); } };
+      const prompt = document.getElementById('rtdPrompt');
+      if (prompt) prompt.oninput = e => { const r = curRoutine(); if (r) { r.prompt = e.target.value; markDirty(); renderListOnly(); } };
+      const pagePick = document.getElementById('rtdPage');
+      if (pagePick) pagePick.onchange = e => { const r = curRoutine(); if (r) { r.appPageId = e.target.value; markDirty(); renderDetailOnly(); renderListOnly(); } };
+      const profile = document.getElementById('rtdProfile');
+      if (profile) profile.onchange = e => { const r = curRoutine(); if (r) { r.profileId = e.target.value; markDirty(); } };
+      const folder = document.getElementById('rtdFolder');
+      if (folder) folder.oninput = e => { const r = curRoutine(); if (r) { r.folder = e.target.value; markDirty(); } };
+      const browse = document.getElementById('rtdFolderBrowse');
+      if (browse) browse.onclick = async () => {
+        const picked = await configApi.pickFolder();
+        if (!picked) return;
+        const r = curRoutine(); if (!r) return;
+        r.folder = picked; markDirty();
+        const inp = document.getElementById('rtdFolder'); if (inp) inp.value = picked;
+      };
+      const mode = document.getElementById('rtdMode');
+      if (mode) mode.onchange = e => { const r = curRoutine(); if (r) { r.mode = e.target.value; markDirty(); } };
+      const run = document.getElementById('rtdRun');
+      if (run) run.onclick = async () => {
+        const r = curRoutine(); if (!r) return;
+        if (!String(r.prompt || '').trim()) { setState('add a prompt before running this routine', 'dirty'); return; }
+        // Run what's on screen: the routine runs from main's config, so commit pending edits first.
+        // A brand-new routine only reaches main once saved, so this is required, not just tidy.
+        if (dirty) { const ok = await doSave(); if (!ok) return; }
+        run.disabled = true;
+        try {
+          const res = await configApi.runRoutine(r.id);
+          if (res && res.ok) setState('▶ running “' + (res.name || r.name || 'routine') + '”' + (res.page ? ' on ' + res.page : '') + ' — check the panel', 'saved');
+          else setState((res && res.error) || 'could not run that routine', 'dirty');
+        } catch (e) { setState('could not run that routine', 'dirty'); }
+        finally { run.disabled = false; }
+      };
+      const del = document.getElementById('rtdDelete');
+      if (del) del.onclick = () => {
+        const r = curRoutine(); if (!r) return;
+        if (!window.confirm('Delete routine “' + (r.name || '(unnamed)') + '”?\n\nAny tile or macro that uses it will show “routine not found” until you point it elsewhere. This can’t be undone.')) return;
+        const l = list(); const idx = l.findIndex(x => x.id === r.id);
+        if (idx >= 0) l.splice(idx, 1);
+        selRoutineId = null;   // resolveRoutineSel picks the first still-visible routine on redraw
+        markDirty(); redraw();
+      };
+    }
+    function wireAdd() {
+      const searchEl = document.getElementById('rtSearch');
+      if (searchEl) searchEl.oninput = e => { routineQuery = e.target.value; renderListOnly(); };
+      const addBtn = document.getElementById('sRoutineAdd');
+      if (addBtn) addBtn.onclick = () => {
+        const pages = aiChatPagesForPicker();
+        const r = { id: 'r' + Date.now().toString(36), name: '', prompt: '', appPageId: pages.length ? pages[0].id : '', profileId: '', folder: '', mode: '' };
+        list().push(r);
+        routineQuery = '';       // clear any active search so the new (blank, unmatchable) routine is visible
+        selRoutineId = r.id;     // ...and selected, with its name focused for immediate typing
+        markDirty(); redraw();
+        const nameEl = document.getElementById('rtdName'); if (nameEl) nameEl.focus();
+      };
+    }
+    function wireAll() { wireAdd(); wireItems(); wireDetail(); }
+    wireAll();
   }
   function officeOptionDefault(def, key) {
     const option = (def.options || []).find(item => item.key === key);
@@ -717,6 +1029,13 @@
     const kT = document.getElementById('gKnobTurn'); if (kT) kT.onchange = e => { if (!g.knob) g.knob = {}; g.knob.turn = e.target.value; markDirty(); };
     const kC = document.getElementById('gKnobClick'); if (kC) kC.onchange = e => { if (!g.knob) g.knob = {}; g.knob.click = e.target.value; markDirty(); };
     const kD = document.getElementById('gKnobDblclick'); if (kD) kD.onchange = e => { if (!g.knob) g.knob = {}; g.knob.dblclick = e.target.value; markDirty(); };
+    const advSec = document.getElementById('pageAdvSec');   // remember open/closed so an override toggle's render() doesn't collapse it
+    if (advSec) advSec.ontoggle = () => { advOpen = advSec.open; };
+    const vOn = document.getElementById('gVoiceOn');   // per-page STT/TTS override (voice apps only)
+    if (vOn) vOn.onchange = e => { if (!g.options) g.options = {}; g.options.voiceOverride = e.target.checked; markDirty(); render(); };
+    const vSetOpt = (key, el) => { const inp = document.getElementById(el); if (inp) inp.oninput = e => { if (!g.options) g.options = {}; g.options[key] = e.target.value.trim(); markDirty(); }; };
+    vSetOpt('voiceSttHost', 'gVoiceSttHost'); vSetOpt('voiceSttPort', 'gVoiceSttPort');
+    vSetOpt('voiceTtsHost', 'gVoiceTtsHost'); vSetOpt('voiceTtsPort', 'gVoiceTtsPort');
     const clone = document.getElementById('gClone'), cloneBtn = document.getElementById('gCloneBtn');
     if (clone && cloneBtn) {
       clone.onchange = () => { cloneBtn.disabled = !clone.value; };
@@ -889,12 +1208,14 @@
       ${shortcutRowHtml(g)}
       ${advRowHtml(g)}
       <div class="row">
+        <button id="gFocus">Focus on device</button>
         <button class="danger" id="gDelete">Delete grid</button>
       </div>`;
     document.getElementById('gName').oninput = e => { g.name = e.target.value; renderGrids(); markDirty(); };
     document.getElementById('gCols').onchange = e => { clearAllMerges(g); g.cols = Math.max(1, Math.min(12, +e.target.value || 1)); ensureTiles(g); ti = -1; selEnd = -1; render(); markDirty(); };
     document.getElementById('gRows').onchange = e => { clearAllMerges(g); g.rows = Math.max(1, Math.min(6, +e.target.value || 1)); ensureTiles(g); ti = -1; selEnd = -1; render(); markDirty(); };
     document.getElementById('gDelete').onclick = deleteCurrentPage;
+    { const fb = document.getElementById('gFocus'); if (fb) fb.onclick = focusCurrentPage; }
     wireGroupSelectRow(g); wireRotRow(g); wireShortcutRow(g); wireAdvRow(g);
   }
 
@@ -1020,6 +1341,7 @@
     if (t.type === 'macro' && !Array.isArray(t.steps)) t.steps = [];
     let body;
     if (t.type === 'page') body = `<div class="row"><label>Page</label>${pageSelectHtml(t)}</div>`;
+    else if (t.type === 'routine') body = `<div class="row"><label>Routine</label>${routineSelectHtml(t)}</div>`;
     else if (t.type === 'macro') body = `<div class="row"><label>Steps</label></div><div id="macroSteps"></div>`;
     else if (t.type === 'key') body = `<div class="row"><label>Keys</label><input id="tValue" value="${esc(t.value)}" placeholder="${valuePlaceholder('key')}"><button id="tRec" type="button">Record</button></div>`;
     else if (t.type === 'ha') body = haTileBodyHtml(t);
@@ -1039,7 +1361,7 @@
     document.getElementById('tLabel').oninput = e => { t.label = e.target.value; renderTiles(); markDirty(); };
     document.getElementById('tType').onchange = e => {
       const prev = t.type; t.type = e.target.value;
-      if (t.type === 'page' || prev === 'page' || t.type === 'ha' || prev === 'ha') { t.value = ''; t.service = ''; }
+      if (t.type === 'page' || prev === 'page' || t.type === 'ha' || prev === 'ha' || t.type === 'routine' || prev === 'routine') { t.value = ''; t.service = ''; }
       // Default HA entity tiles to the "HA icon" iconType so the resolved icon shows immediately
       // without the user having to flip it manually.
       if (t.type === 'ha' && (!t.iconType || t.iconType === 'emoji')) { t.iconType = 'ha'; t.iconCache = ''; t.iconUrl = ''; }
@@ -1050,6 +1372,8 @@
     if (tv) tv.oninput = e => { t.value = e.target.value; renderTiles(); renderIconPane(); markDirty(); };
     const tp = document.getElementById('tPage');
     if (tp) { if (tp.value && tp.value !== t.value) { t.value = tp.value; markDirty(); } tp.onchange = e => { t.value = e.target.value; renderTiles(); markDirty(); }; }
+    const tr = document.getElementById('tRoutine');
+    if (tr) { if (tr.value && tr.value !== t.value) { t.value = tr.value; markDirty(); } tr.onchange = e => { t.value = e.target.value; renderTiles(); markDirty(); }; }
     document.getElementById('tClear').onclick = () => { flattenAt(g, ti); g.tiles[ti] = blankTile(); render(); markDirty(); };
     const setVal = p => { if (!p) return; t.value = p; if (!t.label) t.label = baseName(p); render(); markDirty(); };
     const br = document.getElementById('tBrowse');
@@ -1076,10 +1400,15 @@
     if (!Array.isArray(t.steps)) t.steps = [];
     const host = document.getElementById('macroSteps'); if (!host) return;
     const others = (config.grids || []).filter(g => g.id !== curGrid().id);
+    const routineList = ((config.settings || {}).routines) || [];
     const rowHtml = (s, i) => {
       const kind = s.kind || 'key';
       const field = kind === 'page'
         ? `<select class="msVal" data-i="${i}" style="flex:1">${others.map(g => `<option value="${esc(g.id)}" ${g.id === s.value ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>`
+        : kind === 'routine'
+        ? (routineList.length
+            ? `<select class="msVal" data-i="${i}" style="flex:1">${routineList.map(r => `<option value="${esc(r.id)}" ${r.id === s.value ? 'selected' : ''}>${esc(r.name || '(unnamed routine)')}</option>`).join('')}</select>`
+            : `<span class="hint" style="flex:1">No routines saved yet — add one on <b>Settings → Routines</b>.</span>`)
         : `<input class="msVal" data-i="${i}" style="flex:1" value="${esc(s.value || '')}" placeholder="${stepValuePlaceholder(kind)}">`;
       const rec = kind === 'key' ? `<button class="msRec" data-i="${i}" type="button" title="Record a key combo">⌨</button>` : '';
       const brow = (kind === 'app' || kind === 'open' || kind === 'ahk') ? `<button class="msBrowse" data-i="${i}" type="button" title="Browse">…</button>` : '';
@@ -1090,6 +1419,9 @@
     host.innerHTML = (t.steps.length ? t.steps.map(rowHtml).join('') : '<p class="hint">No steps yet — add one below.</p>')
       + `<div class="row"><button id="msAdd" type="button">+ add step</button></div>`;
     host.querySelectorAll('.msKind').forEach(el => el.onchange = e => { const i = +e.target.dataset.i; t.steps[i].kind = e.target.value; t.steps[i].value = ''; renderMacroSteps(t); markDirty(); });
+    // A <select> field (page / routine) shows its first option straight away — commit that as the
+    // step's value so a step the user never touched isn't silently blank.
+    host.querySelectorAll('select.msVal').forEach(el => { const i = +el.dataset.i; if (el.value && t.steps[i] && !t.steps[i].value) { t.steps[i].value = el.value; markDirty(); } });
     host.querySelectorAll('.msVal').forEach(el => { const h = e => { t.steps[+e.target.dataset.i].value = e.target.value; markDirty(); }; el.oninput = h; el.onchange = h; });
     host.querySelectorAll('.msRec').forEach(el => el.onclick = e => { const i = +e.currentTarget.dataset.i; const inp = host.querySelector(`.msVal[data-i="${i}"]`); if (inp) captureCombo(inp, c => { t.steps[i].value = c; inp.value = c; markDirty(); }); });
     host.querySelectorAll('.msBrowse').forEach(el => el.onclick = async e => { const i = +e.currentTarget.dataset.i; const k = t.steps[i].kind; const p = k === 'app' ? await configApi.pickProgram() : await configApi.pickFile(); if (p) { t.steps[i].value = p; renderMacroSteps(t); markDirty(); } });
@@ -1163,8 +1495,9 @@
     const el = document.getElementById('icondetail'); if (!el) return;
     const type = iconTypeOf(t);
     if (type === 'emoji') {
-      el.innerHTML = `<input id="tIcon" value="${esc(t.icon)}" placeholder="paste an emoji, e.g. 🌐">`;
-      document.getElementById('tIcon').oninput = e => { t.icon = e.target.value; renderTiles(); renderIconPreview(t); markDirty(); };
+      el.innerHTML = `<input id="tIcon" value="${esc(t.icon)}" placeholder="paste an emoji, or type a word to search — rocket, heart, coffee…">
+        <div class="emoji-grid" id="emojiResults"></div>`;
+      wireEmojiPicker(t);
     } else if (type === 'app') {
       el.innerHTML = `<p class="hint">${t.value ? 'Uses this program’s own icon: <b>' + esc(t.value) + '</b>' : 'Set a program in Value first.'}</p>`;
       if (t.value) ensureAppIcon(t.value);
@@ -1205,6 +1538,35 @@
     }
   }
 
+  // One field does both jobs: paste an emoji directly, or type a word and pick a live match below.
+  async function wireEmojiPicker(t) {
+    const inp = document.getElementById('tIcon');
+    const results = document.getElementById('emojiResults');
+    if (!inp || !results) return;
+    results.innerHTML = '<span class="hint">loading…</span>';
+    const index = await getEmojiIndex();
+    if (!document.body.contains(inp)) return;   // the editor moved on to something else while this loaded
+    const renderResults = () => {
+      const list = emojiSearchIn(index, inp.value);
+      results.innerHTML = list.length
+        ? list.map(em => `<button type="button" class="emoji-btn" title="Use this emoji">${esc(em)}</button>`).join('')
+        : '<span class="hint">no matches</span>';
+      results.querySelectorAll('.emoji-btn').forEach(b => b.onclick = () => {
+        t.icon = b.textContent;
+        inp.value = t.icon;
+        renderResults();
+        renderTiles(); renderIconPreview(t); markDirty();
+      });
+    };
+    inp.oninput = () => {
+      // Letters/digits in the box mean it's a search word, not a pasted emoji -- don't clobber the
+      // tile's actual icon with that text. Only a real paste (no plain ASCII in it) commits directly.
+      if (!/[a-z0-9]/i.test(inp.value)) { t.icon = inp.value; renderTiles(); renderIconPreview(t); markDirty(); }
+      renderResults();
+    };
+    renderResults();
+  }
+
   function renderIconPreview(t) {
     const el = document.getElementById('iconpreview'); if (!el) return;
     const type = iconTypeOf(t);
@@ -1236,10 +1598,16 @@
     if (!others.length) return '<span class="hint">No other pages to link to yet — add one first.</span>';
     return `<select id="tPage">${others.map(g => `<option value="${g.id}" ${g.id === t.value ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>`;
   }
+  function routineSelectHtml(t) {
+    const list = ((config.settings || {}).routines) || [];
+    if (!list.length) return '<span class="hint">No routines saved yet — add one on <b>Settings → Routines</b>, or from the panel with <b>+ Routine</b>.</span>';
+    return `<select id="tRoutine">${list.map(r => `<option value="${esc(r.id)}" ${r.id === t.value ? 'selected' : ''}>${esc(r.name || '(unnamed routine)')}</option>`).join('')}</select>`;
+  }
   function typeHint(type) {
     if (type === 'app') return 'Program name on PATH (chrome, notepad…) or a full .exe path via Browse.';
     if (type === 'url') return 'Opens in your default browser.';
     if (type === 'page') return 'Tapping (or clicking) this tile switches the panel to the chosen page.';
+    if (type === 'routine') return 'Tapping this tile switches the panel to the AI Chat page the routine names and sends its saved request — the agent answers with its normal tools and approvals. Manage routines on Settings → Routines.';
     if (type === 'cmd') return 'Runs a shell command (advanced; only use commands you fully trust).';
     if (type === 'system') return 'lock = lock screen · config = open this editor · mic = toggle the device mic · monitor = hide the panel and use the device as a normal monitor (return via the tray).';
     if (type === 'counter') return 'Tap the left half of the tile to decrement, the right half to increment. The value persists across sessions.';
@@ -1433,7 +1801,7 @@
       ${rotRowHtml(g)}
       ${shortcutRowHtml(g)}
       ${advRowHtml(g)}
-      <div class="row" style="margin-top:10px"><button class="danger" id="gDelete">Delete page</button></div>
+      <div class="row" style="margin-top:10px"><button id="gFocus">Focus on device</button><button class="danger" id="gDelete" style="margin-left:8px">Delete page</button></div>
       <p class="hint" id="authHint"></p>
       <p class="hint">Shown full-screen on the panel. Knob scrolls · tap clicks · double-click the knob returns to the page selector.</p>`;
     const dtb = document.getElementById('dtBtns'); if (dtb) dtb.onclick = () => { dashTab = 'buttons'; render(); };
@@ -1441,6 +1809,7 @@
     document.getElementById('gUrl').oninput = e => { g.url = e.target.value; markDirty(); };
     document.getElementById('gAuth').onchange = e => { setAuthType(g, e.target.value); renderAuthFields(g); markDirty(); };
     document.getElementById('gDelete').onclick = deleteCurrentPage;
+    { const fb = document.getElementById('gFocus'); if (fb) fb.onclick = focusCurrentPage; }
     document.getElementById('gExt').onchange = e => { g.linksExternal = e.target.checked; markDirty(); };
     const gua = document.getElementById('gUA'); if (gua) gua.onchange = e => { g.desktopUA = e.target.checked; markDirty(); };
     document.getElementById('gGrid').onchange = e => {
@@ -1511,12 +1880,35 @@
     const isMusic = g.app === 'music';
     const isHaDash = g.app === 'ha-dashboard';
     const isKeyShortcuts = g.app === 'keyshortcuts';
-    const isClaudeVoice = g.app === 'claude-voice';
-    const isCodexVoice = g.app === 'codex-voice';
-    const isCopilotVoice = g.app === 'copilot-voice';
-    const isOwuiVoice = g.app === 'owui-voice';
-    const isVoiceApp = isClaudeVoice || isCodexVoice || isCopilotVoice || isOwuiVoice;   // all four share the hand-rendered options box below (owui omits the folder/mode rows)
+    const isVoiceApp = g.app === 'ai-voice';   // one app; the hand-rendered box below branches on the page's backend
+    const CV_BACKENDS = ['claude', 'codex', 'copilot', 'owui', 'api'];
+    const cvBackend = CV_BACKENDS.includes(optVal(g, 'backend', 'claude')) ? optVal(g, 'backend', 'claude') : 'claude';
+    const isCliBackend = cvBackend === 'claude' || cvBackend === 'codex' || cvBackend === 'copilot';
+    // Permission-mode choice sets differ per CLI backend (they map to each CLI's own flags), so they
+    // live here rather than in the single ai-voice apps.json entry.
+    const CV_MODES = {
+      claude: { default: 'manual', choices: [
+        ['manual', 'Manual — ask before every action (touch approval on the panel)'],
+        ['acceptEdits', 'Accept edits — auto-approve file changes'],
+        ['plan', "Plan — describe, don't act, until approved"],
+        ['bypassPermissions', 'Full auto — no prompts (use with care)'],
+      ] },
+      codex: { default: 'ask-for-approval', choices: [
+        ['read-only', 'Read Only — Codex can read files in the workspace; approval required to edit files or access the internet'],
+        ['ask-for-approval', 'Ask for approval — Codex can read, edit, and run commands in the workspace; approval required for the internet or other files'],
+        ['approve-for-me', 'Approve for me — only ask for actions detected as potentially unsafe'],
+        ['full-access', 'Full Access — Codex can edit files outside the workspace and use the internet without asking (use with caution)'],
+      ] },
+      copilot: { default: 'manual', choices: [
+        ['manual', 'Manual — ask before every action (touch approval on the panel)'],
+        ['plan', "Plan — describe, don't act, until approved"],
+        ['auto', 'Approve for me — file changes and commands run automatically'],
+        ['autopilot', 'Full auto — runs until the task is done, no prompts at all'],
+      ] },
+    };
     const isOffice = g.app === 'office';
+    const isLucidType = g.app === 'lucidtype';
+    const isLiveTranslate = g.app === 'livetranslate';
     const musicBox = `<fieldset style="border:1px solid #2a3a4e; border-radius:8px; padding:6px 14px 10px; margin:10px 0">
         <legend style="padding:0 6px; color:#9fb3c8; font-size:13px">Panels</legend>
         <div><label class="iconopt" style="width:auto"><input type="checkbox" id="pArt" ${optVal(g, 'art', true) ? 'checked' : ''}> Show album art</label></div>
@@ -1555,12 +1947,36 @@
     // own picker + flags rather than delegating to the generic renderAppOpts(). See docs/claude-voice.md
     // and the plan file for why projectDir specifically needs this (D:\Github\* isn't known at
     // apps.json-authoring time).
-    const cvOptDef = key => (def && def.options || []).find(o => o.key === key) || {};
     const cvVal = (key, dflt) => optVal(g, key, dflt);
-    const cvPermChoices = (cvOptDef('permissionMode').choices || []);
+    const cvModes = CV_MODES[cvBackend] || null;
+    const cvMode = (() => {   // stored mode, healed to the backend's default when it isn't one of its choices
+      const v = cvVal('permissionMode', '');
+      return cvModes && cvModes.choices.some(c => c[0] === v) ? v : (cvModes ? cvModes.default : '');
+    })();
     const claudeVoiceBox = `<div id="cvBox" style="margin-top:10px">
-        <p id="cvCliWarn" class="hint" style="display:none;color:#ff8a8a;font-weight:600"></p>` + (isOwuiVoice ? `
-        <p class="hint">Chats against the Open WebUI connection configured on <b>Settings → Auth</b> (URL, API key, default model). No working folder and no permission modes — the chat API can't touch files or run commands.</p>` : `
+        <div class="row"><label>Backend</label>
+          <select id="cvBackend" style="flex:1">
+            <option value="claude" ${cvBackend === 'claude' ? 'selected' : ''}>Claude Code — CLI agent with tools</option>
+            <option value="codex" ${cvBackend === 'codex' ? 'selected' : ''}>Codex — CLI agent with tools</option>
+            <option value="copilot" ${cvBackend === 'copilot' ? 'selected' : ''}>Copilot — CLI agent with tools</option>
+            <option value="owui" ${cvBackend === 'owui' ? 'selected' : ''}>Open WebUI — your server (Auth tab connection)</option>
+            <option value="api" ${cvBackend === 'api' ? 'selected' : ''}>API endpoint — your own key (OpenAI, DeepSeek, OpenRouter, …)</option>
+          </select></div>
+        <p id="cvCliWarn" class="hint" style="display:none;color:#ff8a8a;font-weight:600"></p>` + (cvBackend === 'owui' ? `
+        <p class="hint">Chats against the Open WebUI connection configured on <b>Settings → Auth</b> (URL, API key, default model). No working folder and no permission modes — the chat API can't touch files or run commands.</p>` : cvBackend === 'api' ? `
+        <div class="row"><label>Endpoint</label>
+          <select id="cvApiPreset" style="width:230px">
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="custom">Custom / LiteLLM / Ollama…</option>
+          </select>
+          <input id="cvApiUrl" value="${esc(cvVal('apiBaseUrl', 'https://api.openai.com/v1'))}" placeholder="https://api.openai.com/v1" style="flex:1; margin-left:8px"></div>
+        <div class="row"><label>API key</label>${secretInput(cvVal('apiKey', ''), 'id="cvApiKey" style="flex:1"')}</div>
+        <div class="row"><label>Model</label>
+          <input id="cvApiModel" value="${esc(cvVal('apiModel', ''))}" placeholder="e.g. gpt-4o-mini" style="width:320px" autocomplete="off">
+          <span class="hint" id="cvApiModelHint" style="margin:0 0 0 8px"></span></div>
+        <p class="hint">Any OpenAI-compatible chat endpoint. Plain conversation — no tools, no file access. The key is stored encrypted and never reaches the panel page.</p>` : `
         <div class="row"><label>Default folder</label>
           <input id="cvProjectPath" value="${esc(cvVal('projectDir', ''))}" style="flex:1">
           <button id="cvProjectPathBrowse" type="button">Browse…</button></div>
@@ -1569,13 +1985,12 @@
           <input id="cvProjectsRoot" value="${esc(cvVal('projectsRoot', ''))}" style="flex:1">
           <button id="cvProjectsRootBrowse" type="button">Browse…</button></div>
         <p class="hint">The folder the panel's Change folder list scans.</p>`) + `
-        <div class="row"><label>Wyoming host</label><input id="cvWyomingHost" value="${esc(cvVal('wyomingHost', ''))}" style="flex:1"></div>
-        <div class="row"><label>STT / TTS ports</label>
-          <input id="cvSttPort" value="${esc(cvVal('wyomingSttPort', ''))}" style="width:90px">
-          <input id="cvTtsPort" value="${esc(cvVal('wyomingTtsPort', ''))}" style="width:90px;margin-left:8px"></div>
-        <p class="hint">Voice needs Piper (TTS) and Whisper (STT) hosts. Please enter the IP of your server or use <a href="#" id="cvTtsLink">tts-stt-windows</a> to provide both on any Windows machine — install it and set the host to <code>127.0.0.1</code>.</p>` + (isOwuiVoice ? '' : `
+        <p class="hint">Voice STT/TTS servers are set globally under <b>Settings → TTS/STT</b>. Override them for just this page in <b>Advanced settings</b> below.</p>
+        <div class="row" style="margin-top:10px"><label>Default profile</label>
+          <select id="cvProfile" style="flex:1">${(((config.settings || {}).aiProfiles) || []).map((p, i) => `<option value="${esc(p.id)}" ${(cvVal('profilePick', '') || (((config.settings || {}).aiProfiles) || [{}])[0].id) === p.id ? 'selected' : ''}>${esc(p.name || '(unnamed)')}</option>`).join('')}</select></div>
+        <p class="hint">The AI profile this page starts with — a named instruction that shapes the AI (translate, summarize, write…). Switch live from the panel's <b>Profile</b> button; manage the list under <b>Settings → AI Profiles</b>.</p>` + (!cvModes ? '' : `
         <div class="row" style="margin-top:10px"><label>Permission mode</label>
-          <select id="cvPermMode" style="flex:1">${cvPermChoices.map(c => `<option value="${esc(c[0])}" ${cvVal('permissionMode', cvOptDef('permissionMode').default || '') === c[0] ? 'selected' : ''}>${esc(c[1])}</option>`).join('')}</select></div>`) + (isClaudeVoice ? `
+          <select id="cvPermMode" style="flex:1">${cvModes.choices.map(c => `<option value="${esc(c[0])}" ${cvMode === c[0] ? 'selected' : ''}>${esc(c[1])}</option>`).join('')}</select></div>`) + (cvBackend === 'claude' ? `
         <div class="row"><label>Touch approval</label>
           <label class="iconopt" style="width:auto"><input type="checkbox" id="cvApprovals" ${cvVal('approvalsEnabled', false) ? 'checked' : ''}> when in Manual mode</label></div>
         <div class="row" style="margin-top:10px"><label>Panel prompt</label>
@@ -1584,7 +1999,136 @@
       </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
-    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : isKeyShortcuts ? keyShortcutsBox : isVoiceApp ? claudeVoiceBox : isOffice ? officeOptionsHtml(g, def) : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+    const lucidTypeBox = `<div style="margin-top:10px">
+        <p class="sectitle">Microphone</p>
+        <div class="row"><label>Capture device</label>
+          <select id="ltMic" style="flex:1"><option value="">System default</option></select></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="ltTest"> Test microphone (live input level)</label></div>
+        <div class="row"><div id="ltMeterWrap" style="flex:1;height:14px;border-radius:7px;background:#0e1822;overflow:hidden;display:none"><div id="ltMeter" style="height:100%;width:0%;background:#7CFFB2;transition:width .06s"></div></div></div>
+        <p class="hint">The mic used for dictation. Set the input <b>level</b> in Windows Sound settings; speak with the test on and watch the bar.</p>
+        <div class="row" style="margin-top:10px"><label style="width:auto">Voice pause tolerance</label>
+          <input type="number" id="ltPause" min="400" max="2500" step="100" value="${esc(String(optVal(g, 'silenceMs', 400)))}" style="width:110px">
+          <span class="hint" style="margin:0 0 0 8px">ms of silence before a phrase is transcribed</span></div>
+        <p class="hint">Lower = snappier (text appears sooner after you pause); higher = fewer mid-sentence cutoffs. Applies on the next dictation start.</p>
+
+        <p class="sectitle" style="margin-top:16px">Hotkeys</p>
+        <div class="row"><label style="width:auto">Start / stop dictation</label>
+          <input id="ltDictKey" readonly placeholder="click, then press keys" value="${esc(optVal(g, 'dictationHotkey', ''))}" style="width:220px">
+          <button id="ltDictKeyClear" type="button" style="margin-left:8px">Clear</button></div>
+        <div class="row"><label style="width:auto">Starting again</label>
+          <select id="ltStartMode" style="width:230px">
+            <option value="clear" ${optVal(g, 'startMode', 'clear') === 'append' ? '' : 'selected'}>Clears the box and starts fresh</option>
+            <option value="append" ${optVal(g, 'startMode', 'clear') === 'append' ? 'selected' : ''}>Appends to the existing text</option>
+          </select></div>
+        <div class="row"><label style="width:auto">Apply text</label>
+          <input id="ltApplyKey" readonly placeholder="click, then press keys" value="${esc(optVal(g, 'applyHotkey', ''))}" style="width:220px">
+          <button id="ltApplyKeyClear" type="button" style="margin-left:8px">Clear</button></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="ltApplyStops" ${optVal(g, 'applyStopsRecording', true) ? 'checked' : ''}> Apply text also stops recording</label></div>
+        <p class="hint">Global combos (need a modifier) that fire from any app. To <b>jump to this page</b>, use the page's <b>Hotkey shortcut</b> above. Applies on Save.</p>
+
+        <p class="sectitle" style="margin-top:16px">Notifications</p>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="ltSwitch" ${optVal(g, 'switchOnDictate', true) ? 'checked' : ''}> Switch the panel to this page when dictation starts</label></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="ltColor" ${optVal(g, 'notifyColorChange', false) ? 'checked' : ''}> Turn the tray icon red while recording</label></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="ltBeep" ${optVal(g, 'notifyBeep', false) ? 'checked' : ''}> Beep on dictation start/stop</label></div>
+        <p class="hint">Transcription server is the global <b>Settings → TTS/STT</b>; override it for this page under <b>Advanced settings</b> below.</p>
+
+        <p class="sectitle" style="margin-top:18px">AI (Cleanup &amp; Rewrite)</p>
+        <div class="row"><label style="width:auto">Backend</label>
+          <select id="ltAiBackend" style="width:230px">
+            <option value="claude">Claude</option><option value="codex">Codex</option>
+            <option value="copilot">Copilot</option><option value="owui">Open WebUI</option>
+          </select></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="ltUseEndpoint" ${optVal(g, 'useEndpoint', false) ? 'checked' : ''}> Use a direct OpenAI-compatible endpoint instead</label></div>
+        <div id="ltEndpointRows" style="display:${optVal(g, 'useEndpoint', false) ? '' : 'none'}">
+          <div class="row"><label>Endpoint URL</label><input id="ltEndpoint" value="${esc(optVal(g, 'endpoint', ''))}" placeholder="https://host/v1" style="flex:1"></div>
+          <div class="row"><label>API key</label><input id="ltEndpointKey" type="password" value="${esc(optVal(g, 'endpointKey', ''))}" placeholder="blank if none" style="flex:1"></div>
+        </div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="ltOverrideModel" ${optVal(g, 'overrideModel', false) ? 'checked' : ''}> Override model</label></div>
+        <div id="ltModelRow" style="display:${optVal(g, 'overrideModel', false) ? '' : 'none'}">
+          <div class="row"><label>Model</label><input id="ltModel" value="${esc(optVal(g, 'model', ''))}" placeholder="e.g. glm-4.7-flash" style="flex:1"></div>
+        </div>
+        <div class="row"><label>Timeout (ms)</label><input type="number" id="ltAiTimeout" min="1000" max="600000" step="1000" value="${esc(String(optVal(g, 'aiTimeoutMs', 30000)))}" style="width:120px"></div>
+        <p class="hint">Cleanup/Rewrite send the box text to this AI. By default the chosen integrated agent (Claude/Codex/Copilot need the CLI on PATH; Open WebUI uses the <b>Auth</b> tab connection). Tick <b>Use Endpoint</b> to POST to an OpenAI-compatible <code>/chat/completions</code> server directly (needs a model — tick Override model).</p>
+
+        <details class="advsec" style="margin-top:14px">
+          <summary style="cursor:pointer;color:#9fb3c8;font-size:13px;user-select:none">Cleanup — fix grammar / filler</summary>
+          <div class="row" style="margin-top:8px"><label style="width:auto">Hotkey</label>
+            <input id="ltCleanupKey" readonly placeholder="click, then press keys" value="${esc(optVal(g, 'cleanupHotkey', ''))}" style="width:220px">
+            <button id="ltCleanupKeyClear" type="button" style="margin-left:8px">Clear</button></div>
+          <div class="row" style="margin-top:6px"><label style="width:auto">Prompt</label></div>
+          <textarea id="ltCleanupPrompt" rows="5" style="width:100%">${esc(optVal(g, 'cleanupPrompt', '') || LT_DEFAULT_CLEANUP_PROMPT)}</textarea>
+          <p class="hint">System prompt for Cleanup. Applies on Save.</p>
+        </details>
+
+        <details class="advsec" style="margin-top:10px">
+          <summary style="cursor:pointer;color:#9fb3c8;font-size:13px;user-select:none">Rewrite — restyle</summary>
+          <div class="row" style="margin-top:8px"><label style="width:auto">Hotkey</label>
+            <input id="ltRewriteKey" readonly placeholder="click, then press keys" value="${esc(optVal(g, 'rewriteHotkey', ''))}" style="width:220px">
+            <button id="ltRewriteKeyClear" type="button" style="margin-left:8px">Clear</button></div>
+          <div class="row"><label style="width:auto">Default mode</label>
+            <select id="ltRewriteMode" style="width:200px">
+              <option value="professional">Professional</option><option value="concise">Concise</option>
+              <option value="confident">Confident</option><option value="custom">Custom</option>
+            </select></div>
+          <p class="hint" style="margin-top:6px">Edit any style's prompt (blank = built-in default). The <b>Default mode</b> is the live one; switch it any time from the panel's <b>Mode</b> button.</p>
+          <div class="row"><label style="width:auto">Professional</label></div>
+          <textarea id="ltRwProfessional" rows="3" style="width:100%">${esc(optVal(g, 'rewritePromptProfessional', '') || LT_REWRITE_PRESETS.professional)}</textarea>
+          <div class="row"><label style="width:auto">Concise</label></div>
+          <textarea id="ltRwConcise" rows="3" style="width:100%">${esc(optVal(g, 'rewritePromptConcise', '') || LT_REWRITE_PRESETS.concise)}</textarea>
+          <div class="row"><label style="width:auto">Confident</label></div>
+          <textarea id="ltRwConfident" rows="3" style="width:100%">${esc(optVal(g, 'rewritePromptConfident', '') || LT_REWRITE_PRESETS.confident)}</textarea>
+          <div class="row"><label style="width:auto">Custom</label></div>
+          <textarea id="ltRewriteCustom" rows="3" style="width:100%" placeholder="Used when mode = Custom">${esc(optVal(g, 'rewriteCustomPrompt', ''))}</textarea>
+        </details>
+      </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+        <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
+      <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
+    const xlProvider = optVal(g, 'provider', 'soniox') === 'ai' ? 'ai' : 'soniox';
+    const liveTranslateBox = `<div style="margin-top:10px">
+        <div class="row"><label>Provider</label>
+          <select id="xlProvider" style="flex:1">
+            <option value="soniox" ${xlProvider === 'soniox' ? 'selected' : ''}>Soniox — cloud real-time translation (recommended)</option>
+            <option value="ai" ${xlProvider === 'ai' ? 'selected' : ''}>AI translate — your own API key (DeepSeek, OpenAI, …)</option>
+          </select></div>
+        ${xlProvider === 'soniox' ? `
+        <div class="row"><label>Soniox API key</label>${secretInput(optVal(g, 'sonioxApiKey', ''), 'id="xlSoniKey" style="flex:1"')}</div>
+        <p class="hint">From <b>soniox.com</b>. Stored encrypted; the panel uses a short-lived temp key so the real key never leaves this machine. ~$0.18/hr while actively translating.</p>
+        <div class="row" style="margin-top:10px"><label>Target language</label>
+          <input id="xlTargetLang" value="${esc(optVal(g, 'targetLanguage', 'en'))}" placeholder="en" style="width:120px"></div>
+        <div class="row"><label>Source hint</label>
+          <input id="xlSourceHint" value="${esc(optVal(g, 'sourceHint', ''))}" placeholder="blank = auto-detect (e.g. de)" style="width:230px"></div>
+        <p class="hint">Language codes (en, es, de, …) — <a href="#" id="xlLangLink">browse all Soniox languages ↗</a>. Source hint is optional; Soniox auto-detects otherwise (setting it removes the startup delay).</p>` : `
+        <div class="row"><label>Endpoint</label>
+          <select id="xlAiPreset" style="width:230px">
+            <option value="deepseek">DeepSeek</option>
+            <option value="openai">OpenAI</option>
+            <option value="openrouter">OpenRouter</option>
+            <option value="custom">Custom / Open WebUI…</option>
+          </select>
+          <input id="xlAiUrl" value="${esc(optVal(g, 'aiBaseUrl', 'https://api.deepseek.com'))}" placeholder="https://api.deepseek.com" style="flex:1; margin-left:8px"></div>
+        <div class="row"><label>API key</label>${secretInput(optVal(g, 'aiApiKey', ''), 'id="xlAiKey" style="flex:1"')}</div>
+        <div class="row"><label>Model</label>
+          <input id="xlAiModel" value="${esc(optVal(g, 'aiModel', 'deepseek-v4-flash'))}" placeholder="deepseek-v4-flash" style="width:230px"></div>
+        <div class="row" style="margin-top:10px"><label>Target language</label>
+          <input id="xlTargetLang" value="${esc(optVal(g, 'targetLanguage', 'en'))}" placeholder="en (or any language name)" style="width:230px"></div>
+        <p class="hint">Any OpenAI-compatible chat endpoint (DeepSeek ≈ $0.10/hr, OpenAI, a local Open WebUI/Ollama…). Utterances are transcribed by your <b>Settings → TTS/STT</b> server first — its model must be <b>multilingual</b> (Parakeet v3 or Whisper small/medium/large; the Distil-Whisper models are English-only) — then translated with recent-line context, so captions arrive per phrase — a beat behind speech, not word-by-word like Soniox. Key stored encrypted, used only from the main process.</p>`}
+        <p class="sectitle" style="margin-top:14px">Microphone</p>
+        <div class="row"><label>Capture device</label>
+          <select id="xlMic" style="flex:1"><option value="">System default</option></select></div>
+        <p class="hint">The mic used for live translation (also selectable from the panel's Settings).</p>
+        <div class="row" style="margin-top:10px"><label>Toggle hotkey</label>
+          <input id="xlHotkey" readonly placeholder="click, then press keys" value="${esc(optVal(g, 'micHotkey', ''))}" style="width:220px">
+          <button id="xlHotkeyClear" type="button" style="margin-left:8px">Clear</button></div>
+        <p class="hint">A global key combo (needs a modifier) that starts/stops translation from any app — it switches to this page and toggles the mic. Applies on Save.</p>
+        <div class="row" style="margin-top:10px"><label class="iconopt" style="width:auto"><input type="checkbox" id="xlSave" ${optVal(g, 'saveToFile', false) ? 'checked' : ''}> Save transcript to a file</label></div>
+        <div class="row"><label>Save folder</label>
+          <input id="xlSaveFolder" value="${esc(optVal(g, 'saveFolder', ''))}" placeholder="Documents\\OpenQuake Translations" readonly style="flex:1">
+          <button id="xlSaveFolderBrowse" type="button">Browse…</button></div>
+        <p class="hint">Where saved translations are written. Blank = Documents\\OpenQuake Translations.</p>
+      </div>` + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
+        <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
+      <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : '');
+    const optsBlock = isMusic ? musicBox : isHaDash ? haBox : isKeyShortcuts ? keyShortcutsBox : isVoiceApp ? claudeVoiceBox : isLucidType ? lucidTypeBox : isLiveTranslate ? liveTranslateBox : isOffice ? officeOptionsHtml(g, def) : ('<div id="appOpts"></div>' + (canGrid ? `<div class="row" style="margin-top:10px"><label style="width:auto">Buttons</label>
         <label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" id="gGrid" ${g.gridOn ? 'checked' : ''}> Add a button grid beside the app</label></div>
       <p class="hint">Adds a strip of launcher tiles beside the app — pick the side, size, and tiles on the <b>Buttons</b> tab that appears.</p>` : ''));
     el.innerHTML = tabBar + `
@@ -1597,13 +2141,14 @@
       ${rotRowHtml(g)}
       ${shortcutRowHtml(g)}
       ${advRowHtml(g)}
-      <div class="row" style="margin-top:10px"><button class="danger" id="gDelete">Delete page</button></div>
+      <div class="row" style="margin-top:10px"><button id="gFocus">Focus on device</button><button class="danger" id="gDelete" style="margin-left:8px">Delete page</button></div>
       <p class="hint">${def ? esc(def.name) + ' runs locally and shows full-screen on the panel.' : 'Pick an app, then set its options below.'}</p>`;
     const atb = document.getElementById('atBtns'); if (atb) atb.onclick = () => { dashTab = 'buttons'; render(); };
     document.getElementById('gName').oninput = e => { g.name = e.target.value; renderGrids(); markDirty(); };
     document.getElementById('gApp').onchange = e => { setApp(g, e.target.value); render(); markDirty(); };
     document.getElementById('refreshApps').onclick = refreshApps;
     document.getElementById('gDelete').onclick = deleteCurrentPage;
+    { const fb = document.getElementById('gFocus'); if (fb) fb.onclick = focusCurrentPage; }
     const gg = document.getElementById('gGrid');
     if (gg) gg.onchange = e => {
       g.gridOn = e.target.checked;
@@ -1646,9 +2191,19 @@
       wireShortcutRows();
     } else if (isVoiceApp) {
       const setOpt = (key, val) => { if (!g.options) g.options = {}; g.options[key] = val; markDirty(); };
+      // Backend switch re-renders the box so the backend-specific rows swap in (Live Translate's
+      // provider-select pattern). Heal the stored mode to the new backend's default so a stale
+      // claude mode never reaches the codex CLI (and vice versa).
+      document.getElementById('cvBackend').onchange = e => {
+        setOpt('backend', e.target.value);
+        const m = CV_MODES[e.target.value];
+        setOpt('permissionMode', m ? m.default : '');
+        render();
+      };
+      if (cvModes && cvVal('permissionMode', '') !== cvMode) setOpt('permissionMode', cvMode);   // persist the healed mode
       // Default folder is a plain text box -- actual folder switching happens on the panel
       // (Change folder), which writes its pick back into this same option. The folder and
-      // permission-mode rows don't exist for owui-voice, hence the existence guards.
+      // permission-mode rows only exist for CLI backends, hence the existence guards.
       const cvProjectPath = document.getElementById('cvProjectPath');
       if (cvProjectPath) cvProjectPath.oninput = e => setOpt('projectDir', e.target.value.trim());
       const cvProjectsRoot = document.getElementById('cvProjectsRoot');
@@ -1657,32 +2212,210 @@
       if (cvProjectPathBrowse) cvProjectPathBrowse.onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('cvProjectPath').value = p; setOpt('projectDir', p); } };
       const cvProjectsRootBrowse = document.getElementById('cvProjectsRootBrowse');
       if (cvProjectsRootBrowse) cvProjectsRootBrowse.onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('cvProjectsRoot').value = p; setOpt('projectsRoot', p); } };
-      document.getElementById('cvWyomingHost').oninput = e => setOpt('wyomingHost', e.target.value.trim());
-      document.getElementById('cvSttPort').oninput = e => setOpt('wyomingSttPort', e.target.value.trim());
-      document.getElementById('cvTtsPort').oninput = e => setOpt('wyomingTtsPort', e.target.value.trim());
       const cvPermMode = document.getElementById('cvPermMode');
       if (cvPermMode) cvPermMode.onchange = e => setOpt('permissionMode', e.target.value);
+      const cvProfile = document.getElementById('cvProfile');
+      if (cvProfile) cvProfile.onchange = e => setOpt('profilePick', e.target.value);
       const cvApprovals = document.getElementById('cvApprovals');   // claude-only rows
       if (cvApprovals) cvApprovals.onchange = e => setOpt('approvalsEnabled', e.target.checked);
       const cvEditPrompt = document.getElementById('cvEditPrompt');
       if (cvEditPrompt) cvEditPrompt.onclick = () => configApi.editClaudeVoicePrompt();
-      const cvTtsLink = document.getElementById('cvTtsLink');
-      if (cvTtsLink) cvTtsLink.onclick = e => { e.preventDefault(); configApi.openExternal('https://github.com/TeeJS/tts-stt-windows/releases'); };
-      // Warn at add-time if the agent CLI this page drives isn't installed (or, for owui-voice,
-      // if no connection is configured) -- otherwise the user only finds out when the panel page
-      // errors on first use.
-      configApi.probeVoiceCli(g.app).then(p => {
+      // API backend rows: preset fills URL+model (stored truth is always apiBaseUrl/apiModel).
+      const CV_API_PRESETS = { openai: { url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, deepseek: { url: 'https://api.deepseek.com', model: 'deepseek-v4-flash' }, openrouter: { url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
+      const cvApiUrl = document.getElementById('cvApiUrl');
+      if (cvApiUrl) {
+        const preset = document.getElementById('cvApiPreset');
+        const cur = cvApiUrl.value.trim();
+        preset.value = cur === CV_API_PRESETS.openai.url ? 'openai' : cur === CV_API_PRESETS.deepseek.url ? 'deepseek' : cur === CV_API_PRESETS.openrouter.url ? 'openrouter' : 'custom';
+        preset.onchange = e => { const p = CV_API_PRESETS[e.target.value]; if (p) { cvApiUrl.value = p.url; setOpt('apiBaseUrl', p.url); document.getElementById('cvApiModel').value = p.model; setOpt('apiModel', p.model); } };
+        cvApiUrl.oninput = e => setOpt('apiBaseUrl', e.target.value.trim());
+        document.getElementById('cvApiKey').onchange = e => setOpt('apiKey', e.target.value);
+        document.getElementById('cvApiModel').oninput = e => setOpt('apiModel', e.target.value.trim());
+        // Fill the Model picker from the endpoint's standard /models. On success the text input is
+        // swapped for a real <select> (a datalist filters by the box's current text, so with any
+        // value present it looks broken); "Type a model name…" swaps back for unlisted models.
+        // Typing always works pre-fetch and on failure. Re-fetched when URL or key change.
+        const cvFillModels = () => {
+          const hint = document.getElementById('cvApiModelHint');
+          const inp = document.getElementById('cvApiModel');
+          const url = cvApiUrl.value.trim(), key = document.getElementById('cvApiKey').value;
+          if (!url || !key || !inp) { if (hint) hint.textContent = ''; return; }
+          if (hint) hint.textContent = 'loading models…';
+          configApi.probeApiModels(url, key).then(r => {
+            if (!hint || !inp) return;
+            if (!(r && r.ok && r.models && r.models.length)) {
+              hint.textContent = r && r.error ? 'model list unavailable: ' + r.error : 'model list unavailable';
+              return;
+            }
+            let sel = document.getElementById('cvApiModelSel');
+            if (!sel) {
+              sel = document.createElement('select');
+              sel.id = 'cvApiModelSel';
+              sel.style.width = '320px';
+              inp.parentElement.insertBefore(sel, inp);
+            }
+            const cur = inp.value.trim();
+            sel.innerHTML = '';
+            const add = (v, label) => { const o = document.createElement('option'); o.value = v; o.textContent = label || v; sel.appendChild(o); };
+            if (cur && !r.models.includes(cur)) add(cur, cur + ' (not in the list)');
+            r.models.forEach(m => add(m));
+            add('__custom__', 'Type a model name…');
+            sel.value = cur && !r.models.includes(cur) ? cur : (r.models.includes(cur) ? cur : r.models[0]);
+            inp.style.display = 'none';
+            sel.onchange = e => {
+              if (e.target.value === '__custom__') { sel.remove(); inp.style.display = ''; inp.focus(); inp.select(); return; }
+              inp.value = e.target.value;
+              setOpt('apiModel', e.target.value);
+            };
+            // The select landing on the first model (empty box case) is a real pick — persist it.
+            if (!cur && sel.value) { inp.value = sel.value; setOpt('apiModel', sel.value); }
+            hint.textContent = r.models.length + ' models';
+          }).catch(() => { if (hint) hint.textContent = 'model list unavailable'; });
+        };
+        cvFillModels();
+        cvApiUrl.onchange = cvFillModels;
+        document.getElementById('cvApiKey').addEventListener('change', cvFillModels);
+      }
+      // Warn at add-time if the backend's CLI isn't installed (or, for owui, if no connection is
+      // configured) -- otherwise the user only finds out when the panel page errors on first use.
+      if (cvBackend !== 'api') configApi.probeVoiceCli(cvBackend).then(p => {
         const warn = document.getElementById('cvCliWarn');
         if (warn && !p) {
-          if (isOwuiVoice) {
+          if (cvBackend === 'owui') {
             warn.textContent = '⚠ Open WebUI connection not configured — set the URL on Settings → Auth or this page won\'t work.';
           } else {
-            const cliName = isCodexVoice ? 'codex' : isCopilotVoice ? 'copilot' : 'claude';
-            warn.textContent = '⚠ The ' + cliName + ' CLI was not found on PATH — this page won\'t work until it is installed.';
+            warn.textContent = '⚠ The ' + cvBackend + ' CLI was not found on PATH — this page won\'t work until it is installed.';
           }
           warn.style.display = '';
         }
       }).catch(() => {});
+    } else if (isLucidType) {
+      const setOpt = (key, val) => { if (!g.options) g.options = {}; g.options[key] = val; markDirty(); };
+      // Live mic test meter — peak level off a getUserMedia AnalyserNode; torn down on re-render (render()).
+      function startLtMeter(label) {
+        if (ltMeterStop) { ltMeterStop(); }
+        const wrap = document.getElementById('ltMeterWrap'), bar = document.getElementById('ltMeter');
+        if (wrap) wrap.style.display = '';
+        let stream = null, ctx = null, raf = 0, dead = false;
+        ltMeterStop = () => { dead = true; try { cancelAnimationFrame(raf); } catch (e) {} try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch (e) {} try { if (ctx) ctx.close(); } catch (e) {} if (wrap) wrap.style.display = 'none'; if (bar) bar.style.width = '0%'; ltMeterStop = null; };
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(function (grant) {
+          return (label ? navigator.mediaDevices.enumerateDevices() : Promise.resolve([])).then(function (devs) {
+            var m = (devs || []).find(function (d) { return d.kind === 'audioinput' && d.label === label; });
+            grant.getTracks().forEach(function (t) { t.stop(); });
+            return navigator.mediaDevices.getUserMedia({ audio: m ? { deviceId: { ideal: m.deviceId } } : true });
+          });
+        }).then(function (s) {
+          if (dead) { s.getTracks().forEach(function (t) { t.stop(); }); return; }
+          stream = s;
+          ctx = new (window.AudioContext || window.webkitAudioContext)();
+          var an = ctx.createAnalyser(); an.fftSize = 512;
+          ctx.createMediaStreamSource(stream).connect(an);
+          var data = new Uint8Array(an.fftSize);
+          var tick = function () {
+            an.getByteTimeDomainData(data);
+            var peak = 0; for (var i = 0; i < data.length; i++) { var v = Math.abs(data[i] - 128); if (v > peak) peak = v; }
+            if (bar) bar.style.width = Math.min(100, Math.round((peak / 128) * 140)) + '%';
+            raf = requestAnimationFrame(tick);
+          };
+          tick();
+        }).catch(function () { if (ltMeterStop) ltMeterStop(); });
+      }
+      (function () {
+        const sel = document.getElementById('ltMic'); const cur = optVal(g, 'micDevice', '');
+        const fill = devs => {
+          const inputs = (devs || []).filter(d => d.kind === 'audioinput' && d.label);
+          sel.innerHTML = '<option value="">System default</option>';
+          inputs.forEach(d => { const o = document.createElement('option'); o.value = d.label; o.textContent = d.label; sel.appendChild(o); });
+          if (cur && !inputs.some(d => d.label === cur)) { const o = document.createElement('option'); o.value = cur; o.textContent = cur + ' (not connected)'; sel.appendChild(o); }
+          sel.value = cur;
+          sel.onchange = e => { setOpt('micDevice', e.target.value); if (document.getElementById('ltTest').checked) startLtMeter(e.target.value); };
+        };
+        navigator.mediaDevices.enumerateDevices().then(devs => {
+          if ((devs || []).some(d => d.kind === 'audioinput' && d.label)) return fill(devs);
+          navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(tmp => navigator.mediaDevices.enumerateDevices().then(d2 => { tmp.getTracks().forEach(t => t.stop()); fill(d2); }))
+            .catch(() => fill(devs));
+        }).catch(() => fill([]));
+      })();
+      document.getElementById('ltTest').onchange = e => { if (e.target.checked) startLtMeter(document.getElementById('ltMic').value); else if (ltMeterStop) ltMeterStop(); };
+      const ltDictKey = document.getElementById('ltDictKey'), ltApplyKey = document.getElementById('ltApplyKey');
+      ltDictKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { ltDictKey.value = acc; setOpt('dictationHotkey', acc); } };
+      document.getElementById('ltDictKeyClear').onclick = () => { ltDictKey.value = ''; setOpt('dictationHotkey', ''); };
+      ltApplyKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { ltApplyKey.value = acc; setOpt('applyHotkey', acc); } };
+      document.getElementById('ltApplyKeyClear').onclick = () => { ltApplyKey.value = ''; setOpt('applyHotkey', ''); };
+      document.getElementById('ltSwitch').onchange = e => setOpt('switchOnDictate', e.target.checked);
+      document.getElementById('ltColor').onchange = e => setOpt('notifyColorChange', e.target.checked);
+      document.getElementById('ltBeep').onchange = e => setOpt('notifyBeep', e.target.checked);
+      document.getElementById('ltPause').onchange = e => { const v = Math.max(400, Math.min(2500, parseInt(e.target.value, 10) || 400)); e.target.value = v; setOpt('silenceMs', v); };
+      document.getElementById('ltStartMode').onchange = e => setOpt('startMode', e.target.value);
+      document.getElementById('ltApplyStops').onchange = e => setOpt('applyStopsRecording', e.target.checked);
+      // AI backend + endpoint/model reveals
+      const ltAiBackend = document.getElementById('ltAiBackend');
+      ltAiBackend.value = optVal(g, 'aiBackend', 'claude');
+      ltAiBackend.onchange = e => setOpt('aiBackend', e.target.value);
+      document.getElementById('ltUseEndpoint').onchange = e => { setOpt('useEndpoint', e.target.checked); document.getElementById('ltEndpointRows').style.display = e.target.checked ? '' : 'none'; };
+      document.getElementById('ltEndpoint').oninput = e => setOpt('endpoint', e.target.value.trim());
+      document.getElementById('ltEndpointKey').oninput = e => setOpt('endpointKey', e.target.value);
+      document.getElementById('ltOverrideModel').onchange = e => { setOpt('overrideModel', e.target.checked); document.getElementById('ltModelRow').style.display = e.target.checked ? '' : 'none'; };
+      document.getElementById('ltModel').oninput = e => setOpt('model', e.target.value.trim());
+      document.getElementById('ltAiTimeout').onchange = e => { const v = Math.max(1000, Math.min(600000, parseInt(e.target.value, 10) || 30000)); e.target.value = v; setOpt('aiTimeoutMs', v); };
+      // Cleanup section
+      const ltCleanupKey = document.getElementById('ltCleanupKey');
+      ltCleanupKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { ltCleanupKey.value = acc; setOpt('cleanupHotkey', acc); } };
+      document.getElementById('ltCleanupKeyClear').onclick = () => { ltCleanupKey.value = ''; setOpt('cleanupHotkey', ''); };
+      document.getElementById('ltCleanupPrompt').oninput = e => setOpt('cleanupPrompt', e.target.value);
+      // Rewrite section
+      const ltRewriteKey = document.getElementById('ltRewriteKey');
+      ltRewriteKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { ltRewriteKey.value = acc; setOpt('rewriteHotkey', acc); } };
+      document.getElementById('ltRewriteKeyClear').onclick = () => { ltRewriteKey.value = ''; setOpt('rewriteHotkey', ''); };
+      const ltRewriteMode = document.getElementById('ltRewriteMode');
+      ltRewriteMode.value = optVal(g, 'rewriteMode', 'professional');
+      ltRewriteMode.onchange = e => setOpt('rewriteMode', e.target.value);
+      document.getElementById('ltRwProfessional').oninput = e => setOpt('rewritePromptProfessional', e.target.value);
+      document.getElementById('ltRwConcise').oninput = e => setOpt('rewritePromptConcise', e.target.value);
+      document.getElementById('ltRwConfident').oninput = e => setOpt('rewritePromptConfident', e.target.value);
+      document.getElementById('ltRewriteCustom').oninput = e => setOpt('rewriteCustomPrompt', e.target.value);
+    } else if (isLiveTranslate) {
+      const setOpt = (key, val) => { if (!g.options) g.options = {}; g.options[key] = val; markDirty(); };
+      document.getElementById('xlProvider').onchange = e => { setOpt('provider', e.target.value); render(); };   // re-render to swap provider-specific fields
+      const soniKey = document.getElementById('xlSoniKey'); if (soniKey) soniKey.onchange = e => setOpt('sonioxApiKey', e.target.value);
+      const sh = document.getElementById('xlSourceHint'); if (sh) sh.oninput = e => setOpt('sourceHint', e.target.value.trim());
+      const xlLangLink = document.getElementById('xlLangLink'); if (xlLangLink) xlLangLink.onclick = e => { e.preventDefault(); configApi.openExternal('https://soniox.com/docs/stt/concepts/supported-languages'); };
+      document.getElementById('xlTargetLang').oninput = e => setOpt('targetLanguage', e.target.value.trim());
+      document.getElementById('xlSave').onchange = e => setOpt('saveToFile', e.target.checked);
+      document.getElementById('xlSaveFolderBrowse').onclick = async () => { const p = await configApi.pickFolder(); if (p) { document.getElementById('xlSaveFolder').value = p; setOpt('saveFolder', p); } };
+      // AI provider fields. The endpoint preset is a convenience that fills URL + model; the stored
+      // truth is always aiBaseUrl/aiModel, so "Custom" covers Open WebUI, Ollama, or anything else.
+      const AI_PRESETS = { deepseek: { url: 'https://api.deepseek.com', model: 'deepseek-v4-flash' }, openai: { url: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, openrouter: { url: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
+      const xlAiUrl = document.getElementById('xlAiUrl'), xlAiPreset = document.getElementById('xlAiPreset');
+      if (xlAiUrl) {
+        const cur = xlAiUrl.value.trim();
+        xlAiPreset.value = cur === AI_PRESETS.deepseek.url ? 'deepseek' : cur === AI_PRESETS.openai.url ? 'openai' : cur === AI_PRESETS.openrouter.url ? 'openrouter' : 'custom';
+        xlAiPreset.onchange = e => { const p = AI_PRESETS[e.target.value]; if (p) { xlAiUrl.value = p.url; setOpt('aiBaseUrl', p.url); document.getElementById('xlAiModel').value = p.model; setOpt('aiModel', p.model); } };
+        xlAiUrl.oninput = e => { setOpt('aiBaseUrl', e.target.value.trim()); };
+        document.getElementById('xlAiKey').onchange = e => setOpt('aiApiKey', e.target.value);
+        document.getElementById('xlAiModel').oninput = e => setOpt('aiModel', e.target.value.trim());
+      }
+      const xlHotkey = document.getElementById('xlHotkey'); if (xlHotkey) { xlHotkey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { xlHotkey.value = acc; setOpt('micHotkey', acc); } }; document.getElementById('xlHotkeyClear').onclick = () => { xlHotkey.value = ''; setOpt('micHotkey', ''); }; }
+      // Microphone dropdown — the app's default capture device (same pattern as LucidType/Meeting).
+      // enumerateDevices exposes labels only after a getUserMedia grant, so grab-then-release once.
+      (function () {
+        const sel = document.getElementById('xlMic'); const cur = optVal(g, 'micDevice', '');
+        const fill = devs => {
+          const inputs = (devs || []).filter(d => d.kind === 'audioinput' && d.label);
+          sel.innerHTML = '<option value="">System default</option>';
+          inputs.forEach(d => { const o = document.createElement('option'); o.value = d.label; o.textContent = d.label; sel.appendChild(o); });
+          if (cur && !inputs.some(d => d.label === cur)) { const o = document.createElement('option'); o.value = cur; o.textContent = cur + ' (not connected)'; sel.appendChild(o); }
+          sel.value = cur;
+          sel.onchange = e => setOpt('micDevice', e.target.value);
+        };
+        navigator.mediaDevices.enumerateDevices().then(devs => {
+          if ((devs || []).some(d => d.kind === 'audioinput' && d.label)) return fill(devs);
+          navigator.mediaDevices.getUserMedia({ audio: true })
+            .then(tmp => navigator.mediaDevices.enumerateDevices().then(d2 => { tmp.getTracks().forEach(t => t.stop()); fill(d2); }))
+            .catch(() => fill(devs));
+        }).catch(() => fill([]));
+      })();
     } else if (isOffice) {
       wireOfficeOptions(g);
     } else {
@@ -1707,7 +2440,7 @@
     const def = appDefs.find(a => a.id === id);
     g.options = {};
     if (def) {
-      def.options.forEach(o => { g.options[o.key] = o.default; });
+      (def.options || []).forEach(o => { g.options[o.key] = o.default; });   // an app may declare no options
       if (!g.name || g.name === 'App' || (prev && g.name === prev.name)) g.name = def.name;  // auto-name from the app
       if (def.grid) {                                       // app embeds a programmable tile grid — seed it
         g.cols = def.grid.cols || 2; g.rows = def.grid.rows || 2;
@@ -1720,12 +2453,28 @@
     if (!def) { el.innerHTML = ''; return; }
     if (!g.options) g.options = {};
     const valOf = key => (key in g.options) ? g.options[key] : ((def.options || []).find(x => x.key === key) || {}).default;
-    const visible = o => !o.showIf || String(valOf(o.showIf.key)) === String(o.showIf.value);   // conditional option (e.g. city slots only in Cities mode)
-    el.innerHTML = (def.options || []).filter(visible).map(o => {
-      const v = (o.key in g.options) ? g.options[o.key] : o.default;
+    // Conditional option: equality (city slots only in Cities mode), exclusion ("not": hide the
+    // scene pick when the source is media-only), or an array of either form (AND).
+    const showIfOk = c => {
+      const cur = String(valOf(c.key));
+      return ('not' in c) ? cur !== String(c.not) : cur === String(c.value);
+    };
+    const visible = o => !o.showIf || (Array.isArray(o.showIf) ? o.showIf.every(showIfOk) : showIfOk(o.showIf));
+    el.innerHTML = (def.options || []).filter(o => !o.editorCustom).filter(visible).map(o => {
+      let v = (o.key in g.options) ? g.options[o.key] : o.default;
       let field;
-      if (o.type === 'select') field = `<select class="aopt" data-key="${esc(o.key)}">${o.choices.map(ch => { const val = Array.isArray(ch) ? ch[0] : ch, lab = Array.isArray(ch) ? ch[1] : ch; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('')}</select>`;
-      else if (o.type === 'bool') field = `<input type="checkbox" class="aopt" data-key="${esc(o.key)}" ${v ? 'checked' : ''} style="width:auto">`;
+      if (o.type === 'select') {
+        // Heal a stored value that no longer matches any choice (e.g. a removed screensaver scene)
+        // to the manifest default — otherwise the select silently displays something else entirely.
+        if (!o.choices.some(ch => String(Array.isArray(ch) ? ch[0] : ch) === String(v))) {
+          v = o.default;
+          if (o.key in g.options && g.options[o.key] !== o.default) { g.options[o.key] = o.default; markDirty(); }
+        }
+        field = `<select class="aopt" data-key="${esc(o.key)}">${o.choices.map(ch => { const val = Array.isArray(ch) ? ch[0] : ch, lab = Array.isArray(ch) ? ch[1] : ch; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('')}</select>`;
+      }
+      else if (o.type === 'bool') field = o.inline
+        ? `<label class="iconopt" style="width:auto"><input type="checkbox" class="aopt" data-key="${esc(o.key)}" ${v ? 'checked' : ''} style="width:auto"> ${esc(o.inline)}</label>`
+        : `<input type="checkbox" class="aopt" data-key="${esc(o.key)}" ${v ? 'checked' : ''} style="width:auto">`;
       else if (o.type === 'secret') field = secretInput(v, `class="aopt" data-key="${esc(o.key)}"`);
       else field = `<input class="aopt" data-key="${esc(o.key)}" value="${esc(v)}">`;
       const help = o.help ? `<p class="hint" style="margin:-2px 0 10px 78px">${esc(o.help)}</p>` : '';
@@ -1738,9 +2487,122 @@
       if (o && (o.type === 'select' || o.type === 'bool')) renderAppOpts(g, def);   // re-evaluate conditional (showIf) options
       enforceMusicCap(g);   // re-apply the 2-of-3 panel cap (grid/art/lyrics)
     });
+    if (def.id === 'screensaver') {
+      // Show: only ever three options, so all three sit as permanent side-by-side checkboxes in
+      // one row. Scenes (five options) stays a collapsed multiselect dropdown under it.
+      const showRow = appendScreensaverShowRow(el, g, def);
+      const scenesOn = (g.options && 'showScenes' in g.options) ? !!g.options.showScenes : true;
+      if (scenesOn) appendScreensaverMultiRow(el, g, def, 'Scenes', ['sceneWaves', 'sceneStarfield', 'sceneLava', 'sceneFireflies', 'sceneFlurry'], showRow);
+      // Browse/Open buttons under each folder text field — always present; hiding folder rows by
+      // mode just hides configuration people are looking for.
+      appendScreensaverFolderButtons(el, g, 'photosDir', 'photos');
+      appendScreensaverFolderButtons(el, g, 'videosDir', 'videos');
+    }
     enforceMusicCap(g);
   }
+  // Screensaver: the Show group is three permanent side-by-side checkboxes on one row (only ever
+  // three options — no dropdown to hunt through). Toggling re-renders the box because these gate
+  // the style/crop/Scenes rows. The manifest keeps every pick as an ordinary bool option (query
+  // delivery, seeding, panel — all unchanged); `editorCustom` only skips generic rendering here.
+  function appendScreensaverShowRow(el, g, def) {
+    const opts = (def.options || []).filter(o => ['showScenes', 'showPhotos', 'showVideos'].includes(o.key));
+    const on = o => { const go = g.options || {}; return (o.key in go) ? !!go[o.key] : !!o.default; };
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<label>Show</label>` + opts.map(o =>
+      `<label class="iconopt" style="width:auto; white-space:nowrap"><input type="checkbox" data-sk="${esc(o.key)}" ${on(o) ? 'checked' : ''}> ${esc(o.label)}</label>`
+    ).join('');
+    el.insertAdjacentElement('afterbegin', row);
+    row.querySelectorAll('input[data-sk]').forEach(cb => cb.onchange = () => {
+      if (!g.options) g.options = {};
+      g.options[cb.dataset.sk] = cb.checked;
+      markDirty();
+      renderAppOpts(g, def);   // these toggles gate the style/crop/Scenes rows
+    });
+    return row;
+  }
+  // Scenes (five options) stays behind ONE collapsed multiselect dropdown — five always-visible
+  // checkbox rows ate the whole box. Stays open across picks; closes on a click anywhere outside.
+  function appendScreensaverMultiRow(el, g, def, rowLabel, keys, afterEl) {
+    const opts = (def.options || []).filter(o => keys.includes(o.key));
+    if (!opts.length) return null;
+    const on = o => { const go = g.options || {}; return (o.key in go) ? !!go[o.key] : !!o.default; };
+    // Collapsed label deliberately does NOT echo the picks — a value there reads like a
+    // single-choice select. Only the all-off footgun still surfaces.
+    const summary = () => opts.some(on) ? `Click to select` : 'None selected — nothing will show';
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.style.position = 'relative';
+    row.innerHTML = `<label>${esc(rowLabel)}</label>
+      <button type="button" data-ms-btn style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></button>
+      <div data-ms-menu style="display:none;position:absolute;left:78px;right:0;top:100%;z-index:30;background:#121a24;border:1px solid #2a3a4e;border-radius:8px;padding:8px 12px">
+        ${opts.map(o => `<label class="iconopt" style="display:block;width:auto;margin:4px 0"><input type="checkbox" data-sk="${esc(o.key)}" ${on(o) ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
+      </div>`;
+    if (afterEl) afterEl.insertAdjacentElement('afterend', row);
+    else el.insertAdjacentElement('afterbegin', row);
+    const btn = row.querySelector('[data-ms-btn]'), menu = row.querySelector('[data-ms-menu]');
+    const setLabel = () => { btn.textContent = '▾ ' + summary(); };
+    setLabel();
+    btn.onclick = e => {
+      e.stopPropagation();
+      const opening = menu.style.display === 'none';
+      menu.style.display = opening ? '' : 'none';
+      // Close on the next click anywhere outside; clicks inside the menu don't bubble this far.
+      if (opening) setTimeout(() => document.addEventListener('click', () => { menu.style.display = 'none'; }, { once: true }), 0);
+    };
+    menu.onclick = e => e.stopPropagation();
+    menu.querySelectorAll('input[data-sk]').forEach(cb => cb.onchange = () => {
+      if (!g.options) g.options = {};
+      g.options[cb.dataset.sk] = cb.checked;
+      markDirty();
+      setLabel();
+    });
+    return row;
+  }
+  // Screensaver: each media folder needs a real folder picker and an "open in Explorer" shortcut —
+  // dynamic things apps.json can't express. Buttons are inserted right under that folder's own
+  // text field (inside renderAppOpts, so they survive the re-render select/bool changes trigger)
+  // and only when the field itself is visible.
+  function appendScreensaverFolderButtons(el, g, key, kind) {
+    const inp = el.querySelector(`.aopt[data-key="${key}"]`);
+    if (!inp) return;
+    const word = kind === 'videos' ? 'videos' : 'photos';
+    const exts = kind === 'videos' ? 'mp4/webm/mov' : 'jpg/png/gif/webp';
+    // The videos row also links the repo's community-wallpapers folder — ready-made 1920×480
+    // loops live there (kept out of the installer so the app stays small).
+    const community = kind === 'videos'
+      ? `<button type="button" data-ss-community="1">Download wallpapers ↗</button>` : '';
+    const row = document.createElement('div');
+    row.innerHTML = `<div class="row" style="gap:8px"><label></label>
+        <button type="button" data-ss-browse="${key}">Browse…</button>
+        <button type="button" data-ss-open="${key}">Open ${word} folder</button>${community}</div>
+      <p class="hint" style="margin:-2px 0 10px 78px">Drop ${exts} files in and the screensaver plays them.
+      Blank = the app's own screensaver-media\\${word} folder — Open shows whichever folder is in effect.</p>`;
+    inp.closest('.row').insertAdjacentElement('afterend', row);
+    row.querySelector(`[data-ss-browse="${key}"]`).onclick = async () => {
+      const p = await configApi.pickFolder();
+      if (!p) return;
+      g.options[key] = p; markDirty();
+      inp.value = p;
+    };
+    row.querySelector(`[data-ss-open="${key}"]`).onclick = () => configApi.openScreensaverMedia(optVal(g, key, ''), kind);
+    const cb = row.querySelector('[data-ss-community="1"]');
+    if (cb) cb.onclick = () => configApi.openExternal('https://github.com/TeeJS/open-quake/tree/main/community-wallpapers');
+  }
 
+  // Focus a saved page on the device from the editor. The device only knows SAVED pages, so if the
+  // editor has unsaved changes we refuse and tell the user to save first — saving is the user's job,
+  // not something we do silently behind a Focus click.
+  async function focusCurrentPage() {
+    const g = curGrid();
+    if (!g) return;
+    if (dirty) { window.alert('Save your changes first. The device only knows about saved pages, so “Focus on device” is unavailable until you Save.'); return; }
+    try {
+      const r = await configApi.focusPage(g.id);
+      if (r && r.ok) setState('focused “' + (g.name || 'page') + '” on the device', 'saved');
+      else setState((r && r.error) || 'could not focus that page', 'dirty');
+    } catch (e) { setState('could not focus that page', 'dirty'); }
+  }
   function deleteCurrentPage() {
     if (config.grids.length <= 1) return;
     config.grids.splice(gi, 1); gi = 0; ti = -1;
@@ -1749,6 +2611,7 @@
   }
 
   function render() {
+    if (ltMeterStop) { try { ltMeterStop(); } catch (e) {} ltMeterStop = null; }   // stop the LucidType mic test meter on any re-render
     renderGrids();
     renderGroups();
     // Sidebar: which list is visible + which + buttons row + which tab is highlighted.
@@ -1872,7 +2735,7 @@
   }
 
   // ---- settings page ----
-  const DEFAULT_SETTINGS = { launchMode: 'editor', micOnLaunch: false, reservedDisplay: false };
+  const DEFAULT_SETTINGS = { launchMode: 'editor', micOnLaunch: false, reservedDisplay: false, keepDisplayAwake: false };
   function appSettings() { return Object.assign({}, DEFAULT_SETTINGS, config.settings || {}); }
   function renderSettings() {
     ['tilegrid', 'mergebar', 'tileform', 'iconpane'].forEach(id => { const e = document.getElementById(id); if (e) e.innerHTML = ''; });
@@ -1883,14 +2746,20 @@
     const focusFollow = currentFocusFollow();
     const currentDashReload = () => Object.assign({ hotkey: '' }, (config.settings || {}).dashboardReload || {});
     const dashReload = currentDashReload();
+    const currentPageStep = () => Object.assign({ nextHotkey: '', prevHotkey: '' }, (config.settings || {}).pageStep || {});
+    const pageStep = currentPageStep();
     const currentMon = () => Object.assign({ knobTurn: 'scroll', knobTap: 'enter' }, (config.settings || {}).monitor || {});
     const mon = currentMon();
     const currentTheme = () => Object.assign({ appearance: 'system', accent: '#7CFFB2', presets: ['#7CFFB2', '#38B6FF', '#FF4040', '#FFB000'] }, (config.settings || {}).theme || {});
     const th = currentTheme();
     // Meeting recording settings (config.settings.meeting) — global so auto-record works regardless of
     // which app the panel is showing. Same shape as MEETING_DEFAULTS in main.js.
-    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30 }, (config.settings || {}).meeting || {});
+    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', joplinEnabled: false, joplinUrl: '', joplinToken: '', joplinNotebook: 'NW Pipe', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30, highlightEnabled: false, panelsOpen: '' }, (config.settings || {}).meeting || {});
     const me = currentMe();
+    // Global TTS/STT (Wyoming) endpoints (config.settings.voice) — same shape as VOICE_DEFAULTS in
+    // voiceConfig.js. Each service has its own host+port so STT and TTS can live on different servers.
+    const currentVoice = () => Object.assign({ sttHost: '', sttPort: '10300', ttsHost: '', ttsPort: '10200' }, (config.settings || {}).voice || {});
+    const voice = currentVoice();
     // ledState = the device's live lighting (loaded when the page opens); fall back to saved config / defaults.
     const L = Object.assign({}, LED_DEFAULT, (config.settings || {}).lighting || {}, ledState || {});
     const effOpts = LED_EFFECTS.map((n, i) => `<option value="${i}">${esc(n)}</option>`).join('');
@@ -1899,14 +2768,24 @@
 
     // Software tab — on launch + screen rotation
     const swHtml = `
-      <p class="sectitle">On launch</p>
+      <p class="sectitle">Run mode</p>
+      <div class="row"><label style="width:auto">How you run open-quake</label>
+        <select id="sRunMode" style="width:300px">
+          <option value="panel">Panel — QUAKE / open-bedrock hardware</option>
+          <option value="software">Software — normal desktop window</option>
+          <option value="monitor">Monitor — QUAKE as a regular monitor</option>
+        </select></div>
+      <div class="row"><button id="sRunSetup">Re-run first-time setup…</button></div>
+      <p class="hint"><b>Software</b> mode runs in an ordinary desktop window and needs no special hardware — ideal for the meeting workflow on any PC. <b>Panel</b> and <b>Monitor</b> use the QUAKE display. A mode change applies as soon as you click <b>Save</b> — no restart.</p>
+
+      <p class="sectitle" style="margin-top:22px">On launch</p>
       <div class="row"><label style="width:auto">Editor window</label>
         <select id="sLaunch" style="width:230px">
           <option value="editor">Open the editor window</option>
           <option value="minimized">Open minimized to taskbar</option>
           <option value="tray">Tray only (no window)</option>
         </select></div>
-      <p class="hint">The panel always activates on launch — this only controls the PC-side editor window. Tray-only hides it; reopen from the tray icon.</p>
+      <p class="hint">Controls the PC-side editor window on launch. In Panel/Monitor mode the device panel always activates too; Tray-only hides the editor — reopen it from the tray icon.</p>
 
       <p class="sectitle" style="margin-top:22px">Screen rotation</p>
       <div class="row"><label>Auto-rotate</label>
@@ -1922,6 +2801,14 @@
         <button id="sRotKeyClear" style="margin-left:8px"${rot.enabled ? '' : ' disabled'}>Clear</button></div>
       <p class="hint">A page rotates only if its category is ticked here <i>and</i> that page's own “Include in rotation” box is checked — the box appears on each page once its category is enabled. Start/stop any time from the knob menu (double-click) or the tray.</p>
       <p class="hint">The <b>hotkey</b> starts and pauses rotation from anywhere, even when open-quake isn't focused. Click the box and press a combo that includes a modifier (e.g. Ctrl+Alt+R). It's only live while Auto-rotate is on; if another app — or one of your page hotkeys — already owns the combo, it just won't fire.</p>
+
+      <div class="row"><label>Page forward</label>
+        <input id="sPageNextKey" readonly placeholder="click, then press keys" value="${esc(pageStep.nextHotkey || '')}" style="width:200px">
+        <button id="sPageNextKeyClear" style="margin-left:8px">Clear</button></div>
+      <div class="row"><label>Page back</label>
+        <input id="sPagePrevKey" readonly placeholder="click, then press keys" value="${esc(pageStep.prevHotkey || '')}" style="width:200px">
+        <button id="sPagePrevKeyClear" style="margin-left:8px">Clear</button></div>
+      <p class="hint">Global hotkeys that step the panel <b>forward</b> / <b>back</b> through your visible pages — in the order they're listed here, wrapping around the ends. Hidden pages are skipped. These work anytime, independent of rotation.</p>
 
       <p class="sectitle" style="margin-top:22px">Desktop focus</p>
       <div class="row"><label>Auto-follow</label>
@@ -1979,6 +2866,10 @@
       <div class="row"><label>At launch</label>
         <input type="checkbox" id="sMic" style="width:auto;flex:none"><span class="hint" style="margin:0 0 0 8px">enable the device mic when open-quake starts</span></div>
       <p class="hint">The mic LED and the mic audio are one hardware switch — the light is on whenever the mic is enabled, off when it isn't. Toggle it any time from the tray menu or a “System → mic” tile.</p>
+
+      <p class="sectitle" style="margin-top:22px">Display</p>
+      <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="sKeepAwake" ${s.keepDisplayAwake ? 'checked' : ''}> Keep the display awake while running (disables the screensaver) — Panel mode only</label></div>
+      <p class="hint">Panel mode only. Keeps the screen from sleeping and stops the Windows screensaver so the QUAKE panel stays lit. <b>Off by default</b> (and always off in Software/Monitor mode) so your normal screensaver works. Windows has no per-display option, so when on it suppresses the screensaver on all displays.</p>
 
       <p class="sectitle" style="margin-top:22px">Touchscreen</p>
       <p class="hint">If touches land on the wrong monitor, click <b>Set up touchscreen</b>. open-quake launches Windows' built-in touch-identify wizard (the one Microsoft buried behind the broken-in-24H2 Tablet PC Settings UI) — accept the UAC prompt, then <b>press Enter on your keyboard</b> to skip past your other monitors as the prompt cycles through them, and <b>tap the panel with your finger</b> only when the prompt appears on the panel. That writes a persistent binding under <code>HKLM\\…\\Wisp\\Pen\\Digimon</code> that survives reboot, sleep, and primary-display swaps.</p>
@@ -2057,6 +2948,9 @@
       <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meEcho" ${me.echoGate ? 'checked' : ''}> Echo-gate your microphone</label></div>
       <p class="hint">Mutes your mic in the recording while the speakers are loud (and you're not on headphones), to stop the far end bleeding back in. Off = faithful capture of everything you say, even when others are talking.</p>
 
+      <div class="row" style="margin-top:16px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meHighlight" ${me.highlightEnabled ? 'checked' : ''}> Enable Meeting Highlights</label></div>
+      <p class="hint">Adds a Highlight column to the meeting panel: tap to start flagging a moment, tap again to end it. The flagged spans are saved with the recording and handed to the analysis AI, which calls them out in a <b>Highlights</b> section of the meeting notes.</p>
+
       <details class="advsec" style="margin-top:22px">
       <summary style="cursor:pointer;color:#9fb3c8;font-size:13px;user-select:none">Meeting Slide Capture</summary>
       <div class="row" style="margin-top:10px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meSlide" ${me.slideCaptureEnabled ? 'checked' : ''}> Enable Meeting Slide Capture</label></div>
@@ -2111,6 +3005,13 @@
       <div class="row"><label>Task-list folder</label>
         <input id="meTaskFolder" value="${esc(me.taskListFolder)}" placeholder="blank = task-list under Processed Recordings" style="flex:1">
         <button id="meTaskFolderBrowse" type="button">Browse…</button></div>
+      <div class="row" style="margin-top:12px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meJoplin" ${me.joplinEnabled ? 'checked' : ''}> Create Joplin notes for analyses</label></div>
+      <p class="hint">After each analysis, creates a note in Joplin via the Web Clipper API of Joplin Desktop (Tools › Options › Web Clipper): title = recording name, body = the analysis, tagged <b>meeting notes</b> + the year + title keywords. Only tags that already exist in Joplin are applied — none are created. Joplin Desktop must be running when the analysis finishes.</p>
+      <div class="row"><label>Joplin API URL</label>
+        <input id="meJoplinUrl" value="${esc(me.joplinUrl)}" placeholder="e.g. http://192.168.1.50:41184" style="flex:1"></div>
+      <div class="row"><label>API token</label>${secretInput(me.joplinToken || '', 'id="meJoplinToken" placeholder="Joplin › Tools › Options › Web Clipper"', 'flex:1')}</div>
+      <div class="row"><label>Notebook</label>
+        <input id="meJoplinNb" value="${esc(me.joplinNotebook)}" style="width:230px"></div>
       <div class="row" style="margin-top:12px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meDetails" ${me.useDetailsFolder ? 'checked' : ''}> Use Details Folder</label></div>
       <p class="hint">At analysis, everything except the notes .md (WAV, transcript, meeting info, clean transcript) moves into a <b>details\\</b> subfolder of the meeting's folder.</p>
       <div class="row" style="margin-top:12px"><label>Speaker threshold</label>
@@ -2208,6 +3109,32 @@
         <p class="hint">Where imported drop-in apps are stored — this folder survives app updates (the install folder doesn't).</p>
       </details>`;
 
+    const ttsHtml = `
+      <p class="sectitle">Speech-to-text (Whisper / STT)</p>
+      <div class="row"><label>STT host / port</label>
+        <input id="ttsSttHost" value="${esc(voice.sttHost)}" placeholder="127.0.0.1" style="flex:1">
+        <input id="ttsSttPort" value="${esc(voice.sttPort)}" placeholder="10300" style="width:90px;margin-left:8px"></div>
+
+      <p class="sectitle" style="margin-top:22px">Text-to-speech (Piper / TTS)</p>
+      <div class="row"><label>TTS host / port</label>
+        <input id="ttsTtsHost" value="${esc(voice.ttsHost)}" placeholder="127.0.0.1" style="flex:1">
+        <input id="ttsTtsPort" value="${esc(voice.ttsPort)}" placeholder="10200" style="width:90px;margin-left:8px"></div>
+
+      <p class="hint">The default STT (Whisper) and TTS (Piper) servers for every voice app and meeting dictation. Each service has its own host + port, so they can run on different machines. Enter your server's IP, or run <a href="#" id="ttsHelperLink">tts-stt-windows</a> on any Windows box to provide both and set the host to <code>127.0.0.1</code>. A page can override these in its <b>Advanced settings</b>. Remember to Save.</p>`;
+
+    // AI Profiles (Smart Profiles): the global library the AI Voice app's Profile picker offers.
+    const apHtml = `
+      <p class="sectitle">AI Profiles</p>
+      <p class="hint">Named instructions for the <b>AI Voice</b> app — pick one on the panel (the Profile button) and the AI behaves accordingly: translate, summarize, write, and so on. The instruction is sent to the AI as its role for the conversation. An empty instruction (General Chat) means plain, unmodified chat. Every AI Voice page remembers its own current profile. Remember to Save.</p>
+      <div id="sAiProfileRows">${aiProfileRowsHtml((config.settings || {}).aiProfiles)}</div>
+      <button id="sAiProfileAdd" type="button" style="margin-top:10px">+ Add profile</button>`;
+
+    // Routines: saved prompts an "AI Routine" tile re-runs with one tap. Its own tab rather than a
+    // second list under AI Profiles -- that tab is already full.
+    const rtHtml = `
+      <p class="sectitle">Routines</p>
+      <p class="hint">A routine is a saved request plus which <b>AI Chat</b> page — and, for the agent backends, which <b>folder</b> — runs it. Put one on a tile (tile type <b>AI Routine</b>) and tapping it switches the panel to that page and sends the request, with the agent's normal tools and approvals. You can also save one straight from the panel: the <b>+ Routine</b> button beside Send on any AI Chat page keeps whatever you just typed or asked for. Remember to Save.</p>
+      <div id="sRoutineRows">${routineEditorHtml()}</div>`;
     el.innerHTML = `
       <p class="sectitle">Settings</p>
       <div class="tabbar">
@@ -2217,10 +3144,13 @@
         <button id="tabApps" class="tab${tab === 'apps' ? ' on' : ''}">Apps</button>
         <button id="tabDi" class="tab${tab === 'dropin' ? ' on' : ''}">Drop-In Apps</button>
         <button id="tabAuth" class="tab${tab === 'auth' ? ' on' : ''}">Auth</button>
+        <button id="tabAp" class="tab${tab === 'aiprofiles' ? ' on' : ''}">AI Profiles</button>
+        <button id="tabRt" class="tab${tab === 'routines' ? ' on' : ''}">Routines</button>
         <button id="tabMe" class="tab${tab === 'meeting' ? ' on' : ''}">Meeting</button>
+        <button id="tabTts" class="tab${tab === 'ttsstt' ? ' on' : ''}">TTS/STT</button>
         <button id="tabMon" class="tab${tab === 'monitor' ? ' on' : ''}">Monitor</button>
       </div>
-      ${tab === 'software' ? swHtml : tab === 'hardware' ? hwHtml : tab === 'theme' ? thHtml : tab === 'apps' ? appsHtml : tab === 'dropin' ? diHtml : tab === 'auth' ? authHtml : tab === 'meeting' ? meHtml : monHtml}
+      ${tab === 'software' ? swHtml : tab === 'hardware' ? hwHtml : tab === 'theme' ? thHtml : tab === 'apps' ? appsHtml : tab === 'dropin' ? diHtml : tab === 'auth' ? authHtml : tab === 'aiprofiles' ? apHtml : tab === 'routines' ? rtHtml : tab === 'meeting' ? meHtml : tab === 'ttsstt' ? ttsHtml : monHtml}
       <div class="row" style="margin-top:22px"><button id="sBack">← Back to pages</button></div>`;
 
     document.getElementById('tabSw').onclick = () => { settingsTab = 'software'; renderSettings(); };
@@ -2229,7 +3159,12 @@
     document.getElementById('tabApps').onclick = () => { settingsTab = 'apps'; renderSettings(); };
     document.getElementById('tabDi').onclick = () => { settingsTab = 'dropin'; renderSettings(); };
     document.getElementById('tabAuth').onclick = () => { settingsTab = 'auth'; renderSettings(); };
+    document.getElementById('tabAp').onclick = () => { settingsTab = 'aiprofiles'; renderSettings(); };
+    wireAiProfileRows();   // no-op unless the AI Profiles tab is showing
+    document.getElementById('tabRt').onclick = () => { settingsTab = 'routines'; renderSettings(); };
+    wireRoutineRows();     // no-op unless the Routines tab is showing
     document.getElementById('tabMe').onclick = () => { settingsTab = 'meeting'; renderSettings(); };
+    document.getElementById('tabTts').onclick = () => { settingsTab = 'ttsstt'; renderSettings(); };
     document.getElementById('tabMon').onclick = () => { settingsTab = 'monitor'; renderSettings(); };
     document.getElementById('sBack').onclick = () => { view = 'pages'; render(); };
     const setS = (k, v) => { if (!config.settings) config.settings = {}; config.settings[k] = v; markDirty(); };
@@ -2450,6 +3385,11 @@
     }
 
     if (tab === 'software') {
+      const runModeVal = (s.runMode === 'software' || s.runMode === 'monitor') ? s.runMode : 'panel';
+      const runSel = document.getElementById('sRunMode');
+      if (runSel) { runSel.value = runModeVal; runSel.onchange = e => setS('runMode', e.target.value); }
+      const runSetupBtn = document.getElementById('sRunSetup');
+      if (runSetupBtn) runSetupBtn.onclick = () => { try { configApi.openWelcome(); } catch (e) {} };
       document.getElementById('sLaunch').value = s.launchMode;
       document.getElementById('sLaunch').onchange = e => setS('launchMode', e.target.value);
       const saveRot = r => { if (!config.settings) config.settings = {}; config.settings.rotation = r; markDirty(); };
@@ -2481,7 +3421,17 @@
       dashReloadKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { const d = currentDashReload(); d.hotkey = acc; dashReloadKey.value = acc; saveDashReload(d); } };
       dashReloadKeyClr.onclick = () => { const d = currentDashReload(); delete d.hotkey; dashReloadKey.value = ''; saveDashReload(d); };
 
+      const savePageStep = ps => { if (!config.settings) config.settings = {}; config.settings.pageStep = ps; markDirty(); };
+      const pnKey = document.getElementById('sPageNextKey'), pnKeyClr = document.getElementById('sPageNextKeyClear');
+      pnKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { const ps = currentPageStep(); ps.nextHotkey = acc; pnKey.value = acc; savePageStep(ps); } };
+      pnKeyClr.onclick = () => { const ps = currentPageStep(); delete ps.nextHotkey; pnKey.value = ''; savePageStep(ps); };
+      const ppKey = document.getElementById('sPagePrevKey'), ppKeyClr = document.getElementById('sPagePrevKeyClear');
+      ppKey.onkeydown = e => { e.preventDefault(); const acc = accelFromEvent(e); if (acc) { const ps = currentPageStep(); ps.prevHotkey = acc; ppKey.value = acc; savePageStep(ps); } };
+      ppKeyClr.onclick = () => { const ps = currentPageStep(); delete ps.prevHotkey; ppKey.value = ''; savePageStep(ps); };
+
     } else if (tab === 'hardware') {
+      const keepAwake = document.getElementById('sKeepAwake');
+      if (keepAwake) keepAwake.onchange = e => setS('keepDisplayAwake', e.target.checked);
       // Lighting writes go straight to the device (and persist in config) via the main process — no Save needed.
       const live = patch => { Object.assign(L, patch); if (!config.settings) config.settings = {}; config.settings.lighting = Object.assign({}, L); configApi.setLighting(patch); markDirty(); };
       const sOvr = document.getElementById('sLedOvr'), sColEl = document.getElementById('sColor');
@@ -2547,6 +3497,14 @@
       document.getElementById('sMonTap').value = mon.knobTap;
       document.getElementById('sMonTurn').onchange = e => saveMon({ knobTurn: e.target.value });
       document.getElementById('sMonTap').onchange = e => saveMon({ knobTap: e.target.value });
+    } else if (tab === 'ttsstt') {
+      const saveVoice = (k, v) => { if (!config.settings) config.settings = {}; if (!config.settings.voice) config.settings.voice = {}; config.settings.voice[k] = v; markDirty(); };
+      document.getElementById('ttsSttHost').oninput = e => saveVoice('sttHost', e.target.value.trim());
+      document.getElementById('ttsSttPort').oninput = e => saveVoice('sttPort', e.target.value.trim());
+      document.getElementById('ttsTtsHost').oninput = e => saveVoice('ttsHost', e.target.value.trim());
+      document.getElementById('ttsTtsPort').oninput = e => saveVoice('ttsPort', e.target.value.trim());
+      const helper = document.getElementById('ttsHelperLink');
+      if (helper) helper.onclick = e => { e.preventDefault(); configApi.openExternal('https://github.com/TeeJS/tts-stt-windows/releases'); };
     } else if (tab === 'meeting') {
       const saveMe = patch => { if (!config.settings) config.settings = {}; config.settings.meeting = Object.assign(currentMe(), patch); markDirty(); };
       document.getElementById('meFolder').oninput = e => saveMe({ folder: e.target.value.trim() });
@@ -2586,9 +3544,14 @@
         const p = await configApi.pickFolder();
         if (p) { document.getElementById('meTaskFolder').value = p; saveMe({ taskListFolder: p }); }
       };
+      document.getElementById('meJoplin').onchange = e => saveMe({ joplinEnabled: e.target.checked });
+      document.getElementById('meJoplinUrl').oninput = e => saveMe({ joplinUrl: e.target.value.trim() });
+      document.getElementById('meJoplinToken').oninput = e => saveMe({ joplinToken: e.target.value.trim() });
+      document.getElementById('meJoplinNb').oninput = e => saveMe({ joplinNotebook: e.target.value.trim() });
       document.getElementById('meHooks').onchange = e => saveMe({ transcribeHooksEnabled: e.target.checked });
       document.getElementById('meHookPre').oninput = e => saveMe({ preTranscribeCmd: e.target.value });
       document.getElementById('meHookPost').oninput = e => saveMe({ postTranscribeCmd: e.target.value });
+      document.getElementById('meHighlight').onchange = e => saveMe({ highlightEnabled: e.target.checked });
       // ---- Meeting Slide Capture ----
       const slideCfgBox = document.querySelector('.slidecfg');
       const syncSlideEnabled = on => { if (slideCfgBox) { slideCfgBox.style.opacity = on ? '' : '0.45'; slideCfgBox.style.pointerEvents = on ? '' : 'none'; } };
@@ -2782,4 +3745,21 @@
     try { appDefs = await configApi.getApps(); } catch (e) {}
     try { haCacheLocal = await configApi.getHaCache(); } catch (e) {}   // for iconHtml's HA icon resolution
     render(); setState('');
+
+    // Pages can arrive while the editor is open — an accepted AI panel is added by the main process,
+    // not by this window. Re-read so it shows up (and so this window's next Save doesn't write a
+    // stale copy back over it). With unsaved edits we must not clobber them, so say so instead.
+    if (configApi.onConfigChangedExternally) {
+      configApi.onConfigChangedExternally(async () => {
+        if (dirty) { setState('● unsaved changes — the panel added a page; save or reload to see it', 'dirty'); return; }
+        const fresh = await configApi.getConfig();
+        if (!fresh) return;
+        config = fresh;
+        if (!config.grids) config.grids = [];
+        if (!Array.isArray(config.groups)) config.groups = [];
+        if (gi >= config.grids.length) { gi = Math.max(0, config.grids.length - 1); ti = -1; }
+        render();
+        setState('updated from the panel');
+      });
+    }
   })();

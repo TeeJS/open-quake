@@ -19,6 +19,10 @@ function createVAD(opts) {
   const threshold = opts.threshold || 0.02;        // RMS amplitude above which audio counts as speech
   let hangoverMs = opts.hangoverMs || 800;          // sustained silence before an utterance is considered over (user-tunable)
   const minSpeechMs = opts.minSpeechMs || 250;      // ignore blips shorter than this (taps, clicks, breath)
+  // 0 = off (the voice pages' behavior). When set, a continuous speaker who never pauses gets
+  // force-cut at this duration — the utterance ships and capture continues seamlessly — so live
+  // translation can't stall waiting for a pause that never comes.
+  const maxUtteranceMs = opts.maxUtteranceMs || 0;
   const bufferSize = 4096;
 
   let stream = null, audioCtx = null, source = null, processor = null, silentGain = null;
@@ -78,6 +82,11 @@ function createVAD(opts) {
         clearTimeout(hangoverTimer);
         hangoverTimer = null;
         chunks.push(new Float32Array(data));   // copy -- `data` is a reused buffer, would be clobbered next callback
+        if (maxUtteranceMs && Date.now() - speechStartedAt >= maxUtteranceMs) {
+          const captured = chunks; chunks = [];   // force-cut mid-speech: ship it, keep capturing
+          speechStartedAt = Date.now();
+          if (onSpeechEnd) onSpeechEnd(toPCM16(captured));
+        }
       } else if (speaking && !hangoverTimer) {
         chunks.push(new Float32Array(data));   // keep a little trailing silence too, cheap and harmless
         hangoverTimer = setTimeout(() => {

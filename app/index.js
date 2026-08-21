@@ -1,4 +1,8 @@
   const panelApi = window.openQuakePanel;
+  // Software mode = the panel served into a normal desktop window (?mode=software). No device, no knob:
+  // the stage scales to fit the window (never rotates) and a floating button drives the page menu.
+  const SOFTWARE_MODE = new URLSearchParams(location.search).get('mode') === 'software';
+  if (SOFTWARE_MODE) document.documentElement.classList.add('swmode');
   const grid = document.getElementById('grid'), vol = document.getElementById('vol'), web = document.getElementById('web');
   const webgrid = document.getElementById('webgrid');   // button strip beside a dashboard
   const selector = document.getElementById('selector'), selitems = document.getElementById('selitems');
@@ -10,6 +14,7 @@
   let knobSel = -1;   // knob "select button" mode: index of the highlighted tile (-1 = none)
   let pendingRotFlash = false;   // a knob click just toggled rotation -> flash the new state when it comes back
   let webMode = false, curUrl = '', webReady = false, webDown = false, lastWeb = { x: 0, y: 0 }, webIdle = null;
+  let pendingMicToggle = false;   // a translation-toggle hotkey fired while the page was still loading; run on dom-ready
   let haToken = '', haInject = false, webExternalLinks = false, webAttached = false, pendingWebUrl = null;
   let webThemed = false, lastTheme = null;   // our served app pages (Music/Chat): inject live light/dark + accent into the guest
   // dashboard button strip: webRegion = the webview's sub-rect, webStrip = the tile-strip geometry (null = none)
@@ -30,6 +35,7 @@
   }
   web.addEventListener('dom-ready', () => {
     webReady = true;
+    if (pendingMicToggle) { pendingMicToggle = false; web.executeJavaScript('window.oqxToggleConversation && window.oqxToggleConversation()').catch(function () {}); }
     if (!webAttached) {
       webAttached = true;
       try { defaultUA = web.getUserAgent(); } catch (e) {}      // true default (about:blank), before any override
@@ -89,6 +95,16 @@
   function layoutStage() {
     const stage = document.getElementById('stage');
     const w = window.innerWidth, h = window.innerHeight;
+    if (SOFTWARE_MODE) {
+      // Desktop window: scale the 1920x480 content to fit, centered and letterboxed. The window
+      // aspect is locked to 1920:480 so the letterbox is ~0, but min() + centering stays correct
+      // during resize. Never rotate — this is a landscape window driven by the OS cursor.
+      const scale = Math.min(w / 1920, h / 480);
+      const offX = Math.round((w - 1920 * scale) / 2), offY = Math.round((h - 480 * scale) / 2);
+      stage.style.transformOrigin = '0 0';
+      stage.style.transform = `translate(${offX}px, ${offY}px) scale(${scale})`;
+      return;
+    }
     // Portrait display (e.g. 480x1920): rotate the 1920x480 stage 90° to fill it.
     // Landscape display (1920x480, Windows Orientation = Landscape): no rotation, so the
     // OS mouse cursor and the content agree (otherwise the cursor reads 90° off).
@@ -199,7 +215,10 @@
   });
 
   // ---- first-run intro overlay (one-time "double-click the knob" hint) ----
-  panelApi.onIntro(() => { if (introOpen) return; introOpen = true; intro.classList.add('open'); });
+  panelApi.onIntro(() => {
+    if (SOFTWARE_MODE) { panelApi.introDone(); return; }   // no knob to teach in a desktop window
+    if (introOpen) return; introOpen = true; intro.classList.add('open');
+  });
   function dismissIntro() { if (!introOpen) return; introOpen = false; intro.classList.remove('open'); panelApi.introDone(); }
   introok.addEventListener('click', dismissIntro);   // PC mouse
 
@@ -346,6 +365,7 @@
     items.forEach((it, i) => {
       const d = document.createElement('div');
       d.className = 'selitem' + (i === selIdx ? ' sel' : '');
+      d.dataset.si = i;                                   // software mode: click-to-pick maps back to this index
       d.textContent = it.rot ? (rotRunning ? '⏸ Rotation: ON' : '▶ Rotation: OFF') : it.name;
       selitems.appendChild(d);
     });
@@ -367,6 +387,37 @@
     else if (it) panelApi.switchGrid(it.id);
   }
   function resetAutoClose() { clearTimeout(selAutoClose); selAutoClose = setTimeout(closeSelector, 4500); }
+
+  // ---- software mode: mouse drives the page menu (no knob) ----
+  // The ☰ button toggles the page menu; clicking an item picks it; clicking the dim backdrop closes;
+  // the wheel scrolls the list. In panel/monitor mode none of this is wired (the knob owns the menu).
+  if (SOFTWARE_MODE) {
+    const swBtn = document.getElementById('swpages');
+    if (swBtn) swBtn.addEventListener('click', () => { selOpen ? closeSelector() : openSelector(); });
+    selitems.addEventListener('click', (e) => {
+      const it = e.target.closest && e.target.closest('[data-si]');
+      if (!it) return;
+      selIdx = parseInt(it.dataset.si, 10); confirmSelector();
+    });
+    selector.addEventListener('click', (e) => { if (e.target === selector) closeSelector(); });
+    selector.addEventListener('wheel', (e) => { e.preventDefault(); moveSelector(e.deltaY > 0 ? 1 : -1); }, { passive: false });
+    document.addEventListener('keydown', (e) => {
+      if (!selOpen) { if (e.key === 'Escape') return; return; }
+      if (e.key === 'Escape') closeSelector();
+      else if (e.key === 'ArrowDown') { e.preventDefault(); moveSelector(1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); moveSelector(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); confirmSelector(); }
+    });
+  }
+
+  // ---- translation-toggle hotkey ----
+  // A global hotkey (registered in main) sends 'micToggle'; run the served page's own mic toggle --
+  // the exact hook the knob uses (window.oqxToggleConversation). If main just switched to the page
+  // and the webview isn't ready yet, defer until dom-ready fires.
+  panelApi.onMicToggle(() => {
+    if (webMode && webReady) web.executeJavaScript('window.oqxToggleConversation && window.oqxToggleConversation()').catch(function () {});
+    else pendingMicToggle = true;
+  });
 
   // ---- knob ----
   // The knob does click-type detection in hardware: press index 1 = single-click, 2 = double-click.
@@ -397,7 +448,7 @@
       // the Claude Code app, which defaults its own click to 'enter' (tap-to-talk) so voice works
       // with zero setup rather than requiring the same manual per-page "Knob Override" that Music's
       // play/pause needs. An explicit per-page override (Advanced -> Knob) still wins either way.
-      const defaultClick = (cfg && (cfg.app === 'claude-voice' || cfg.app === 'codex-voice')) ? 'enter' : 'rotation';
+      const defaultClick = (cfg && (cfg.app === 'ai-voice' || cfg.app === 'livetranslate')) ? 'enter' : 'rotation';
       const action = (k.index === 2)
         ? ((cfg._knob && cfg._knob.dblclick) || 'selector')
         : ((cfg._knob && cfg._knob.click) || defaultClick);
@@ -443,7 +494,7 @@
       return;
     }
     if (cfg && cfg.app === 'music') { panelApi.media('playpause'); return; }   // music: play/pause
-    if (cfg && (cfg.app === 'claude-voice' || cfg.app === 'codex-voice')) {   // voice apps: tap toggles the conversation on/off
+    if (cfg && (cfg.app === 'ai-voice' || cfg.app === 'livetranslate')) {   // AI Voice (every backend) + live translate: tap toggles on/off
       if (webMode && webReady) web.executeJavaScript('window.oqxToggleConversation && window.oqxToggleConversation()').catch(function () {});
       return;
     }
@@ -462,4 +513,12 @@
     panelApi.saveTileValue(cfg.id, idx, String(count));
   }
 
-  function flashVol(t) { vol.textContent = t; vol.style.opacity = 1; clearTimeout(volT); volT = setTimeout(() => vol.style.opacity = 0, 500); }
+  function flashVol(t) { vol.classList.remove('notice'); vol.textContent = t; vol.style.opacity = 1; clearTimeout(volT); volT = setTimeout(() => vol.style.opacity = 0, 500); }
+  // Short sentence from main (routine couldn't run, ran somewhere else). Shares the flash overlay
+  // but wraps and lingers -- a sentence at 44px for half a second is unreadable.
+  function flashNotice(t) {
+    if (!t) return;
+    vol.classList.add('notice'); vol.textContent = t; vol.style.opacity = 1;
+    clearTimeout(volT); volT = setTimeout(() => { vol.style.opacity = 0; vol.classList.remove('notice'); }, 2800);
+  }
+  panelApi.onNotice(flashNotice);

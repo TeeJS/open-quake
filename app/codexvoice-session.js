@@ -83,6 +83,8 @@ function createCodexVoiceAdapter({ log }) {
   let nextId = 0;
   let pending = new Map();      // request id -> {resolve, reject}
   let queuedTurns = [];         // sendTurn() calls made before the thread handshake finished
+  let profilePrompt = '';       // active AI profile instruction (no protocol slot -> first-turn prefix)
+  let profileInjectPending = false;   // true = the next turn carries the profile prefix
   let threadId = null;
   let resumeThreadId = null;    // survive an adapter restart with the conversation intact
   let activeTurnId = null;
@@ -329,6 +331,13 @@ function createCodexVoiceAdapter({ log }) {
   }
 
   function startTurn(text) {
+    // AI profile: codex's protocol has no instructions slot, so the profile rides as a prefix on
+    // the FIRST turn after a session start or profile switch (LucidType's combined-prompt trick).
+    // The transcript shows the user's own words — the host records the unprefixed text.
+    if (profileInjectPending && profilePrompt) {
+      text = '[Instructions for this conversation — follow them in every reply]\n' + profilePrompt + '\n[End of instructions]\n\n' + text;
+      profileInjectPending = false;
+    }
     // The host serializes turns (CLI semantics: one in flight, later entries queue), so a
     // concurrent turn/start can't happen. turn/interrupt stays available via interrupt() for an
     // explicit Stop control someday -- it is deliberately NOT wired to new turns or mute.
@@ -352,13 +361,15 @@ function createCodexVoiceAdapter({ log }) {
 
   return {
     // ---- lifecycle (host adapter contract; see voicepanel-host.js header) ----
-    start({ projectDir: dir, mode: pick, model }) {
+    start({ projectDir: dir, mode: pick, model, profilePrompt: pp }) {
       if (!findCodexExe()) {
         say('codex CLI not found on PATH');
         emitter.emit('error', { message: 'codex CLI not found on PATH' });
         return false;
       }
       stopProc('superseded by a new session');
+      profilePrompt = String(pp || '');
+      profileInjectPending = !!profilePrompt;
       projectDir = dir;
       pick = CODEX_LEGACY_MODES[pick] || pick;   // earlier panel builds saved different preset ids
       mode = CODEX_MODE_PRESETS[pick] ? pick : CODEX_DEFAULT_MODE;
@@ -380,6 +391,8 @@ function createCodexVoiceAdapter({ log }) {
       startTurn(text);
       return true;
     },
+    // AI profile switch mid-session: the new instruction rides on the next turn.
+    setProfilePrompt(text) { profilePrompt = String(text || ''); profileInjectPending = !!profilePrompt; return true; },
     isRunning() { return !!proc; },
     sessionId() { return threadId; },
     projectDir() { return projectDir; },

@@ -1,0 +1,137 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screensaver</title>
+<style>
+  /* The stage is deliberately always black — media and the built-in scenes are designed against
+     black, and a screensaver page shouldn't flip to a white ground in light theme. The settings
+     overlays still follow the runtime theme (accent + light/dark) like every other panel page. */
+  :root { --bg:#0b0f14; --fg:#e8eef4; --muted:#5c7186; --card:#141b23; --line:#243140; --accent:#4da3ff; --accent-fg:#08121c; }
+  body.light { --bg:#f2f5f8; --fg:#16202b; --muted:#5c7186; --card:#ffffff; --line:#d5dde5; }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-user-select:none; user-select:none; }
+  html,body { width:100%; height:100%; overflow:hidden; background:#000; touch-action:manipulation;
+    font-family:"Segoe UI",system-ui,sans-serif; color:var(--fg); }
+  button { font-family:inherit; }
+  button:focus:not(:focus-visible) { outline:none; }
+
+  /* ---- stage: two crossfading layers (DK-style dual-layer player) ---- */
+  #stage { position:absolute; inset:0; background:#000; }
+  .layer { position:absolute; inset:0; opacity:0; transition:opacity .8s ease-in-out; }
+  .layer.show { opacity:1; }
+  .layer img, .layer video, .layer canvas { width:100%; height:100%; display:block; background:#000; }
+  .layer.fit-cover img, .layer.fit-cover video { object-fit:cover; }
+  .layer.fit-contain img, .layer.fit-contain video { object-fit:contain; }
+
+  /* Empty-playlist hint: the only time the stage explains itself */
+  #hint { position:absolute; inset:0; display:none; flex-direction:column; align-items:center; justify-content:center;
+    gap:14px; text-align:center; color:#9db2c7; padding:0 240px; }
+  #hint.show { display:flex; }
+  #hint .big { font-size:34px; font-weight:600; color:#c9d6e2; }
+  #hint .sub { font-size:22px; line-height:1.45; }
+
+  /* ---- gear (revealed by a tap on manual visits, auto-hides) ---- */
+  #gear { position:absolute; right:24px; bottom:24px; width:72px; height:72px; border-radius:18px;
+    border:1px solid rgba(255,255,255,.25); background:rgba(10,14,19,.72); color:#e8eef4; font-size:34px;
+    display:none; align-items:center; justify-content:center; cursor:pointer; }
+  #gear.show { display:flex; }
+
+  /* ---- overlays ---- */
+  .overlay { position:absolute; inset:0; background:rgba(0,0,0,.55); display:none; align-items:center; justify-content:center; z-index:20; }
+  .overlay.show { display:flex; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:24px; color:var(--fg); }
+
+  /* settings card: two columns of rows */
+  #setCard { width:min(1500px, calc(100vw - 96px)); max-height:calc(100vh - 48px); display:flex; flex-direction:column; gap:16px; }
+  #setCols { display:flex; gap:32px; min-height:0; }
+  .scol { flex:1; min-width:0; display:flex; flex-direction:column; gap:14px; }
+  .row { display:flex; align-items:center; gap:16px; min-height:56px; }
+  .row .lab { width:170px; flex:0 0 170px; font-size:20px; color:var(--muted); font-weight:600; }
+  .seg { display:flex; gap:8px; flex:1; flex-wrap:wrap; }
+  .seg button { min-height:56px; padding:0 20px; font-size:20px; font-weight:600; border-radius:12px;
+    border:1px solid var(--line); background:transparent; color:var(--fg); cursor:pointer; }
+  .seg button.on { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); }
+  .foldRow { display:flex; align-items:center; gap:12px; flex:1; min-width:0; }
+  #photosVal, #videosVal { flex:1; min-width:0; font-size:19px; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; direction:rtl; text-align:left; }
+  .btn { min-height:56px; padding:0 26px; font-size:20px; font-weight:700; border-radius:12px;
+    border:1px solid var(--line); background:transparent; color:var(--fg); cursor:pointer; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); }
+  #setFoot { display:flex; justify-content:flex-end; gap:12px; }
+
+  /* folder browser */
+  #folderCard { width:min(1500px, calc(100vw - 96px)); height:calc(100vh - 48px); display:flex; flex-direction:column; gap:14px; }
+  #fbPath { font-size:20px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; direction:rtl; text-align:left; }
+  #fbList { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; display:flex; flex-direction:column; gap:8px; padding-right:6px; }
+  #fbList button { min-height:60px; text-align:left; padding:0 18px; font-size:21px; border-radius:12px;
+    border:1px solid var(--line); background:transparent; color:var(--fg); cursor:pointer;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #fbFoot { display:flex; gap:12px; }
+  #fbFoot .spacer { flex:1; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <div class="layer" id="layerA"></div>
+    <div class="layer" id="layerB"></div>
+  </div>
+  <div id="hint">
+    <div class="big">Nothing to show yet</div>
+    <div class="sub">Drop files into the photos or videos folder (tap the screen, then ⚙ → Photos/Videos folder),<br>
+      or turn Scenes on under ⚙ → Show.</div>
+  </div>
+  <button id="gear" aria-label="Screensaver settings">⚙</button>
+
+  <div class="overlay" id="settingsOverlay">
+    <div class="card" id="setCard">
+      <div id="setCols">
+        <div class="scol">
+          <div class="row"><div class="lab">Show</div>
+            <div class="seg" id="segShow"></div></div>
+          <div class="row" id="rowScene"><div class="lab">Scenes</div>
+            <div class="seg" id="segScene"></div></div>
+          <div class="row" id="rowStyle"><div class="lab">Photo style</div>
+            <div class="seg" id="segStyle"></div></div>
+          <div class="row" id="rowFill"><div class="lab">Photos</div>
+            <div class="seg" id="segFill"></div></div>
+        </div>
+        <div class="scol">
+          <div class="row"><div class="lab">Change every</div>
+            <div class="seg" id="segInterval"></div></div>
+          <div class="row"><div class="lab">Shuffle</div>
+            <div class="seg" id="segShuffle"></div></div>
+          <div class="row"><div class="lab">Start after idle</div>
+            <div class="seg" id="segIdle"></div></div>
+          <div class="row" id="rowPhotosDir"><div class="lab">Photos folder</div>
+            <div class="foldRow">
+              <div id="photosVal">—</div>
+              <button class="btn" id="photosBrowse">Browse</button>
+            </div></div>
+          <div class="row" id="rowVideosDir"><div class="lab">Videos folder</div>
+            <div class="foldRow">
+              <div id="videosVal">—</div>
+              <button class="btn" id="videosBrowse">Browse</button>
+            </div></div>
+        </div>
+      </div>
+      <div id="setFoot"><button class="btn primary" id="setDone">Done</button></div>
+    </div>
+  </div>
+
+  <div class="overlay" id="folderOverlay">
+    <div class="card" id="folderCard">
+      <div id="fbPath">—</div>
+      <div id="fbList"></div>
+      <div id="fbFoot">
+        <button class="btn" id="fbUp">⬆ Up</button>
+        <button class="btn" id="fbDefault">Use default folder</button>
+        <div class="spacer"></div>
+        <button class="btn" id="fbClose">Cancel</button>
+        <button class="btn primary" id="fbUse">Use this folder</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="screensaverview.js"></script>
+</body>
+</html>

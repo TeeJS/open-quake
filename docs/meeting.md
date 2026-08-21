@@ -80,8 +80,8 @@ screenshot of a presentation window each time the slide changes — automaticall
 record. It watches for the picture to *settle*: a static slide is saved once, and live video
 (which never settles) is never captured, so you get the slides without the motion.
 
-When enabled, a **Slide Capture** column appears on the meeting panel, right of the utility
-rail:
+When enabled, a **Slide Capture** column appears on the meeting panel (toggled from the top
+bar — see Panel columns below):
 
 - **Select window** — opens a picker of open windows (filtered to the app set in Settings,
   e.g. `ms-teams`). Pick the one showing the presentation. You can select ahead of the call.
@@ -105,6 +105,41 @@ Optional **global hotkeys** (Settings) drive the same three actions without touc
 panel — defaults `Ctrl+Alt+S` (start/stop), `Ctrl+Alt+W` (select window), `Ctrl+Alt+C`
 (manual). Each needs Ctrl and/or Alt and they must differ. An **auto-stop** setting ends a
 forgotten capture after N idle minutes.
+
+## Highlights
+
+Enable **Meeting Highlights** (Settings → Meeting → Capture) to flag moments while a meeting
+is running. Tap **Start highlighting** when something worth remembering begins, tap again when
+it's done. The flagged spans are handed to the analysis AI, which opens the meeting notes with
+a **Highlights** section calling out what was said in each one.
+
+When enabled, a **Highlight** column appears on the meeting panel:
+
+- **Start / Stop highlighting** — opens and closes a span. Turns red with a pulsing dot while
+  a span is open. Enabled only while a recording is running, since a highlight is an offset
+  into that recording.
+- **Clear current highlight** — throws away the span in progress (a mis-tap). Finished spans
+  are untouched; there's no undo for those, by design — the analysis just gets one extra
+  moment to describe.
+- The status line shows the running span length while highlighting, and the count so far
+  otherwise.
+
+If a call ends while a span is still open, it's **auto-closed** at the end of the recording —
+losing the flag would be worse than a slightly long one. A start-and-stop inside one second is
+dropped as a mis-tap.
+
+Spans are stored as millisecond offsets from the start of the recording, in the recording's
+**`<recording>.json`** sidecar (the same file the Outlook lookup writes). That's the same clock
+the diarizer uses for segment `start`/`end`, so they line up exactly — no alignment guesswork,
+unlike a Teams VTT. The sidecar renames with the WAV and travels with it through transcription,
+so highlights reach the analysis wherever the recording lands.
+
+## Panel columns
+
+The meeting panel's three utility columns — **Control** (volume, mic, share screen),
+**Slide Capture**, and **Highlight** — are each toggled by a button at the left of the top bar.
+All three start closed, and the set you leave open is remembered across restarts. Slide Capture
+and Highlight only appear when their feature is enabled in Settings.
 
 ## Honest limits
 
