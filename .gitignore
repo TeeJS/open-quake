@@ -38,3 +38,6 @@ app/native/open_quake_dpapi.node
 open-quake-next/
 # personal analysis prompt (bundled meeting-analysis-prompt.md stays stock)
 /my-meeting-analysis-prompt.md
+
+# transient project-state doc (regenerated locally, not part of the repo)
+docs/current-state.md
