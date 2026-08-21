@@ -1,13 +1,13 @@
 # Current State
 
-Verified on 20 August 2026 against the current source, mocked Discord RPC/OAuth tests, the full
+Verified on 21 August 2026 against the current source, mocked Discord RPC/OAuth tests, the full
 repository test suite, and a Windows portable/NSIS build. Live Discord-account verification still
 requires the Developer Portal configuration and tester account described below.
 
 ## Settings and configuration ownership
 
 Discord is listed with Microsoft 365 and GitHub under **Settings -> Auth -> OAuth 2.0**. Its provider
-card shows authorization/runtime state, the granted or requested `rpc identify` scopes, a sanitized
+card shows authorization/runtime state, the granted or requested Discord scopes, a sanitized
 account name returned by RPC `AUTHENTICATE` when available, and Connect/Reconnect and Disconnect
 actions. Tokens and raw RPC responses never enter the settings renderer.
 
@@ -29,10 +29,19 @@ rendered, persisted, or sent.
 ## OAuth and loopback callback
 
 Discord uses Authorization Code with PKCE (`S256`), a cryptographically random state value checked
-with a constant-time comparison, and the `rpc identify` scopes. Code exchange and refresh are public
+with a constant-time comparison, and the `rpc identify rpc.voice.read rpc.voice.write messages.read
+rpc.notifications.read` scopes. Code exchange and refresh are public
 client requests containing the Application ID and PKCE verifier but no Client Secret. Access and
 refresh tokens stay in the encrypted main-process OAuth store; refresh-token rotation is preserved,
 and unusable tokens are removed so the next explicit Reconnect can authorize again.
+
+The expanded scopes are the least-privilege set required by Discord's current RPC/OAuth
+documentation for voice reads/events, voice writes, message reads in existing user channels, and
+notifications. Existing grants that do not contain every required scope are not silently reused:
+Settings -> Auth says that updated permissions require approval, automatic reconnect stops, and the
+user must explicitly select Reconnect. The authorization URL uses `prompt=consent`. The
+`relationships.read` scope is intentionally not requested because it is Social SDK access and is not
+needed for the current UI.
 
 The registered redirect remains exactly `http://127.0.0.1/callback`. The listener binds only
 `127.0.0.1`, accepts only `GET /callback`, rejects other methods/paths, validates state before code
@@ -66,6 +75,20 @@ list leaves channel discovery unverified rather than falsely available. `SELECT_
 until the user explicitly opens a text channel or changes Rich Presence. A successful action marks
 the capability available; unsupported, auth, and temporary failures retain their distinct states.
 
+After authentication, the service subscribes to `VOICE_CONNECTION_STATUS`,
+`NOTIFICATION_CREATE`, and `CURRENT_USER_UPDATE`. Joining or discovering an active voice channel
+subscribes to `VOICE_STATE_CREATE`, `VOICE_STATE_UPDATE`, `VOICE_STATE_DELETE`, `SPEAKING_START`,
+and `SPEAKING_STOP` for that channel. Selecting a text channel subscribes to `MESSAGE_CREATE`,
+`MESSAGE_UPDATE`, and `MESSAGE_DELETE`. Changing or leaving a channel sends the matching
+`UNSUBSCRIBE` requests before installing the new channel subscriptions; disconnect clears all local
+subscription ownership and transport listeners.
+
+The additional capability states cover participants, speaking events, per-user voice control,
+connection quality, message events, message history, notifications, and current-user updates.
+Subscription success verifies event capabilities. `GET_CHANNEL` verifies participant/history data
+only when the documented `voice_states`/`messages` field is actually present. The mutating
+`SET_USER_VOICE_SETTINGS` capability remains unverified until a genuine user action succeeds.
+
 Chat enables channel launch while selection is unverified or temporarily failed, allowing the
 explicit user action to validate it, but disables it after an unsupported/auth failure. Rich
 Presence follows the same rule and labels its initial state **Not yet verified**. Neither capability
@@ -73,20 +96,31 @@ is marked Available merely because IPC and authentication succeeded.
 
 ## Discord touchscreen app
 
-The touchscreen navigation remains Voice, Chat, and Activity only. Voice, Chat, and Rich Presence
-layout/behavior have not been redesigned. Chat remains a channel launcher: it discovers guilds and
-channels, filters to text/announcement channels, and asks Discord to open a selected channel. It has
-no message list, composer, bot integration, Social SDK, fake data, or renderer-side low-level RPC.
+The touchscreen navigation remains Voice, Chat, and Activity only; this is a functional extension,
+not the planned visual redesign. Voice shows only real `GET_CHANNEL`/voice-event participants,
+including names, avatars, mute/deaf state, local mute/volume, preserved pan, and speaking state.
+Participant mute and 0-200 volume actions use `SET_USER_VOICE_SETTINGS` one modifier at a time. The
+UI explains Discord's documented lock: once changed, participant settings belong to the controlling
+RPC app until disconnect, when Discord restores the previous values.
+
+Chat retains guild/channel discovery and Open in Discord. Where `GET_CHANNEL` includes `messages`,
+it seeds a bounded recent-message list; otherwise the UI explicitly says that history was not
+returned while live subscribed messages may still arrive. Create/update/delete events update the
+selected channel only. There is no composer or invented send command. Activity shows the sanitized
+voice connection state and ping figures plus bounded notifications and recent events. Hostname,
+tokens, raw payloads, relationship data, and other unnecessary fields do not reach renderer state.
+Messages are bounded to 20, notifications to 8, recent activity events to 8, and ping history to the
+documented most recent 20 values.
 
 ## Verification
 
-- `npm test`: 236 tests passed, 0 failed. Coverage includes the Auth provider card, lifecycle
-  handlers, explicit authorization, no Client Secret dependency, advanced Application ID migration,
-  capability probing/classification, Chat and Rich Presence states, 4006 handling, identity/token
-  redaction, callback method/path/state validation, PKCE, refresh rotation, and disconnect cleanup.
-- `npm run dist`: passed. Electron 42.4.1 produced the Windows portable and NSIS artifacts. Native
-  helpers were up to date. Artifacts are unsigned because this machine has no `.signing/` setup or
-  SignTool credentials; this is the expected best-effort local build behavior.
+- `npm test`: 246 tests passed, 0 failed. Coverage includes subscription and
+  unsubscription lifecycles, participant/speaking updates, per-user controls, connection quality,
+  message create/update/delete and bounded history, notifications, scope reauthorization,
+  sanitization, listener cleanup, the Auth provider card, PKCE, refresh rotation, and prior Discord
+  behavior.
+- `npm run dist`: passed. Electron 42.4.1 produced the Windows portable and NSIS artifacts. Artifacts
+  are unsigned because this machine has no `.signing/` setup or SignTool credentials.
 - Live OAuth/RPC verification was not performed because this environment has no configured Discord
   tester account or access to the application's Developer Portal settings.
 
@@ -96,8 +130,9 @@ no message list, composer, bot integration, Social SDK, fake data, or renderer-s
 2. Under OAuth2, enable **Public Client**.
 3. Register the exact redirect URI `http://127.0.0.1/callback`. If an unprivileged high port is
    preferred, register that exact URI first and change the source constant/listener together.
-4. Permit the `rpc` and `identify` scopes. Do not create or distribute a Client Secret for this
-   desktop flow.
+4. Obtain/permit the `rpc`, `rpc.voice.read`, `rpc.voice.write`, `messages.read`, and
+   `rpc.notifications.read` approved-partner scopes; retain `identify`. Do not create or distribute
+   a Client Secret for this desktop flow. Do not add `relationships.read` for this implementation.
 5. While the application is unapproved for public RPC use, add each live-verification Discord
    account to the application's tester allowlist. Complete Discord's RPC approval process before
    distributing the integration to normal users.
@@ -107,16 +142,21 @@ no message list, composer, bot integration, Social SDK, fake data, or renderer-s
 1. Start the Discord desktop client and sign in with an allowed tester account.
 2. Start open-quake, open **Settings -> Auth -> OAuth 2.0**, and confirm the Discord card shows scopes
    without any token, secret, or normal Application ID field.
-3. Select **Connect**, approve `rpc identify`, and confirm the callback page completes, the card shows
+3. Select **Connect**, approve the displayed Discord scopes, and confirm the callback page completes, the card shows
    Authenticated and the safe account identity, and restarting open-quake reuses/refreshes the stored
    authorization without opening a browser.
-4. Exercise Voice and confirm its two read probes become available. Open Chat, select a guild, and
-   confirm channel discovery becomes available; open a text channel and confirm text selection moves
-   from unverified to available.
-5. Open Activity, confirm Rich Presence initially says **Not yet verified**, then enable and disable
+4. Exercise Voice and confirm real participants appear, join/update/leave without polling, speaking
+   indicators toggle, participant mute/volume works, and Discord restores those locked settings after
+   disconnect. Change/leave channels and confirm old-channel events no longer affect state.
+5. Confirm voice connection state, last/average/recent pings appear without the voice hostname.
+   Open Chat, select a guild/channel, verify returned history or the honest no-history label, then
+   create/edit/delete messages and confirm live updates. Confirm Open in Discord still works.
+6. Trigger an eligible Discord notification and confirm the bounded Activity list updates. Change
+   the current Discord user's profile and confirm sanitized account state updates.
+7. Open Activity, confirm Rich Presence initially says **Not yet verified**, then enable and disable
    it and confirm `SET_ACTIVITY` becomes available only after success.
-6. Temporarily remove the tester/permission or invalidate the token and verify 4006 produces the Auth
+8. Temporarily remove the tester/permission or invalidate the token and verify 4006 produces the Auth
    attention state, clears tokens, disables affected actions, and requires explicit Reconnect.
-7. Select **Disconnect** and confirm the card becomes disconnected, identity disappears, a restart
+9. Select **Disconnect** and confirm the card becomes disconnected, identity disappears, a restart
    does not reconnect, and persisted/editor/panel data contains no access token, refresh token, or
    Client Secret.

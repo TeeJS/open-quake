@@ -5,14 +5,25 @@ const { DiscordRpcTransport } = require('./discordRpcTransport');
 
 const COMMAND_CAPABILITY = Object.freeze({
   GET_VOICE_SETTINGS: 'voiceSettings', SET_VOICE_SETTINGS: 'voiceSettings',
+  SET_USER_VOICE_SETTINGS: 'perUserVoiceControl',
   GET_SELECTED_VOICE_CHANNEL: 'voiceChannelControl', SELECT_VOICE_CHANNEL: 'voiceChannelControl',
   GET_GUILDS: 'guildDiscovery', GET_GUILD: 'guildDiscovery',
   GET_CHANNELS: 'channelDiscovery', GET_CHANNEL: 'channelDiscovery',
   SELECT_TEXT_CHANNEL: 'textChannelSelection', SET_ACTIVITY: 'activity',
 });
-const CAPABILITIES = Object.freeze([...new Set(Object.values(COMMAND_CAPABILITY))]);
+const SUBSCRIPTION_CAPABILITY = Object.freeze({
+  VOICE_STATE_CREATE: 'participants', VOICE_STATE_UPDATE: 'participants', VOICE_STATE_DELETE: 'participants',
+  SPEAKING_START: 'speakingEvents', SPEAKING_STOP: 'speakingEvents',
+  VOICE_CONNECTION_STATUS: 'connectionQuality',
+  MESSAGE_CREATE: 'messageEvents', MESSAGE_UPDATE: 'messageEvents', MESSAGE_DELETE: 'messageEvents',
+  NOTIFICATION_CREATE: 'notifications', CURRENT_USER_UPDATE: 'currentUserEvents',
+});
+const CAPABILITIES = Object.freeze([...new Set([...Object.values(COMMAND_CAPABILITY), ...Object.values(SUBSCRIPTION_CAPABILITY), 'messageHistory'])]);
 const UNSUPPORTED_CODES = new Set([4001, 4002, 4005]);
 const AUTH_CODES = new Set([4006]);
+const VOICE_CHANNEL_EVENTS = Object.freeze(['VOICE_STATE_CREATE', 'VOICE_STATE_UPDATE', 'VOICE_STATE_DELETE', 'SPEAKING_START', 'SPEAKING_STOP']);
+const TEXT_CHANNEL_EVENTS = Object.freeze(['MESSAGE_CREATE', 'MESSAGE_UPDATE', 'MESSAGE_DELETE']);
+const GLOBAL_EVENTS = Object.freeze(['VOICE_CONNECTION_STATUS', 'NOTIFICATION_CREATE', 'CURRENT_USER_UPDATE']);
 const VOICE_FIELDS = Object.freeze({
   input: { device_id: true, volume: true, available_devices: true },
   output: { device_id: true, volume: true, available_devices: true },
@@ -62,7 +73,12 @@ class DiscordService extends EventEmitter {
     this.identity = null;
     this.capabilities = Object.fromEntries(CAPABILITIES.map(name => [name, false]));
     this.capabilityState = Object.fromEntries(CAPABILITIES.map(name => [name, 'unverified']));
-    this._onTransportEvent = event => { this.emit('event', event); this.emit(event.type, event.data); };
+    this.subscriptions = new Map();
+    this.activeVoiceChannelId = null;
+    this.activeTextChannelId = null;
+    this.subscriptionGeneration = 0;
+    this.subscriptionQueues = { voice: Promise.resolve(), text: Promise.resolve() };
+    this._onTransportEvent = event => this._handleTransportEvent(event);
     this._onTransportDisconnect = error => this._handleDisconnect(error);
     this._onProtocolError = error => this._setState('error', error);
   }
@@ -97,6 +113,7 @@ class DiscordService extends EventEmitter {
     if (this.retryTimer) this.clearTimer(this.retryTimer);
     this.retryTimer = null;
     this._detachTransport(true);
+    this._clearSubscriptions();
     this._setCapabilities('unverified');
     this._setState('disconnected');
   }
@@ -138,6 +155,8 @@ class DiscordService extends EventEmitter {
       await this._authenticate(transport);
       if (this.stopped || this.transport !== transport) return;
       await this._probeCapabilities();
+      await this._subscribeGlobalEvents();
+      if (this.authState !== 'authenticated' || !this.transport) throw Object.assign(new Error('Discord authorization is required'), { code: 'DISCORD_AUTH_REQUIRED' });
       this._setState('connected');
     } catch (error) {
       if (this.transport !== transport || this.stopped) return;
@@ -145,13 +164,14 @@ class DiscordService extends EventEmitter {
       this._setCapabilities(this.authState === 'auth-error' ? 'auth-failure' : 'unverified');
       if (error.code === 'DISCORD_NOT_RUNNING' || error.code === 'DISCORD_NOT_CONFIGURED') this._setState('not-running', error);
       else this._setState('error', error);
-      if (error.code !== 'DISCORD_NOT_CONFIGURED' && error.code !== 'DISCORD_AUTH_REQUIRED' && this.authState !== 'auth-error') this._scheduleReconnect();
+      if (error.code !== 'DISCORD_NOT_CONFIGURED' && error.code !== 'DISCORD_AUTH_REQUIRED' && error.code !== 'DISCORD_REAUTHORIZATION_REQUIRED' && this.authState !== 'auth-error') this._scheduleReconnect();
     }
   }
 
   _handleDisconnect(error) {
     if (this.stopped) return;
     this._detachTransport(false);
+    this._clearSubscriptions();
     this._setCapabilities('unverified');
     this._setState('reconnecting', error);
     this._scheduleReconnect();
@@ -176,6 +196,25 @@ class DiscordService extends EventEmitter {
     transport.removeListener('disconnect', this._onTransportDisconnect);
     transport.removeListener('protocol-error', this._onProtocolError);
     if (disconnect) transport.disconnect();
+  }
+
+  _clearSubscriptions() {
+    this.subscriptionGeneration += 1;
+    this.subscriptions.clear();
+    this.activeVoiceChannelId = null;
+    this.activeTextChannelId = null;
+    this.subscriptionQueues = { voice: Promise.resolve(), text: Promise.resolve() };
+  }
+
+  _handleTransportEvent(event) {
+    if (!event || !event.type) return;
+    if (event.type === 'CURRENT_USER_UPDATE') this.identity = cleanDiscordIdentity(event.data);
+    if (event.type === 'VOICE_CHANNEL_SELECT') {
+      const channelId = event.data && event.data.channel_id;
+      this._queueChannelSubscriptions('voice', channelId).catch(() => {});
+    }
+    this.emit('event', event);
+    this.emit(event.type, event.data);
   }
 
   _setState(state, error) {
@@ -233,6 +272,34 @@ class DiscordService extends EventEmitter {
     }
   }
 
+  async _eventRequest(command, event, args) {
+    const capability = SUBSCRIPTION_CAPABILITY[event];
+    if (!capability) throw Object.assign(new Error('Unsupported Discord event: ' + event), { code: 'DISCORD_UNSUPPORTED_EVENT' });
+    if (this.authState !== 'authenticated') throw Object.assign(new Error('Discord authorization is required'), { code: 'DISCORD_AUTH_REQUIRED' });
+    if (this.capabilityState[capability] === 'unsupported' || !this.transport) throw Object.assign(new Error('Discord capability is unavailable: ' + capability), { code: 'DISCORD_UNSUPPORTED_CAPABILITY', capability });
+    try {
+      const result = await this.transport.request(command, args || {}, event);
+      if (command === 'SUBSCRIBE') this._setCapability(capability, 'available');
+      return result;
+    } catch (error) {
+      const rpcCode = Number(error.code);
+      if (AUTH_CODES.has(rpcCode)) {
+        this.authState = 'auth-error';
+        if (this.oauth && this.oauth.deleteTokens) this.oauth.deleteTokens();
+        this.identity = null;
+        this._setCapabilities('auth-failure');
+        this._detachTransport(true);
+        this._setState('error', Object.assign(new Error('Discord authorization is required'), { code: 'DISCORD_AUTH_REQUIRED' }));
+        error.code = 'DISCORD_AUTH_REQUIRED'; error.capability = capability;
+      } else if (UNSUPPORTED_CODES.has(rpcCode)) {
+        this._setCapability(capability, 'unsupported'); error.capability = capability;
+      } else {
+        this._setCapability(capability, 'temporary-error'); error.capability = capability;
+      }
+      throw error;
+    }
+  }
+
   _setCapability(capability, state) {
     const available = state === 'available';
     if (this.capabilityState[capability] === state && this.capabilities[capability] === available) return;
@@ -243,7 +310,11 @@ class DiscordService extends EventEmitter {
   async _authenticate(transport) {
     this.authState = 'authorization-required'; this._setState(this.state);
     const token = this.oauth && await this.oauth.accessToken();
-    if (!token) throw Object.assign(new Error('Discord authorization is required'), { code: 'DISCORD_AUTH_REQUIRED' });
+    if (!token) {
+      const reauthorize = this.oauth && this.oauth.requiresReauthorization && this.oauth.requiresReauthorization();
+      this.authState = reauthorize ? 'reauthorization-required' : 'authorization-required';
+      throw Object.assign(new Error(reauthorize ? 'Discord authorization scopes changed; reconnect to approve access' : 'Discord authorization is required'), { code: reauthorize ? 'DISCORD_REAUTHORIZATION_REQUIRED' : 'DISCORD_AUTH_REQUIRED' });
+    }
     let authenticated;
     try { authenticated = await transport.request('AUTHENTICATE', { access_token: token }); }
     catch (error) { this.authState = 'auth-error'; if (this.oauth && this.oauth.deleteTokens) this.oauth.deleteTokens(); throw error; }
@@ -263,14 +334,93 @@ class DiscordService extends EventEmitter {
 
   getVoiceSettings() { return this._request('GET_VOICE_SETTINGS').then(data => projectPresent(data, VOICE_FIELDS)); }
   setVoiceSettings(settings) { return this._request('SET_VOICE_SETTINGS', projectPresent(settings, VOICE_FIELDS)).then(data => projectPresent(data, VOICE_FIELDS)); }
-  getSelectedVoiceChannel() { return this._request('GET_SELECTED_VOICE_CHANNEL'); }
-  selectVoiceChannel(channelId) { return this._request('SELECT_VOICE_CHANNEL', { channel_id: channelId == null ? null : String(channelId) }); }
+  getSelectedVoiceChannel() {
+    return this._request('GET_SELECTED_VOICE_CHANNEL').then(async data => {
+      await this._queueChannelSubscriptions('voice', data && data.id);
+      this._markChannelData(data, 'voice');
+      return data;
+    });
+  }
+  selectVoiceChannel(channelId) {
+    return this._request('SELECT_VOICE_CHANNEL', { channel_id: channelId == null ? null : String(channelId) }).then(async data => {
+      await this._queueChannelSubscriptions('voice', data && data.id || channelId);
+      this._markChannelData(data, 'voice');
+      return data;
+    });
+  }
+  setUserVoiceSettings(userId, settings) {
+    const value = settings || {};
+    const args = { user_id: String(userId) };
+    const modifiers = ['mute', 'volume'].filter(key => Object.prototype.hasOwnProperty.call(value, key));
+    if (modifiers.length !== 1) throw Object.assign(new Error('Discord supports one participant voice modifier at a time'), { code: 'DISCORD_INVALID_VOICE_SETTINGS' });
+    if (modifiers[0] === 'mute') args.mute = !!value.mute;
+    else {
+      const volume = Number(value.volume);
+      if (!Number.isFinite(volume)) throw Object.assign(new Error('Participant volume is invalid'), { code: 'DISCORD_INVALID_VOICE_SETTINGS' });
+      args.volume = Math.max(0, Math.min(200, volume));
+    }
+    return this._request('SET_USER_VOICE_SETTINGS', args);
+  }
   getGuilds() { return this._request('GET_GUILDS'); }
   getGuild(guildId) { return this._request('GET_GUILD', { guild_id: String(guildId) }); }
   getChannels(guildId) { return this._request('GET_CHANNELS', { guild_id: String(guildId) }); }
   getChannel(channelId) { return this._request('GET_CHANNEL', { channel_id: String(channelId) }); }
-  selectTextChannel(channelId) { return this._request('SELECT_TEXT_CHANNEL', { channel_id: channelId == null ? null : String(channelId) }); }
+  getTextChannel(channelId) { return this.getChannel(channelId).then(data => { this._markChannelData(data, 'text'); return data; }); }
+  selectTextChannel(channelId) {
+    return this._request('SELECT_TEXT_CHANNEL', { channel_id: channelId == null ? null : String(channelId) }).then(async data => {
+      await this._queueChannelSubscriptions('text', data && data.id || channelId);
+      this._markChannelData(data, 'text');
+      return data;
+    });
+  }
+  clearTextChannel() { return this._queueChannelSubscriptions('text', null); }
   setActivity(activity) { return this._request('SET_ACTIVITY', { pid: process.pid, activity: activity || null }); }
+
+  _markChannelData(data, kind) {
+    if (!data || typeof data !== 'object') return;
+    if (kind === 'voice' && Array.isArray(data.voice_states)) this._setCapability('participants', 'available');
+    if (kind === 'text') this._setCapability('messageHistory', Array.isArray(data.messages) ? 'available' : 'unsupported');
+  }
+
+  async _subscribeGlobalEvents() {
+    await Promise.all(GLOBAL_EVENTS.map(event => this._subscribe(event, {}).catch(() => null)));
+  }
+
+  async _subscribe(event, args) {
+    const key = event + ':' + String(args && args.channel_id || 'global');
+    if (this.subscriptions.has(key)) return;
+    await this._eventRequest('SUBSCRIBE', event, args);
+    this.subscriptions.set(key, { event, args: Object.assign({}, args) });
+  }
+
+  async _unsubscribe(event, args) {
+    const key = event + ':' + String(args && args.channel_id || 'global');
+    if (!this.subscriptions.has(key)) return;
+    this.subscriptions.delete(key);
+    if (!this.transport || this.authState !== 'authenticated') return;
+    try { await this.transport.request('UNSUBSCRIBE', args || {}, event); } catch (error) {}
+  }
+
+  async _syncChannelSubscriptions(kind, channelId) {
+    const field = kind === 'voice' ? 'activeVoiceChannelId' : 'activeTextChannelId';
+    const events = kind === 'voice' ? VOICE_CHANNEL_EVENTS : TEXT_CHANNEL_EVENTS;
+    const next = channelId == null || channelId === '' ? null : String(channelId);
+    const previous = this[field];
+    if (previous === next) return;
+    if (previous) await Promise.all(events.map(event => this._unsubscribe(event, { channel_id: previous })));
+    this[field] = next;
+    if (next) await Promise.all(events.map(event => this._subscribe(event, { channel_id: next }).catch(() => null)));
+  }
+
+  _queueChannelSubscriptions(kind, channelId) {
+    const generation = this.subscriptionGeneration;
+    const queued = this.subscriptionQueues[kind].catch(() => {}).then(() => {
+      if (generation !== this.subscriptionGeneration) return;
+      return this._syncChannelSubscriptions(kind, channelId);
+    });
+    this.subscriptionQueues[kind] = queued;
+    return queued;
+  }
 }
 
-module.exports = { DiscordService, COMMAND_CAPABILITY, VOICE_FIELDS, cleanDiscordIdentity, projectPresent };
+module.exports = { DiscordService, COMMAND_CAPABILITY, GLOBAL_EVENTS, SUBSCRIPTION_CAPABILITY, TEXT_CHANNEL_EVENTS, VOICE_CHANNEL_EVENTS, VOICE_FIELDS, cleanDiscordIdentity, projectPresent };

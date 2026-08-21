@@ -763,12 +763,15 @@ function oauthProviderPayload() {
   const discordSettings = normalizeDiscordSettings((config.settings || {}).discord);
   const discordTokens = oauthStorage.getTokens('discord');
   const discordConnected = !!(discordTokens && discordTokens.refreshToken);
+  const discordGrantedScopes = discordTokens && discordTokens.scope ? String(discordTokens.scope).split(/\s+/).filter(Boolean) : [];
+  const discordReauthorizationRequired = discordConnected && DISCORD_SCOPES.some(scope => !discordGrantedScopes.includes(scope));
   standard.push({
     provider: 'discord', name: 'Discord', configured: !!discordApplicationId(discordSettings), connected: discordConnected,
     expiresAt: discordTokens && discordTokens.expiresAt || null,
-    scopes: discordTokens && discordTokens.scope ? String(discordTokens.scope).split(/\s+/).filter(Boolean) : DISCORD_SCOPES,
+    scopes: discordGrantedScopes.length ? discordGrantedScopes : DISCORD_SCOPES,
     managedClient: !discordSettings.applicationIdOverride && !!DEFAULT_DISCORD_APPLICATION_ID,
     enabled: !!discordApplicationId(discordSettings), authState: discordService.getState().authState,
+    reauthorizationRequired: discordReauthorizationRequired,
     identity: discordService.getState().authState === 'authenticated' ? discordService.getIdentity() : null,
   });
   return standard;

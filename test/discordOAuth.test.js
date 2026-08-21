@@ -32,7 +32,7 @@ test('public-client browser callback validates state and exchanges code with PKC
     getClientId: () => 'client', getTokens: () => null, setTokens: value => { stored = value; }, now: () => 1000,
     randomBytes: size => Buffer.alloc(size, 3), createServer: handler => (server = new MockServer(handler)),
     openExternal: async url => { opened = new URL(url); },
-    fetch: async (url, options) => { request = { url, options }; return { ok: true, text: async () => JSON.stringify({ access_token: 'access', refresh_token: 'refresh', expires_in: 60, scope: 'rpc identify' }) }; },
+    fetch: async (url, options) => { request = { url, options }; return { ok: true, text: async () => JSON.stringify({ access_token: 'access', refresh_token: 'refresh', expires_in: 60, scope: DISCORD_SCOPES.join(' ') }) }; },
   });
   const pending = oauth.authorize();
   await new Promise(resolve => setImmediate(resolve));
@@ -41,6 +41,7 @@ test('public-client browser callback validates state and exchanges code with PKC
   assert.equal(opened.searchParams.get('redirect_uri'), DISCORD_REDIRECT_URI);
   assert.equal(opened.searchParams.get('code_challenge_method'), 'S256');
   assert.equal(opened.searchParams.get('scope'), DISCORD_SCOPES.join(' '));
+  assert.equal(opened.searchParams.get('prompt'), 'consent');
   const response = server.callback('/callback?code=auth-code&state=' + encodeURIComponent(opened.searchParams.get('state')));
   assert.equal(response.status, 200);
   assert.equal(await pending, 'access');
@@ -86,7 +87,7 @@ test('callback rejects a mismatched OAuth state before token exchange', async ()
 
 test('expired tokens refresh as a public client and rotate refresh tokens', async () => {
   let stored, deleted = 0, request;
-  const tokens = { accessToken: 'old', refreshToken: 'refresh-old', expiresAt: 1 };
+  const tokens = { accessToken: 'old', refreshToken: 'refresh-old', expiresAt: 1, scope: DISCORD_SCOPES.join(' ') };
   const oauth = new DiscordOAuth({
     getClientId: () => 'client', getTokens: () => tokens, setTokens: value => { stored = value; }, deleteTokens: () => { deleted += 1; }, now: () => 100000,
     fetch: async (url, options) => { request = options; return { ok: true, text: async () => JSON.stringify({ access_token: 'new', refresh_token: 'refresh-new', expires_in: 3600 }) }; },
@@ -100,7 +101,14 @@ test('expired tokens refresh as a public client and rotate refresh tokens', asyn
 
 test('refresh failure deletes stored tokens so reconnect re-authorizes', async () => {
   let deleted = 0;
-  const oauth = new DiscordOAuth({ getClientId: () => 'client', getTokens: () => ({ accessToken: 'old', refreshToken: 'refresh', expiresAt: 1 }), deleteTokens: () => { deleted += 1; }, now: () => 100000, fetch: async () => ({ ok: false, text: async () => '{}' }) });
+  const oauth = new DiscordOAuth({ getClientId: () => 'client', getTokens: () => ({ accessToken: 'old', refreshToken: 'refresh', expiresAt: 1, scope: DISCORD_SCOPES.join(' ') }), deleteTokens: () => { deleted += 1; }, now: () => 100000, fetch: async () => ({ ok: false, text: async () => '{}' }) });
   assert.equal(await oauth.accessToken(), null);
   assert.equal(deleted, 1);
+});
+
+test('legacy Discord grants require explicit reauthorization when required scopes change', async () => {
+  const oauth = new DiscordOAuth({ getTokens: () => ({ accessToken: 'old', refreshToken: 'refresh', scope: 'rpc identify' }) });
+  assert.equal(oauth.requiresReauthorization(), true);
+  assert.equal(await oauth.accessToken(), null);
+  assert.deepEqual(DISCORD_SCOPES, ['rpc', 'identify', 'rpc.voice.read', 'rpc.voice.write', 'messages.read', 'rpc.notifications.read']);
 });

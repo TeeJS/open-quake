@@ -2737,7 +2737,7 @@
         try { providers = await configApi.listOAuthProviders(); } catch (e) {}
         if (!providers.length) { host.innerHTML = '<p class="hint">No OAuth providers available.</p>'; return; }
         const authState = p => p.provider === 'discord' && p.connected
-          ? (p.authState === 'authenticated' ? 'Authenticated' : p.authState === 'auth-error' ? 'Authorization needs attention' : 'Authorized; waiting for Discord')
+          ? (p.reauthorizationRequired || p.authState === 'reauthorization-required' ? 'Reconnect to approve updated Discord permissions' : p.authState === 'authenticated' ? 'Authenticated' : p.authState === 'auth-error' ? 'Authorization needs attention' : 'Authorized; waiting for Discord')
           : (p.connected ? 'Connected, ' + fmtExpiry(p.expiresAt) : (p.configured ? 'Ready to connect' : 'Not configured'));
         const identity = p => p.identity && (p.identity.global_name || p.identity.username)
           ? `<div class="row"><label>Account</label><span class="hint" style="margin:0">${esc(p.identity.global_name || p.identity.username)}${p.identity.username && p.identity.global_name ? ' (' + esc(p.identity.username) + ')' : ''}</span></div>` : '';

@@ -8,8 +8,10 @@ const { DiscordService } = require('../app/discordService');
 class MockTransport extends EventEmitter {
   constructor(connectError) { super(); this.connectError = connectError; this.requests = []; this.responses = new Map(); this.disconnected = false; }
   async connect() { if (this.connectError) throw this.connectError; return {}; }
-  request(command, args) {
-    this.requests.push({ command, args });
+  request(command, args, event) {
+    const request = { command, args };
+    if (event) request.event = event;
+    this.requests.push(request);
     const value = this.responses.get(command);
     return value instanceof Error ? Promise.reject(value) : Promise.resolve(value);
   }
@@ -75,6 +77,25 @@ test('failed explicit public-client authorization transitions from authorizing t
   assert.equal(service.getState().authState, 'auth-error');
   assert.equal(service.getCapabilities().guildDiscovery, false);
   assert.deepEqual(transport.requests, []);
+  service.stop();
+});
+
+test('scope changes stop automatic reconnect and require an explicit reauthorization action', async () => {
+  const transport = new MockTransport();
+  let authorizations = 0;
+  const oauth = {
+    accessToken: async () => authorizations ? 'expanded-token' : null,
+    requiresReauthorization: () => !authorizations,
+    authorize: async () => { authorizations += 1; return 'expanded-token'; },
+    deleteTokens() {},
+  };
+  const service = new DiscordService({ clientId: '123', transportFactory: () => transport, oauth, autoReconnect: true });
+  service.start(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.getState().authState, 'reauthorization-required');
+  assert.equal(service.retryTimer, null);
+  await service.authorize();
+  assert.equal(authorizations, 1);
+  assert.equal(service.getState().authState, 'authenticated');
   service.stop();
 });
 
@@ -162,8 +183,10 @@ test('read-only capability probes validate channels while mutating commands stay
   transport.responses.set('GET_CHANNELS', { channels: [] });
   const service = await startService(transport);
   assert.deepEqual(service.getCapabilityStates(), {
-    voiceSettings: 'available', voiceChannelControl: 'available', guildDiscovery: 'available',
-    channelDiscovery: 'available', textChannelSelection: 'unverified', activity: 'unverified',
+    voiceSettings: 'available', perUserVoiceControl: 'unverified', voiceChannelControl: 'available', guildDiscovery: 'available',
+    channelDiscovery: 'available', textChannelSelection: 'unverified', activity: 'unverified', participants: 'unverified',
+    speakingEvents: 'unverified', connectionQuality: 'available', messageEvents: 'unverified', notifications: 'available',
+    currentUserEvents: 'available', messageHistory: 'unverified',
   });
   assert.deepEqual(transport.requests.find(value => value.command === 'GET_CHANNELS'), { command: 'GET_CHANNELS', args: { guild_id: 'guild' } });
   assert.equal(transport.requests.some(value => value.command === 'SELECT_TEXT_CHANNEL' || value.command === 'SET_ACTIVITY'), false);
@@ -171,6 +194,55 @@ test('read-only capability probes validate channels while mutating commands stay
   await service.setActivity({ details: 'Using open-quake' });
   assert.equal(service.getCapabilityStates().textChannelSelection, 'available');
   assert.equal(service.getCapabilityStates().activity, 'available');
+  service.stop();
+});
+
+test('active voice and text channels subscribe and unsubscribe documented live events', async () => {
+  const transport = new MockTransport();
+  transport.responses.set('GET_SELECTED_VOICE_CHANNEL', { id: 'voice-1', voice_states: [] });
+  const service = await startService(transport);
+  const voiceSubscriptions = transport.requests.filter(item => item.command === 'SUBSCRIBE' && item.args.channel_id === 'voice-1');
+  assert.deepEqual(new Set(voiceSubscriptions.map(item => item.event)), new Set(['VOICE_STATE_CREATE', 'VOICE_STATE_UPDATE', 'VOICE_STATE_DELETE', 'SPEAKING_START', 'SPEAKING_STOP']));
+  assert.equal(service.getCapabilityStates().participants, 'available');
+  assert.equal(service.getCapabilityStates().speakingEvents, 'available');
+  transport.responses.set('SELECT_VOICE_CHANNEL', { id: 'voice-2', voice_states: [] });
+  await service.selectVoiceChannel('voice-2');
+  const voiceUnsubscriptions = transport.requests.filter(item => item.command === 'UNSUBSCRIBE' && item.args.channel_id === 'voice-1');
+  assert.equal(voiceUnsubscriptions.length, 5);
+  await Promise.all([service._queueChannelSubscriptions('voice', 'voice-3'), service._queueChannelSubscriptions('voice', 'voice-4')]);
+  assert.equal(service.activeVoiceChannelId, 'voice-4');
+  assert.equal([...service.subscriptions.values()].some(item => item.args.channel_id === 'voice-3'), false);
+  transport.responses.set('SELECT_TEXT_CHANNEL', { id: 'text-1', messages: [] });
+  await service.selectTextChannel('text-1');
+  assert.deepEqual(new Set(transport.requests.filter(item => item.command === 'SUBSCRIBE' && item.args.channel_id === 'text-1').map(item => item.event)), new Set(['MESSAGE_CREATE', 'MESSAGE_UPDATE', 'MESSAGE_DELETE']));
+  assert.equal(service.getCapabilityStates().messageEvents, 'available');
+  assert.equal(service.getCapabilityStates().messageHistory, 'available');
+  await service.clearTextChannel();
+  assert.equal(transport.requests.filter(item => item.command === 'UNSUBSCRIBE' && item.args.channel_id === 'text-1').length, 3);
+  service.stop();
+  assert.equal(service.subscriptions.size, 0);
+});
+
+test('per-user voice settings use one documented modifier and verify capability only after success', async () => {
+  const transport = new MockTransport();
+  transport.responses.set('SET_USER_VOICE_SETTINGS', { user_id: 'u', volume: 200 });
+  const service = await startService(transport);
+  assert.equal(service.getCapabilityStates().perUserVoiceControl, 'unverified');
+  assert.deepEqual(await service.setUserVoiceSettings('u', { volume: 250 }), { user_id: 'u', volume: 200 });
+  assert.deepEqual(transport.requests.find(item => item.command === 'SET_USER_VOICE_SETTINGS'), { command: 'SET_USER_VOICE_SETTINGS', args: { user_id: 'u', volume: 200 } });
+  assert.equal(service.getCapabilityStates().perUserVoiceControl, 'available');
+  assert.throws(() => service.setUserVoiceSettings('u', { mute: true, volume: 100 }), error => error.code === 'DISCORD_INVALID_VOICE_SETTINGS');
+  service.stop();
+});
+
+test('global subscriptions track voice quality, notifications, and current-user events', async () => {
+  const transport = new MockTransport();
+  const service = await startService(transport);
+  const global = transport.requests.filter(item => item.command === 'SUBSCRIBE' && !item.args.channel_id);
+  assert.deepEqual(new Set(global.map(item => item.event)), new Set(['VOICE_CONNECTION_STATUS', 'NOTIFICATION_CREATE', 'CURRENT_USER_UPDATE']));
+  assert.equal(service.getCapabilityStates().connectionQuality, 'available');
+  assert.equal(service.getCapabilityStates().notifications, 'available');
+  assert.equal(service.getCapabilityStates().currentUserEvents, 'available');
   service.stop();
 });
 

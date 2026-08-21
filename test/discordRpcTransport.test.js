@@ -57,6 +57,16 @@ test('handshake framing and command/response nonce correlation', async () => {
   transport.disconnect();
 });
 
+test('subscription frames include the documented event and arguments', async () => {
+  const { transport, socket } = await connectedTransport();
+  const pending = transport.request('SUBSCRIBE', { channel_id: 'voice' }, 'SPEAKING_START');
+  const frame = decode(socket.writes[1]);
+  assert.deepEqual(frame.body, { cmd: 'SUBSCRIBE', args: { channel_id: 'voice' }, nonce: frame.body.nonce, evt: 'SPEAKING_START' });
+  socket.emit('data', encodeFrame(OPCODE.FRAME, { cmd: 'SUBSCRIBE', nonce: frame.body.nonce, data: { evt: 'SPEAKING_START' } }));
+  await pending;
+  transport.disconnect();
+});
+
 test('malformed response is reported and disconnects cleanly', async () => {
   const { transport, socket } = await connectedTransport();
   const errors = [];

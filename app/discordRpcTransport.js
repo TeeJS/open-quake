@@ -128,12 +128,14 @@ class DiscordRpcTransport extends EventEmitter {
     if (message.cmd === 'DISPATCH' && typeof message.evt === 'string') this.emit('event', { type: message.evt, data: message.data });
   }
 
-  request(command, args) {
+  request(command, args, event) {
     if (!this.ready || !this.socket) return Promise.reject(Object.assign(new Error('Discord RPC is not connected'), { code: 'DISCORD_DISCONNECTED' }));
     const nonce = String(this.nextNonce++);
     return new Promise((resolve, reject) => {
       this.pending.set(nonce, { resolve, reject, command });
-      try { this.socket.write(encodeFrame(OPCODE.FRAME, { cmd: command, args: args || {}, nonce })); }
+      const payload = { cmd: command, args: args || {}, nonce };
+      if (event) payload.evt = String(event);
+      try { this.socket.write(encodeFrame(OPCODE.FRAME, payload)); }
       catch (err) { this.pending.delete(nonce); reject(err); }
     });
   }

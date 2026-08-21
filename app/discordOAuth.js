@@ -9,7 +9,18 @@ const DISCORD_REDIRECT_URI = 'http://127.0.0.1/callback';
 const DISCORD_CALLBACK_HOST = '127.0.0.1';
 const DISCORD_CALLBACK_PORT = 80;
 const DISCORD_CALLBACK_PATH = '/callback';
-const DISCORD_SCOPES = Object.freeze(['rpc', 'identify']);
+const DISCORD_SCOPES = Object.freeze([
+  'rpc', 'identify', 'rpc.voice.read', 'rpc.voice.write', 'messages.read', 'rpc.notifications.read',
+]);
+
+function grantedScopes(tokens) {
+  return new Set(String(tokens && tokens.scope || '').split(/\s+/).filter(Boolean));
+}
+
+function hasRequiredScopes(tokens) {
+  const granted = grantedScopes(tokens);
+  return DISCORD_SCOPES.every(scope => granted.has(scope));
+}
 
 function base64Url(value) {
   return Buffer.from(value).toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
@@ -52,10 +63,16 @@ class DiscordOAuth {
   async accessToken() {
     const tokens = this.getTokens();
     if (!tokens || !tokens.accessToken) return null;
+    if (!hasRequiredScopes(tokens)) return null;
     if (!tokens.expiresAt || this.now() < Number(tokens.expiresAt) - 60000) return tokens.accessToken;
     if (!tokens.refreshToken) { this.deleteTokens(); return null; }
     try { return (await this._token({ grant_type: 'refresh_token', refresh_token: tokens.refreshToken })).accessToken; }
     catch (error) { this.deleteTokens(); return null; }
+  }
+
+  requiresReauthorization() {
+    const tokens = this.getTokens();
+    return !!(tokens && tokens.accessToken && !hasRequiredScopes(tokens));
   }
 
   authorize() {
@@ -74,7 +91,7 @@ class DiscordOAuth {
       const url = new URL(DISCORD_AUTHORIZE_URL);
       url.search = new URLSearchParams({
         response_type: 'code', client_id: clientId, scope: DISCORD_SCOPES.join(' '),
-        redirect_uri: DISCORD_REDIRECT_URI, state, code_challenge: pkce.challenge, code_challenge_method: 'S256',
+        redirect_uri: DISCORD_REDIRECT_URI, state, prompt: 'consent', code_challenge: pkce.challenge, code_challenge_method: 'S256',
       }).toString();
       await this.openExternal(url.toString());
     });
@@ -138,4 +155,4 @@ class DiscordOAuth {
   }
 }
 
-module.exports = { DiscordOAuth, DISCORD_AUTHORIZE_URL, DISCORD_CALLBACK_HOST, DISCORD_CALLBACK_PATH, DISCORD_CALLBACK_PORT, DISCORD_SCOPES, DISCORD_TOKEN_URL, DISCORD_REDIRECT_URI, createPkce, secureEqual };
+module.exports = { DiscordOAuth, DISCORD_AUTHORIZE_URL, DISCORD_CALLBACK_HOST, DISCORD_CALLBACK_PATH, DISCORD_CALLBACK_PORT, DISCORD_SCOPES, DISCORD_TOKEN_URL, DISCORD_REDIRECT_URI, createPkce, grantedScopes, hasRequiredScopes, secureEqual };
