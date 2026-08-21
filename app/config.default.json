@@ -1,5 +1,15 @@
 {
   "activeGridId": "default",
+  "settings": {
+    "discord": {
+      "enabled": true,
+      "applicationIdOverride": "",
+      "defaultView": "voice",
+      "autoReconnect": true,
+      "showUnavailable": true,
+      "richPresence": false
+    }
+  },
   "grids": [
     {
       "id": "default",

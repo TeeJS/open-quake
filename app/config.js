@@ -1999,24 +1999,39 @@
     const el = document.getElementById('appOpts'); if (!el) return;
     if (!def) { el.innerHTML = ''; return; }
     if (!g.options) g.options = {};
+    const settingDef = def.settings && typeof def.settings.key === 'string' && Array.isArray(def.settings.options) ? def.settings : null;
+    if (!config.settings) config.settings = {};
+    if (settingDef && (!config.settings[settingDef.key] || typeof config.settings[settingDef.key] !== 'object')) config.settings[settingDef.key] = {};
+    const appSettings = settingDef ? config.settings[settingDef.key] : null;
     const valOf = key => (key in g.options) ? g.options[key] : ((def.options || []).find(x => x.key === key) || {}).default;
     const visible = o => !o.showIf || String(valOf(o.showIf.key)) === String(o.showIf.value);   // conditional option (e.g. city slots only in Cities mode)
-    el.innerHTML = (def.options || []).filter(visible).map(o => {
-      const v = (o.key in g.options) ? g.options[o.key] : o.default;
+    const renderOptions = (options, values, cssClass) => options.map(o => {
+      const v = (o.key in values) ? values[o.key] : o.default;
       let field;
-      if (o.type === 'select') field = `<select class="aopt" data-key="${esc(o.key)}">${o.choices.map(ch => { const val = Array.isArray(ch) ? ch[0] : ch, lab = Array.isArray(ch) ? ch[1] : ch; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('')}</select>`;
-      else if (o.type === 'bool') field = `<input type="checkbox" class="aopt" data-key="${esc(o.key)}" ${v ? 'checked' : ''} style="width:auto">`;
-      else if (o.type === 'secret') field = secretInput(v, `class="aopt" data-key="${esc(o.key)}"`);
-      else field = `<input class="aopt" data-key="${esc(o.key)}" value="${esc(v)}">`;
+      const attrs = `class="${cssClass}" data-key="${esc(o.key)}"`;
+      if (o.type === 'select') field = `<select ${attrs}>${o.choices.map(ch => { const val = Array.isArray(ch) ? ch[0] : ch, lab = Array.isArray(ch) ? ch[1] : ch; return `<option value="${esc(val)}" ${String(v) === String(val) ? 'selected' : ''}>${esc(lab)}</option>`; }).join('')}</select>`;
+      else if (o.type === 'bool') field = `<input type="checkbox" ${attrs} ${v ? 'checked' : ''} style="width:auto">`;
+      else if (o.type === 'secret') field = secretInput(v, attrs);
+      else field = `<input ${attrs} value="${esc(v)}"${o.maxLength ? ` maxlength="${Number(o.maxLength)}"` : ''}>`;
       const help = o.help ? `<p class="hint" style="margin:-2px 0 10px 78px">${esc(o.help)}</p>` : '';
       return `<div class="row"><label>${esc(o.label)}</label>${field}</div>${help}`;
     }).join('');
+    const pageHtml = renderOptions((def.options || []).filter(visible), g.options, 'aopt');
+    const regularSettings = settingDef ? settingDef.options.filter(o => !o.advanced) : [];
+    const advancedSettings = settingDef ? settingDef.options.filter(o => o.advanced) : [];
+    const settingsHtml = settingDef ? `<p class="sectitle" data-app-settings="${esc(def.id)}">${esc(settingDef.title || def.name + ' settings')}</p>${renderOptions(regularSettings, appSettings, 'aset')}${advancedSettings.length ? `<details class="advsec" style="margin-top:12px"><summary>Advanced / developer overrides</summary>${renderOptions(advancedSettings, appSettings, 'aset')}</details>` : ''}` : '';
+    el.innerHTML = pageHtml + settingsHtml;
     el.querySelectorAll('.aopt').forEach(inp => inp.onchange = e => {
       const o = (def.options || []).find(x => x.key === e.target.dataset.key);
       g.options[e.target.dataset.key] = (o && o.type === 'bool') ? e.target.checked : e.target.value;
       markDirty();
       if (o && (o.type === 'select' || o.type === 'bool')) renderAppOpts(g, def);   // re-evaluate conditional (showIf) options
       enforceMusicCap(g);   // re-apply the 2-of-3 panel cap (grid/art/lyrics)
+    });
+    el.querySelectorAll('.aset').forEach(inp => inp.onchange = e => {
+      const o = settingDef.options.find(x => x.key === e.target.dataset.key);
+      appSettings[e.target.dataset.key] = o && o.type === 'bool' ? e.target.checked : e.target.value;
+      markDirty();
     });
     enforceMusicCap(g);
   }
@@ -2721,14 +2736,20 @@
         let providers = [];
         try { providers = await configApi.listOAuthProviders(); } catch (e) {}
         if (!providers.length) { host.innerHTML = '<p class="hint">No OAuth providers available.</p>'; return; }
+        const authState = p => p.provider === 'discord' && p.connected
+          ? (p.authState === 'authenticated' ? 'Authenticated' : p.authState === 'auth-error' ? 'Authorization needs attention' : 'Authorized; waiting for Discord')
+          : (p.connected ? 'Connected, ' + fmtExpiry(p.expiresAt) : (p.configured ? 'Ready to connect' : 'Not configured'));
+        const identity = p => p.identity && (p.identity.global_name || p.identity.username)
+          ? `<div class="row"><label>Account</label><span class="hint" style="margin:0">${esc(p.identity.global_name || p.identity.username)}${p.identity.username && p.identity.global_name ? ' (' + esc(p.identity.username) + ')' : ''}</span></div>` : '';
         host.innerHTML = providers.map(p => `
           <div class="advsec" style="margin-top:10px;padding:10px;border:1px solid #213145;border-radius:8px">
             <div class="row" style="gap:8px;align-items:center">
               <label style="width:auto;font-weight:bold">${esc(p.name || p.provider)}</label>
-              <span class="hint" style="margin:0">${p.connected ? 'Connected, ' + esc(fmtExpiry(p.expiresAt)) : (p.configured ? 'Ready to connect' : 'Not configured')}</span>
+              <span class="hint" style="margin:0">${esc(authState(p))}</span>
               <span id="oauthMsg_${esc(p.provider)}" class="hint" style="margin:0 0 0 auto"></span>
             </div>
             ${p.managedClient ? '<div class="row"><label>Application</label><span class="hint" style="margin:0">Built into Open-Quake</span></div>' : ''}
+            ${identity(p)}
             <div class="row"><label>Scopes</label><span class="hint" style="margin:0">${esc((p.scopes || []).join(' '))}</span></div>
             <div class="row" style="gap:8px">
               <button class="oauthConnect" data-provider="${esc(p.provider)}" ${p.enabled ? '' : 'disabled'}>${p.connected ? 'Reconnect' : 'Connect'}</button>
@@ -2741,9 +2762,12 @@
             const id = e.currentTarget.dataset.provider;
             e.currentTarget.disabled = true;
             oauthMsg(id, 'Opening browser...');
-            const r = await configApi.connectOAuthProvider(id, ['User.Read', 'Presence.Read', 'Calendars.Read', 'offline_access']);
-            oauthMsg(id, r && r.ok ? 'Finish sign-in in your browser.' : 'Connect failed: ' + ((r && r.error) || ''), !(r && r.ok));
+            const provider = providers.find(value => value.provider === id);
+            const requestedScopes = id === 'microsoft' ? ['User.Read', 'Presence.Read', 'Calendars.Read', 'offline_access'] : (provider && provider.scopes || []);
+            const r = await configApi.connectOAuthProvider(id, requestedScopes);
+            oauthMsg(id, r && r.ok ? (id === 'discord' ? 'Connected.' : 'Finish sign-in in your browser.') : 'Connect failed: ' + ((r && r.error) || ''), !(r && r.ok));
             e.currentTarget.disabled = false;
+            if (r && r.ok && id === 'discord') renderOauth();
             if (oauthPoll) clearInterval(oauthPoll);
             let tries = 0;
             oauthPoll = setInterval(() => { tries += 1; renderOauth(); if (tries >= 15) { clearInterval(oauthPoll); oauthPoll = null; } }, 2000);

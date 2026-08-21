@@ -80,6 +80,8 @@ const STATIC_FILES = {
   '/recorderview.js': 'application/javascript; charset=utf-8',
   '/system-audio-capture.js': 'application/javascript; charset=utf-8',
   '/slidecapture-view.js': 'application/javascript; charset=utf-8',
+  '/discordview.js': 'application/javascript; charset=utf-8',
+  '/discordview.css': 'text/css; charset=utf-8',
 };
 for (const appId of ['teams', 'outlook', 'word', 'excel', 'powerpoint', 'onenote', 'onedrive', 'office']) {
   STATIC_FILES['/office-icons/' + appId + '.svg'] = 'image/svg+xml; charset=utf-8';
@@ -100,6 +102,8 @@ let musicHtml = FALLBACK, chatHtml = FALLBACK, officeHtml = FALLBACK, haschedule
 // (per app, per boot) gates that app's /approval-request route -- entries without one (agents
 // whose approvals are in-band) simply have no such route.
 let voiceApps = {};
+let discordApp = null;
+const discordSubscribers = new Set();
 const staticAssets = {};   // request path -> { body, type }; populated at start()
 let appFolders = {};        // drop-in served app id -> { root, proxy }; supplied by main.js
 const appServers = {};      // app id -> required server module
@@ -454,6 +458,20 @@ function storeTtsText(text) {
   return id;
 }
 
+function discordBroadcast(payload) {
+  const line = 'data: ' + JSON.stringify(payload) + '\n\n';
+  for (const res of discordSubscribers) { try { res.write(line); } catch (e) { discordSubscribers.delete(res); } }
+}
+
+function subscribeDiscord(req, res) {
+  res.writeHead(200, Object.assign(headers('text/event-stream; charset=utf-8'), { Connection: 'keep-alive' }));
+  discordSubscribers.add(res);
+  res.write('data: ' + JSON.stringify(discordApp.getSnapshot()) + '\n\n');
+  const close = () => discordSubscribers.delete(res);
+  req.on('close', close);
+  res.on('close', close);
+}
+
 // Library route path -> op name passed to onMeetingLibrary (main.js). Kept as one table so the
 // handler branch, main.js dispatch, and the tests all agree on the surface.
 const MEETING_LIBRARY_OPS = {
@@ -475,6 +493,7 @@ async function handler(req, res) {
   const voiceApp = voiceApps[url.split('/')[1]] || null;
   const voicePath = voiceApp ? (url.slice(url.split('/')[1].length + 1) || '/') : null;
   const isAllowedPost = (req.method === 'POST' && voiceApp && (VOICE_POST_SUFFIXES.has(voicePath) || voicePath === '/approval-request'))
+    || (req.method === 'POST' && url === '/api/discord/action')
     || (req.method === 'POST' && (url === '/lucidtype-edit' || url === '/lucidtype-review/apply' || url === '/lucidtype-review/refine'));   // LucidType edit-sync + review apply/refine (same-origin gated below)
   if (req.method !== 'GET' && !isAllowedPost) { res.writeHead(405); res.end(); return; }
   if (url === '/' || url === '/index.html') return html(res, RETIRED_HTML);   // retired SystemView page
@@ -490,6 +509,10 @@ async function handler(req, res) {
   if (url === '/agenda') return html(res, agendaHtml);
   if (url === '/events') return html(res, eventsHtml);
   if (url === '/keyshortcuts') return html(res, keyshortcutsHtml);
+  if (url === '/discord') {
+    let body = FALLBACK; try { body = fs.readFileSync(path.join(__dirname, 'discordview.html'), 'utf8'); } catch (e) {}
+    return html(res, body);
+  }
   if (voiceApp && voicePath === '/') return html(res, voiceApp.htmlContent);
   // /<app>/approval-request: called by an external hook process (e.g. quake-approval-hook.js), a
   // plain Node process with no Origin/Sec-Fetch-Site headers at all -- sameOrigin() below would
@@ -509,6 +532,17 @@ async function handler(req, res) {
   // secrets (/app-config). Require the request to originate from our own served page — not a
   // cross-site fetch, image, form, or navigation.
   if (!sameOrigin(req)) { res.writeHead(403); res.end(); return; }
+  if (url === '/api/discord/state') return discordApp ? json(res, discordApp.getSnapshot()) : json(res, { connection: { state: 'disconnected' }, capabilities: {} });
+  if (url === '/api/discord/events') {
+    if (!discordApp) { res.writeHead(503); res.end(); return; }
+    return subscribeDiscord(req, res);
+  }
+  if (url === '/api/discord/action' && req.method === 'POST') {
+    if (!discordApp) return done(res, false);
+    let body; try { body = await readJsonBody(req); } catch (e) { return done(res, false); }
+    try { return json(res, await discordApp.action(body && body.action, body && body.value)); }
+    catch (e) { return json(res, { ok: false, error: e.message || 'Discord action failed' }); }
+  }
   if (url === '/app-config') {
     const m = /[?&]app=([A-Za-z0-9_-]+)/.exec(full);
     const cfg = (m && getAppConfig) ? getAppConfig(m[1]) : null;
@@ -879,6 +913,11 @@ function start(opts) {
   onLucidSetMode = opts.onLucidSetMode || null;
   onOfficeAction = opts.onOfficeAction || null;
   getShortcuts = opts.getShortcuts || null;
+  discordApp = opts.discordApp || null;
+  if (discordApp) {
+    discordApp.start();
+    discordApp.on('update', discordBroadcast);
+  }
   voiceApps = {};
   Object.entries(opts.voiceApps || {}).forEach(([id, v]) => {
     voiceApps[id] = {
@@ -931,6 +970,13 @@ function stop() {
   nowplaying.stop();
   if (server) { try { server.close(); } catch (e) {} server = null; }
   clearOfficeCapability();
+  for (const res of discordSubscribers) { try { res.end(); } catch (e) {} }
+  discordSubscribers.clear();
+  if (discordApp) {
+    discordApp.removeListener('update', discordBroadcast);
+    discordApp.stop();
+    discordApp = null;
+  }
   getOfficeData = null;
   connectOffice = null;
   onOfficeAction = null;

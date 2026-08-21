@@ -1,5 +1,24 @@
 [
   {
+    "id": "discord",
+    "name": "Discord",
+    "file": "discordview.html",
+    "served": true,
+    "options": [],
+    "settings": {
+      "key": "discord",
+      "title": "Discord integration",
+      "options": [
+        { "key": "enabled", "label": "Enable Discord integration", "type": "bool", "default": true },
+        { "key": "autoReconnect", "label": "Automatic reconnect", "type": "bool", "default": true },
+        { "key": "richPresence", "label": "Rich Presence enabled", "type": "bool", "default": false },
+        { "key": "defaultView", "label": "Default Discord view", "type": "select", "default": "voice", "choices": [["voice", "Voice"], ["chat", "Chat"], ["activity", "Activity"]] },
+        { "key": "showUnavailable", "label": "Show/hide unavailable controls", "type": "bool", "default": true },
+        { "key": "applicationIdOverride", "label": "Developer Application ID override", "type": "text", "default": "", "maxLength": 128, "advanced": true, "help": "Development/testing only. Leave blank to use the built-in open-quake Discord application." }
+      ]
+    }
+  },
+  {
     "id": "clock",
     "name": "Flip Clock",
     "file": "clock.html",
