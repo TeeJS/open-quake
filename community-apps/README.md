@@ -23,6 +23,9 @@ For how to install or submit an app — and a safety note — see the docs:
   every job with a green/red result dot, last run, sizes, versions, and next run;
   live progress while a backup runs; failed jobs surface their error inline; one tap
   opens the Duplicati web UI on the PC. Read-only.
+- **[azure](azure)** — touch-first Azure operations dashboard with configurable overview cards,
+  subscription health, resources, deployments, alerts, costs, and contextual App Service / VM
+  controls. Uses Microsoft Entra OAuth and an app-local server module.
 - **[if-player](if-player)** — play Inform / Z-machine text adventures (Z-code and Glulx),
   with the story **read aloud** through your TTS voice and **spoken commands** transcribed by
   your STT — both picked up automatically from Settings → TTS/STT. Keyboard play works

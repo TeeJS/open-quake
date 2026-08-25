@@ -1,0 +1,128 @@
+{
+  "id": "azure",
+  "name": "Azure Operations",
+  "version": "1.0.0",
+  "description": "Touch-first Azure operations dashboard with subscription health, resources, deployments, alerts, costs, and contextual controls.",
+  "entry": "index.html",
+  "served": true,
+  "server": "server.js",
+  "oauth": {
+    "name": "Microsoft Azure",
+    "authUrl": "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+    "tokenUrl": "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+    "scopes": [
+      "https://management.azure.com/user_impersonation",
+      "offline_access"
+    ]
+  },
+  "options": [
+    {
+      "key": "oauthClientId",
+      "label": "Microsoft Entra application (client) ID",
+      "type": "text",
+      "default": "",
+      "serverOnly": true,
+      "help": "Create a Microsoft Entra desktop app registration and add http://localhost:5173/oauth/callback as its redirect URI."
+    },
+    {
+      "key": "oauthClientSecret",
+      "label": "Client secret (optional)",
+      "type": "secret",
+      "default": "",
+      "serverOnly": true,
+      "help": "Leave blank for the recommended public-client configuration. Only confidential-client registrations need a secret."
+    },
+    {
+      "key": "defaultSubscriptionId",
+      "label": "Default subscription ID (optional)",
+      "type": "text",
+      "default": "",
+      "serverOnly": true,
+      "help": "If left blank, Azure Operations uses the last selected subscription, then the first enabled subscription."
+    },
+    {
+      "key": "card1",
+      "label": "Dashboard Cards — Card 1",
+      "type": "select",
+      "default": "health",
+      "choices": [
+        ["health", "Health"],
+        ["resources", "Resources"],
+        ["deployments", "Deployments"],
+        ["alerts", "Alerts"],
+        ["cost", "Cost"],
+        ["app-services", "App Services"],
+        ["function-apps", "Function Apps"],
+        ["virtual-machines", "Virtual Machines"],
+        ["databases", "Databases"],
+        ["storage", "Storage"]
+      ]
+    },
+    {
+      "key": "card2",
+      "label": "Dashboard Cards — Card 2",
+      "type": "select",
+      "default": "resources",
+      "choices": [
+        ["health", "Health"],
+        ["resources", "Resources"],
+        ["deployments", "Deployments"],
+        ["alerts", "Alerts"],
+        ["cost", "Cost"],
+        ["app-services", "App Services"],
+        ["function-apps", "Function Apps"],
+        ["virtual-machines", "Virtual Machines"],
+        ["databases", "Databases"],
+        ["storage", "Storage"]
+      ]
+    },
+    {
+      "key": "card3",
+      "label": "Dashboard Cards — Card 3",
+      "type": "select",
+      "default": "deployments",
+      "choices": [
+        ["health", "Health"],
+        ["resources", "Resources"],
+        ["deployments", "Deployments"],
+        ["alerts", "Alerts"],
+        ["cost", "Cost"],
+        ["app-services", "App Services"],
+        ["function-apps", "Function Apps"],
+        ["virtual-machines", "Virtual Machines"],
+        ["databases", "Databases"],
+        ["storage", "Storage"]
+      ]
+    },
+    {
+      "key": "card4",
+      "label": "Dashboard Cards — Card 4",
+      "type": "select",
+      "default": "alerts",
+      "choices": [
+        ["health", "Health"],
+        ["resources", "Resources"],
+        ["deployments", "Deployments"],
+        ["alerts", "Alerts"],
+        ["cost", "Cost"],
+        ["app-services", "App Services"],
+        ["function-apps", "Function Apps"],
+        ["virtual-machines", "Virtual Machines"],
+        ["databases", "Databases"],
+        ["storage", "Storage"]
+      ]
+    },
+    {
+      "key": "refreshMinutes",
+      "label": "Automatic refresh",
+      "type": "select",
+      "default": "5",
+      "choices": [
+        ["2", "Every 2 minutes"],
+        ["5", "Every 5 minutes"],
+        ["10", "Every 10 minutes"],
+        ["15", "Every 15 minutes"]
+      ]
+    }
+  ]
+}

@@ -25,6 +25,14 @@
       "server": false
     },
     {
+      "id": "azure",
+      "name": "Azure Operations",
+      "description": "Touch-first Azure operations dashboard with subscription health, resources, deployments, alerts, costs, and contextual controls.",
+      "version": "1.0.0",
+      "zip": "azure.zip",
+      "server": true
+    },
+    {
       "id": "if-player",
       "name": "Interactive Fiction",
       "description": "Play Inform / Z-machine & Glulx text adventures with TTS narration and voice commands.",

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Azure Operations</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 48 48"><path fill="currentColor" d="M20.4 5h12.2L19.9 42H7.3L20.4 5Zm14 7.5L42 42H24.1l5.1-8.9h7.3L31 12.5h3.4Z"/></svg>
+        </span>
+        <span><strong>Azure</strong><small>Operations</small></span>
+      </div>
+      <button id="subscriptionButton" class="subscription-button" type="button" disabled>
+        <span><small>Subscription</small><strong id="subscriptionLabel">Choose subscription</strong></span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 9 5 5 5-5"/></svg>
+      </button>
+      <div class="tenant-chip"><small>Directory</small><strong id="tenantLabel">—</strong></div>
+      <div class="top-actions">
+        <span id="refreshState" class="connection muted"><span class="dot"></span>Not connected</span>
+        <button id="refreshButton" class="icon-button" type="button" aria-label="Refresh" disabled>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main id="content" class="content" aria-live="polite"></main>
+
+    <nav class="bottom-nav" aria-label="Azure views">
+      <button type="button" data-view="overview" class="selected"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg><span>Overview</span></button>
+      <button type="button" data-view="resources"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Zm0 0v9m8-4.5-8 4.5-8-4.5"/></svg><span>Resources</span></button>
+      <button type="button" data-view="deployments"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10M7 4 4 7l3 3"/></svg><span>Deployments</span></button>
+      <button type="button" data-view="alerts"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg><span>Alerts</span></button>
+      <button type="button" id="openAzureButton"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6m0-6-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg><span>Open in Azure</span></button>
+    </nav>
+  </div>
+
+  <div id="toast" class="toast" role="status"></div>
+
+  <div id="subscriptionOverlay" class="overlay" hidden>
+    <div class="dialog subscription-dialog" role="dialog" aria-modal="true" aria-labelledby="subscriptionTitle">
+      <div class="dialog-heading"><h2 id="subscriptionTitle">Choose a subscription</h2><button id="subscriptionClose" class="compact-button" type="button">Close</button></div>
+      <div id="subscriptionList" class="subscription-list"></div>
+    </div>
+  </div>
+
+  <div id="confirmOverlay" class="overlay" hidden>
+    <div class="dialog confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <h2 id="confirmTitle">Confirm action</h2>
+      <p id="confirmMessage"></p>
+      <div class="dialog-actions"><button id="confirmCancel" type="button">Cancel</button><button id="confirmAccept" type="button" class="danger">Confirm</button></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
