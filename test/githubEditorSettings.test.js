@@ -29,9 +29,15 @@ test('editor surfaces GitHub validation failures instead of misreporting secret 
   const source = read('config.js');
   const save = source.slice(source.indexOf('async function doSave'), source.indexOf('// ---- tiles / icons'));
   assert.match(save, /result && result\.error/);
-  assert.match(save, /setState\('save failed: ' \+ reason/);
+  // Assert the SHAPE, not the copy: the failing reason must be interpolated into whatever the footer
+  // says, rather than the footer hardcoding one cause. Pinning the exact prefix is what rotted this
+  // test — 50c65c7 renamed 'save failed: ' to 'Unable to apply changes: ' to match the footer states
+  // in docs/editor-design-system.md, and the assertion was left behind, red on main ever since.
+  assert.match(save, /setState\('[^']*' \+ reason/);
   assert.match(save, /detail === 'secure persistence failed'/);
-  assert.doesNotMatch(save, /setState\('save failed: secrets could not be stored securely'/);
+  // The point of the test: a GitHub validation failure must surface as ITSELF, so the secret-storage
+  // wording may only ever be a computed fallback, never a literal handed straight to setState.
+  assert.doesNotMatch(save, /setState\('[^']*secrets could not be stored securely'/);
 });
 
 test('GitHub editor bridge is narrow and tokens remain main-process-only', () => {
