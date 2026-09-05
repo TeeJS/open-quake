@@ -1074,6 +1074,24 @@ async function handler(req, res) {
     }
     return json(res, result);
   }
+  // Manual busy override from the meeting panel's Busy column. Side-effecting, so it inherits the
+  // same loopback + Host-header + same-origin gating as every other /meeting-* route above.
+  if (url.indexOf('/meeting-busy/') === 0) {
+    const mode = decodeURIComponent(url.slice('/meeting-busy/'.length));
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onMeetingRecord === 'function') {
+      try { result = await onMeetingRecord('busyOverride', mode); } catch (e) { result = { ok: false, error: e.message || 'busy-override failed' }; }
+    }
+    return json(res, result);
+  }
+  if (url.indexOf('/meeting-busy-color/') === 0) {
+    const hex = decodeURIComponent(url.slice('/meeting-busy-color/'.length));
+    let result = { ok: false, error: 'not wired' };
+    if (typeof onMeetingRecord === 'function') {
+      try { result = await onMeetingRecord('busyColor', hex); } catch (e) { result = { ok: false, error: e.message || 'busy-color failed' }; }
+    }
+    return json(res, result);
+  }
   if (url.indexOf('/meeting-set-mic/') === 0) {
     const label = decodeURIComponent(url.slice('/meeting-set-mic/'.length));
     let result = { ok: false, error: 'not wired' };

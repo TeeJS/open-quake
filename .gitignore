@@ -45,3 +45,4 @@ docs/current-state.md
 # IF player runtime saves (created by server.js save-store at runtime; never source)
 community-apps/if-player/saves/
 X/
+.busy-shots/

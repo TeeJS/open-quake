@@ -10,7 +10,7 @@ Detailed guides for open-quake. Back to the [project README](../README.md).
 - **[Apps & drop-ins](apps.md)** — bundled apps, writing your own, and the drop-in app manager
 - **[Community apps](community-apps.md)** — install or submit shared drop-in apps
 - **[Music controller](music.md)** — now-playing, transport, album art, lyrics, button strip
-- **[Meeting](meeting.md)** — one-tap mute/video/accept/decline/leave for Zoom and Teams
+- **[Meeting](meeting.md)** — one-tap mute/video/accept/decline/leave for Zoom and Teams, plus a busy light that turns red while you are on a call (Kuando Busylight over USB, WLED, or Home Assistant over MQTT) — see [Settings → Meeting](settings.md) and [Home Assistant](home-assistant.md)
 - **[System monitor](system-monitor.md)** — live CPU/GPU/RAM/disk/network/battery
 - **[Open WebUI chat + voice](ai-chat.md)** — chat to your LLM, hold the knob to talk
 - **[AI Voice](ai-voice.md)** — one voice+text app, five backends: a real Claude Code / Codex / Copilot agent session (talk or type, touch approvals), or plain chat against Open WebUI or any OpenAI-compatible API with your own key
