@@ -246,7 +246,13 @@ function createPresenceService(deps) {
           return { ok: outputStatus.wled === 'ok', status: outputStatus.wled };
         });
       }
-      if (target === 'mqtt') return mqtt.status();
+      // A real one-shot probe of the currently-saved broker settings, not a read of the background
+      // client's status (which has no ok field and reports before an async reconnect completes).
+      if (target === 'mqtt') return mqtt.testConnection({
+        url: settings.busyMqttUrl,
+        username: settings.busyMqttUser,
+        password: settings.busyMqttPassword,
+      });
       return { ok: false, error: 'unknown test target' };
     },
 

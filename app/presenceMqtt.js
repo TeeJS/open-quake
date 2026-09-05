@@ -141,6 +141,39 @@ function createPresenceMqtt(deps) {
     } catch (e) {}
   }
 
+  // One-shot connection probe for the editor's Test button. Uses a SEPARATE short-lived client so the
+  // long-lived presence connection and its registered will are never disturbed. Resolves {ok, error};
+  // never rejects. reconnectPeriod:0 so a bad address reports once instead of retrying forever.
+  function testConnection(params) {
+    const p = params || {};
+    return new Promise(resolve => {
+      if (!p.url) { resolve({ ok: false, error: 'broker URL required' }); return; }
+      const lib = loadMqtt();
+      if (!lib) { resolve({ ok: false, error: lastError || 'mqtt module unavailable' }); return; }
+      let done = false;
+      let c = null;
+      const finish = res => {
+        if (done) return;
+        done = true;
+        try { if (c) c.end(true); } catch (e) {}
+        resolve(res);
+      };
+      try {
+        c = lib.connect(p.url, {
+          username: p.username || undefined,
+          password: p.password || undefined,
+          clientId: 'open-quake-test-' + Math.random().toString(16).slice(2, 8),
+          reconnectPeriod: 0,
+          connectTimeout: 8000,
+        });
+      } catch (e) { finish({ ok: false, error: e.message }); return; }
+      const timer = setTimeout(() => finish({ ok: false, error: 'no response (timed out)' }), 9000);
+      if (timer.unref) timer.unref();
+      c.on('connect', () => { clearTimeout(timer); finish({ ok: true }); });
+      c.on('error', e => { clearTimeout(timer); finish({ ok: false, error: e && e.message ? e.message : String(e) }); });
+    });
+  }
+
   return {
     // Idempotent: safe to call whenever settings change. Reconnects only when the connection
     // parameters actually changed, so editing an unrelated setting does not drop the will.
@@ -203,6 +236,8 @@ function createPresenceMqtt(deps) {
         topics,
       };
     },
+
+    testConnection,
 
     stop,
   };
