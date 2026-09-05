@@ -63,6 +63,26 @@ Zoom/Teams call begins.
   (folder, mic label, auto-record, call-app allowlist, silence-stop minutes, echo gate) —
   global, so auto-record works regardless of the active app.
 
+- **Busy presence (added after Phase 1).** The native monitor's contract CHANGED: it now emits
+  `{"active":…,"app":…,"apps":[…]}`, where `apps` lists EVERY allowlisted process holding a capture
+  session. Windows shared-mode capture lets several apps hold one microphone at once — which is also
+  why the recorder can capture your mic while Teams is in a call.
+
+  Both consumers must filter `apps[]` against their own list. Do NOT read:
+    - `app` — whichever endpoint enumeration reached first, not necessarily a record app. With
+      Discord idling on the mic, a Teams call reports as Discord and auto-record never starts.
+    - the top-level `active` flag — true while ANY watched app holds the mic, so auto-stop keyed off
+      it never fires while Discord sits open, and the recording runs to the silence timer.
+
+  Routing lives in `app/micMonitorRouting.js` (pure, unit-tested). `test/meetingDefaultsSync.test.js`
+  asserts the C# source still honours this contract, because every other test runs on captured strings
+  and cannot detect a reverted helper — which happened once during development and survived a fully
+  green suite.
+
+  Outputs fan out through `app/presenceService.js` to a Kuando Busylight (`app/busylightService.js`,
+  node-hid, verified against a real Omega which enumerates as 0x27BB:**0x3BCF**, not the 0x3BCD every
+  reference documents), a WLED light, and Home Assistant via MQTT discovery (`app/presenceMqtt.js`).
+
 ## Known follow-ups (later phases)
 - Transcription / diarization / analysis pipeline over the recorded WAVs.
 - macOS support (loopback = ScreenCaptureKit perms; the native monitor is Windows-only).

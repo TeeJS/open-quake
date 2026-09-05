@@ -106,6 +106,43 @@ Toggling **Use Home Assistant** off:
 
 The in-memory cache from a previous Use-HA-on session sticks around until app restart.
 
+## Publishing your busy status to HA (MQTT)
+
+The HA connection above is **read-only** — it pulls dashboards, registries and entity states, and
+calls services for entity tiles. Publishing *out* of open-quake goes over MQTT instead, configured
+separately under **Settings → Meeting → Busy status → Home Assistant (MQTT)**.
+
+MQTT rather than the REST API for one concrete reason: HA's WebSocket API has no equivalent of
+`POST /api/states`, and a state created over REST does not survive an HA restart — it would need an
+indefinite heartbeat to keep a phantom entity alive. MQTT discovery creates a real, persistent entity
+with nothing to configure on the HA side.
+
+What open-quake publishes (topics use `<prefix>/<hostname>/…`, prefix configurable, default
+`open-quake`):
+
+| Topic | Retained | Payload |
+|---|---|---|
+| `homeassistant/binary_sensor/<host>_open_quake_busy/config` | yes | discovery document; HA creates `binary_sensor.open_quake_busy` from it |
+| `open-quake/<host>/busy` | yes | `ON` / `OFF` |
+| `open-quake/<host>/attributes` | yes | `{reason, app, since, recording, override}` |
+| `open-quake/<host>/availability` | yes | `online` / `offline` |
+
+`reason` is `call`, `recording`, or `manual`, so an automation can distinguish "on a Teams call" from
+"marked busy by hand".
+
+The availability topic is registered as the MQTT **last will**, which is the part worth understanding:
+if open-quake is killed, crashes, or the PC loses power, the *broker* publishes `offline` on its
+behalf and the entity goes unavailable. A light driven from this entity therefore cannot get stuck
+showing you as busy — and neither can the USB Busylight, which extinguishes itself when open-quake
+stops sending its keep-alive. Both ends fail safe without anything having to run cleanup code.
+
+The connection is held open for as long as the feature is enabled, not opened per update: the will is
+registered at connect time, so a connect-publish-disconnect cycle would leave no will in force between
+updates and defeat the whole arrangement. On reconnect, open-quake re-publishes the discovery document
+and current state, because a broker restart drops retained messages.
+
+The broker password is encrypted at rest with the same DPAPI mechanism as the HA token.
+
 ## Privacy
 
 All HA traffic goes directly from open-quake's main process to your HA URL. No third party touches your tokens, dashboards, entity names, or registry data. The only external request the HA integration makes is to jsDelivr (`cdn.jsdelivr.net`) for individual MDI icon SVGs — those are public assets and the request carries no HA data.

@@ -156,6 +156,7 @@ var PANELS = [
   { key: 'ctl',   btn: 'btnCtlPanel',   cls: 'pctl' },
   { key: 'slide', btn: 'btnSlidePanel', cls: 'pslide' },
   { key: 'hl',    btn: 'btnHlPanel',    cls: 'phl' },
+  { key: 'busy',  btn: 'btnBusyPanel',  cls: 'pbusy' },
 ];
 var panelsOpen = {};
 var panelsRestored = false;
@@ -173,6 +174,109 @@ function togglePanel(key) {
   fetch('/meeting-set-panels/' + encodeURIComponent(csv), { cache: 'no-store' }).catch(function () {});
 }
 PANELS.forEach(function (p) { $(p.btn).onclick = function () { togglePanel(p.key); }; });
+
+// =====================================================================================
+// Busy column — shows why you are showing busy and lets you override it. The page renders only what
+// /meeting-state.busy reports; every decision is made in main so the light, HA and the panel can
+// never disagree about the current state.
+// =====================================================================================
+var busyOverride = 'auto';
+var busyManualColor = '#a020f0';
+// Kept short and high-contrast on purpose: this is picked at arm's length on a touch panel, not in a
+// colour dialog. Names matter more than precision here.
+var BUSY_SWATCHES = [
+  ['#a020f0', 'Purple'], ['#ff0000', 'Red'], ['#ff8000', 'Orange'], ['#ffd000', 'Yellow'],
+  ['#00c853', 'Green'], ['#00b8d4', 'Cyan'], ['#2979ff', 'Blue'], ['#ff2d95', 'Pink'],
+];
+
+function setBusyOverride(mode) {
+  busyOverride = mode;
+  syncBusyModes();
+  fetch('/meeting-busy/' + encodeURIComponent(mode), { cache: 'no-store' }).catch(function () {});
+}
+function syncBusyModes() {
+  [['busyAuto', 'auto'], ['busyBusy', 'busy'], ['busyFree', 'free'], ['busyCustom', 'custom']]
+    .forEach(function (p) {
+      var el = $(p[0]); if (el) el.classList.toggle('on', busyOverride === p[1]);
+    });
+  var sw = $('busySw'); if (sw) sw.style.background = busyManualColor;
+  document.documentElement.style.setProperty('--busycustom', busyManualColor);
+}
+$('busyAuto').onclick = function () { setBusyOverride('auto'); };
+$('busyBusy').onclick = function () { setBusyOverride('busy'); };
+$('busyFree').onclick = function () { setBusyOverride('free'); };
+// Tap Custom to switch to it using the colour you already chose; tap it AGAIN, while it is already
+// active, to change that colour. Opening the picker on every tap would mean picking a colour you have
+// already picked each time you toggle custom on.
+$('busyCustom').onclick = function () {
+  if (busyOverride === 'custom') openBusyPicker();
+  else setBusyOverride('custom');
+};
+
+function openBusyPicker() {
+  var grid = $('bpGrid');
+  grid.innerHTML = '';
+  BUSY_SWATCHES.forEach(function (c) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'bpsw press foc' + (c[0].toLowerCase() === busyManualColor.toLowerCase() ? ' on' : '');
+    var dot = document.createElement('span');
+    dot.className = 'dot'; dot.style.background = c[0];
+    b.appendChild(dot);
+    b.appendChild(document.createTextNode(c[1]));
+    b.onclick = function () { pickBusyColor(c[0]); };
+    grid.appendChild(b);
+  });
+  document.body.classList.add('bpicking');
+}
+function closeBusyPicker() { document.body.classList.remove('bpicking'); }
+$('bpCancel').onclick = closeBusyPicker;
+$('bpick').onclick = function (e) { if (e.target === $('bpick')) closeBusyPicker(); };
+
+function pickBusyColor(hex) {
+  busyManualColor = hex;
+  syncBusyModes();
+  closeBusyPicker();
+  fetch('/meeting-busy-color/' + encodeURIComponent(hex), { cache: 'no-store' }).catch(function () {});
+}
+
+function busyReasonText(b) {
+  if (!b.busy) return b.override === 'free' ? 'Set by you' : 'Not on a call';
+  if (b.reason === 'custom') return 'Set by you';
+  if (b.reason === 'manual') return 'Set by you';
+  if (b.reason === 'recording') return 'Recording';
+  if (b.reason === 'call') return b.app ? b.app.replace(/\.exe$/i, '') : 'On a call';
+  return '';
+}
+// One short line per configured output, so a dead light or broker shows on the panel rather than only
+// in the editor. Silent failure is the thing worth surfacing.
+function busyOutputText(b) {
+  var out = b.outputs || {}, bits = [];
+  if (out.light && out.light.status && out.light.status !== 'disabled') {
+    bits.push(out.light.connected ? 'Light OK' : ('Light: ' + (out.light.error || 'not found')));
+  }
+  if (out.wled && out.wled.enabled) bits.push('WLED: ' + (out.wled.status || '…'));
+  if (out.mqtt && out.mqtt.enabled) bits.push(out.mqtt.connected ? 'HA OK' : 'HA: offline');
+  return bits.join('  ·  ');
+}
+function renderBusy(b) {
+  if (!b) b = { enabled: false };
+  document.body.classList.toggle('busyon', !!b.enabled);
+  if (!b.enabled) {
+    document.body.classList.remove('isbusy', 'iscustom');
+    return;
+  }
+  document.body.classList.toggle('isbusy', !!b.busy);
+  document.body.classList.toggle('iscustom', b.reason === 'custom');
+  var word = $('busyWord'); if (word) word.textContent = b.busy ? 'Busy' : 'Free';
+  var why = $('busyWhy'); if (why) why.textContent = busyReasonText(b) || ' ';
+  var stat = $('busyStat'); if (stat) stat.textContent = busyOutputText(b);
+  // Main owns both, so adopt rather than trust the local copy — a restart or an editor change must
+  // show here instead of the two drifting apart.
+  if (b.override && b.override !== busyOverride) busyOverride = b.override;
+  if (b.manualColor && b.manualColor !== busyManualColor) busyManualColor = b.manualColor;
+  syncBusyModes();
+}
 
 // =====================================================================================
 // Highlight column — tap to open a span, tap again to close it. Offsets are measured against the
@@ -224,6 +328,7 @@ function applyState(st) {
   $('recPanel').classList.toggle('details', live);
   if (curState.slide) applySlide(curState.slide);
   if (curState.highlight) applyHighlight(curState.highlight);
+  renderBusy(curState.busy);   // always called: it also clears body.busyon when the feature is off
   // Restore the remembered column set once, from the first poll that carries it — after that
   // the buttons own the state and a later poll must not undo a tap just made.
   if (!panelsRestored && typeof curState.panelsOpen === 'string') {

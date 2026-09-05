@@ -59,6 +59,10 @@ contextBridge.exposeInMainWorld('openQuakeConfig', {
   getEmojiIndex() { return ipcRenderer.invoke('getEmojiIndex'); },
   refreshHaCache() { return ipcRenderer.invoke('refreshHaCache'); },
   fetchHaEntityState(entityId) { return ipcRenderer.invoke('fetchHaEntityState', entityId); },
+  // Busy status: drive one output on demand from the Test buttons, and read what main can actually
+  // see (is a Busylight attached, is the broker connected) rather than only what the user typed.
+  busyTest(target) { return ipcRenderer.invoke('busyTest', target); },
+  busyStatus() { return ipcRenderer.invoke('busyStatus'); },
   // Claude Code voice app: candidate project directories under the configured projects root (Phase 3).
   listProjectDirs(root) { return ipcRenderer.invoke('listProjectDirs', root); },
   // Claude Code voice app: open the user-customizable panel prompt file in the default editor.

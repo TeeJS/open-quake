@@ -194,6 +194,8 @@ const appRepo = require('./appRepo');                            // pure helpers
 const { safeAppEntry, appEntryUrlPath, safeEditorDeclaration } = require('./dropInPaths'); // contained drop-in manifest paths + editor declaration
 const { knobDefaultFor, parseCustomRing } = require('./knobRouting');   // generic drop-in knob capability
 const claudeVoiceApprovals = require('./claudevoice-approvals'); // required directly ONLY for the boot-time leftover-hook sweep below
+const { createPresenceService } = require('./presenceService');           // busy light / HA presence fan-out
+const { parseAppList, monitorAllowlist, routeMonitorMessage } = require('./micMonitorRouting');
 
 const USER_DIR = app.getPath('userData');
 const CONFIG_PATH = path.join(USER_DIR, 'config.json');                  // writable — works inside a packaged app too
@@ -209,6 +211,7 @@ const THEME_DEFAULT = { appearance: 'system', accent: '#7CFFB2', presets: ['#7CF
 const DEFAULT_SETTINGS = { launchMode: 'editor', micOnLaunch: false, reservedDisplay: false, lighting: Object.assign({}, LED_DEFAULT), theme: Object.assign({}, THEME_DEFAULT) };
 const actionDeps = { fs, shell, exec, execFile, spawn, platform: process.platform, log: message => console.log(message) };
 const mediaKeys = createMediaKeys({ log: message => console.log(message) });
+let presenceService = null;   // busy-presence fan-out (Busylight / WLED / HA over MQTT); null until boot
 let firstRun = false;     // set by loadConfig when there was no prior config (fresh install)
 let micState = false;     // current device mic state (LED follows it)
 let lastDeviceState = {};  // cached from the connector's 'state' events (firmware/luminance/mic) for the diagnostics page
@@ -1996,7 +1999,7 @@ async function onMeetingActionRequest(platform, action) {
 // Settings live under config.settings.meeting (global, like config.settings.monitor) so auto-record
 // works regardless of which app the panel is showing — the meeting page's per-grid options only
 // exist while it's the active app, which is useless for background recording.
-const MEETING_DEFAULTS = { folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', joplinEnabled: false, joplinUrl: '', joplinToken: '', joplinNotebook: 'NW Pipe', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30, highlightEnabled: false, panelsOpen: '', largeRecordButton: false };
+const MEETING_DEFAULTS = { folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', joplinEnabled: false, joplinUrl: '', joplinToken: '', joplinNotebook: 'NW Pipe', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30, highlightEnabled: false, panelsOpen: '', largeRecordButton: false, busyEnabled: false, busyApps: 'Zoom.exe,Teams.exe,ms-teams.exe,Webex.exe,slack.exe,Discord.exe', busyOnRecording: true, busyOffDelaySec: 5, busyLightEnabled: false, busyLightBusyColor: '#ff0000', busyLightFreeColor: '#00ff00', busyLightBrightness: 100, busyManualColor: '#a020f0', busyLightFreeOff: false, busySchedEnabled: false, busySchedDays: '1,2,3,4,5', busySchedStart: '08:00', busySchedEnd: '17:00', busySchedPerDay: false, busySchedTimes: {}, busyWledEnabled: false, busyWledHost: '', busyMqttEnabled: false, busyMqttUrl: '', busyMqttUser: '', busyMqttPassword: '', busyMqttBaseTopic: 'open-quake' };
 function meetingSettings() { return Object.assign({}, MEETING_DEFAULTS, (config.settings || {}).meeting || {}); }
 // Open WebUI connection (config.settings.owui, edited on the Auth tab): shared by the meeting
 // Analysis-AI backend and the owui-voice panel app. apiKey is a secret — encrypted at rest by
@@ -2225,7 +2228,8 @@ function meetingStateForPanel() {
   st.slide = slideCapture ? slideCapture.getState() : { enabled: false };   // drives the slide-capture column
   st.highlight = meetingHighlights ? meetingHighlights.getState() : { enabled: false };   // drives the highlight column
   st.panelsOpen = m.panelsOpen || '';   // which utility columns to restore on page load
-  st.largeRecord = !!m.largeRecordButton;   // show the big Record button beside Hang Up
+  st.largeRecord = !!m.largeRecordButton;   // show the big Record button
+  st.busy = presenceService ? presenceService.getState() : { enabled: false };   // drives the busy column beside Hang Up
   return st;
 }
 // Panel remote for mid-meeting highlights (start/stop/cancel), reached over HTTP via sysserver.
@@ -2254,12 +2258,31 @@ function onMeetingRecordRequest(cmd, arg) {
   if (cmd === 'state') return { ok: true, state: meetingStateForPanel() };
   if (cmd === 'setMic') { setMeetingMic(arg); return { ok: true, state: meetingStateForPanel() }; }
   if (cmd === 'setPanels') { setMeetingPanels(arg); return { ok: true, state: meetingStateForPanel() }; }
+  // Manual busy override from the meeting panel's Busy column: 'auto' | 'busy' | 'free'.
+  if (cmd === 'busyOverride') {
+    if (!presenceService) return { ok: false, error: 'presence unavailable' };
+    presenceService.setOverride(arg);
+    return { ok: true, state: meetingStateForPanel() };
+  }
+  // Colour for the manual override, picked on the panel. Validated here rather than trusted: this
+  // arrives over HTTP and ends up in the config file and in a device write.
+  if (cmd === 'busyColor') {
+    if (!presenceService) return { ok: false, error: 'presence unavailable' };
+    const hex = String(arg || '').trim();
+    if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return { ok: false, error: 'expected #rrggbb' };
+    if (!config.settings) config.settings = {};
+    if (!config.settings.meeting) config.settings.meeting = {};
+    config.settings.meeting.busyManualColor = hex;
+    presenceService.setManualColor(hex);      // apply now; the light changes under the user's finger
+    saveConfig();                             // and persist, so it survives a restart
+    return { ok: true, state: meetingStateForPanel() };
+  }
   return { ok: false, error: 'unknown record command: ' + cmd };
 }
 // Which utility columns the meeting page has open, remembered across app restarts. It can't live in
 // the page's localStorage: the panel server binds an ephemeral port (listen(0)), so the origin —
 // and with it any web storage — is new on every launch.
-const PANEL_KEYS = ['ctl', 'slide', 'hl'];
+const PANEL_KEYS = ['ctl', 'slide', 'hl', 'busy'];
 function setMeetingPanels(csv) {
   const open = String(csv || '').split(',').map(s => s.trim()).filter(s => PANEL_KEYS.includes(s));
   if (!config.settings) config.settings = {};
@@ -2412,7 +2435,16 @@ function startMicMonitor() {
   if (process.platform !== 'win32') return;
   stopMicMonitor();
   if (!fs.existsSync(MIC_MONITOR_EXE)) { console.log('[meeting] mic-session-monitor.exe missing — auto-record disabled (manual still works)'); return; }
-  const allow = meetingSettings().recordApps || MEETING_DEFAULTS.recordApps;
+  // One monitor serves two consumers with different app lists. Windows shared-mode capture lets
+  // several apps hold the mic at once, so the monitor reports EVERY match and each consumer filters
+  // apps[] against its own list — see app/micMonitorRouting.js for why reading msg.app instead
+  // silently breaks auto-record.
+  const mset = meetingSettings();
+  const recordApps = mset.recordApps || MEETING_DEFAULTS.recordApps;
+  const busyOn = !!mset.busyEnabled;
+  const allow = monitorAllowlist(recordApps, mset.busyApps, busyOn);   // identical to recordApps when busy is off
+  const recordSet = parseAppList(recordApps);
+  const busySet = parseAppList(busyOn ? mset.busyApps : '');
   try {
     micMonitorProc = spawn(MIC_MONITOR_EXE, [allow], { stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) { console.log('[meeting] mic monitor spawn failed:', e.message); micMonitorProc = null; return; }
@@ -2426,13 +2458,21 @@ function startMicMonitor() {
       if (!line) continue;
       let msg; try { msg = JSON.parse(line); } catch (e) { continue; }
       const wasFirst = firstLine; firstLine = false;
-      if (!meetingRecorder) continue;
+      const routed = routeMonitorMessage(msg, recordSet, busySet);
       // That opening announcement is a baseline, not a transition. Treating an idle baseline as
       // "the call ended" stopped recordings mid-meeting and split them into a second file every
       // time the monitor was respawned. Only a later idle is a real call-ended.
       if (wasFirst && !msg.active) continue;
-      if (msg.active) meetingRecorder.autoStart(msg.app || null);
-      else meetingRecorder.autoStop('call-ended');
+      // Deliberately keyed off routed.recordApp, NOT msg.active: with a shared allowlist that flag is
+      // true while ANY watched app holds the mic, so a Discord session idling in the background would
+      // keep it true forever and a Teams call ending would never auto-stop the recording.
+      if (meetingRecorder) {
+        if (routed.recordApp) meetingRecorder.autoStart(routed.recordApp);
+        else meetingRecorder.autoStop('call-ended');
+      }
+      if (presenceService) {
+        presenceService.setCall(routed.busyActive, routed.busyActive ? (routed.recordApp || routed.apps[0] || null) : null);
+      }
     }
   });
   micMonitorProc.on('exit', () => { micMonitorProc = null; });
@@ -3558,6 +3598,7 @@ app.whenReady().then(async () => {
             // edge auto-closes + writes the sidecar. Synchronous, so it lands before the stream-close
             // callback renames that sidecar in appendMeetingNameToRecording.
             if (meetingHighlights) { try { meetingHighlights.onRecordingState(st); } catch (e) {} }
+            if (presenceService) { try { presenceService.setRecording(!!st.recording); } catch (e) {} }
             wasRecording = !!st.recording;
           };
         })(),
@@ -3571,6 +3612,12 @@ app.whenReady().then(async () => {
         log: msg => console.log('[meeting] ' + msg),
       });
       meetingRecorder.ensureWindow();   // arm the hidden window so a call can start recording instantly
+      // Built BEFORE the monitor starts, so the very first call transition has somewhere to go.
+      // Guarded on its own: a broken light or an unreachable broker must never cost us the recorder.
+      try {
+        presenceService = createPresenceService({ log: msg => console.log('[busy] ' + msg) });
+        presenceService.applySettings(meetingSettings());
+      } catch (e) { console.log('[busy] presence unavailable: ' + e.message); presenceService = null; }
       startMicMonitor();
     } catch (e) { reportBootFailure('the meeting recorder', e); try { stopMicMonitor(); } catch (er) {} disposeStage(meetingRecorder); meetingRecorder = null; }
 
@@ -3882,6 +3929,19 @@ app.whenReady().then(async () => {
     if (st.connected) { try { st.login = await githubService.accountLogin(); } catch (er) {} }
     return st;
   });
+  // Editor-only, like every handler around it: isFrom() keeps a drop-in page or a served app from
+  // reaching hardware. busyTest drives one output for a couple of seconds and then restores whatever
+  // the real presence state is, so pressing Test during a call cannot leave the light lying.
+  ipcMain.handle('busyTest', async (e, target) => {
+    if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
+    if (!presenceService) return { ok: false, error: 'busy status is unavailable' };
+    try { return await presenceService.test(String(target || '')); }
+    catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('busyStatus', async e => {
+    if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
+    return presenceService ? presenceService.getState() : { enabled: false };
+  });
   ipcMain.handle('connectGitHub', async e => isFrom(e, configWin) ? githubService.connect() : { ok: false, error: 'unauthorized' });
   ipcMain.handle('pollGitHubConnect', async e => {
     if (!isFrom(e, configWin)) return { ok: false, error: 'unauthorized' };
@@ -4099,7 +4159,12 @@ app.whenReady().then(async () => {
     // state, and setMic tears down and re-acquires the capture. Saving unrelated settings (slide
     // capture, theme, anything) must not do either, so they fire only on a real change.
     const nextMeeting = meetingSettings();
-    if (nextMeeting.recordApps !== prevMeeting.recordApps) startMicMonitor();   // re-arm with an edited app allowlist
+    // Re-arm on EITHER list: the monitor now watches the union of record apps and busy apps, so an
+    // edit to the busy list changes its argv too, as does toggling the feature on or off.
+    if (nextMeeting.recordApps !== prevMeeting.recordApps
+      || nextMeeting.busyApps !== prevMeeting.busyApps
+      || !!nextMeeting.busyEnabled !== !!prevMeeting.busyEnabled) startMicMonitor();
+    if (presenceService) { try { presenceService.applySettings(nextMeeting); } catch (e) { console.log('[busy] applySettings: ' + e.message); } }
     if (meetingRecorder && nextMeeting.micDevice !== prevMeeting.micDevice) {
       meetingRecorder.setMic(nextMeeting.micDevice);                            // push an edited mic to the recorder
     }
@@ -4379,6 +4444,7 @@ app.on('before-quit', () => {
   try { dev.stop(); } catch (e) {}                       // close HID devices + clear keep-alive/rescan timers — an open node-hid handle blocks process exit (Cmd+Q would hang -> force-quit)
   try { oauthHandler.stop(); } catch (e) {}              // stop OAuth callback server + background refresh timers
   try { stopMicMonitor(); } catch (e) {}                 // terminate the native mic-in-use monitor child
+  try { if (presenceService) presenceService.stop(); } catch (e) {}      // clear the busy light now rather than waiting for its 30s timeout, and tell HA we are gone
   try { if (meetingRecorder) meetingRecorder.dispose(); } catch (e) {}   // stop any recording + destroy the hidden capture window
   try { if (slideCapture) slideCapture.dispose(); } catch (e) {}         // destroy the hidden slide-capture window
   try { if (sysserver) sysserver.stop(); } catch (e) {}  // stop metrics timers + close the local server

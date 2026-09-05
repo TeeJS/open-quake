@@ -3771,8 +3771,13 @@
     const th = currentTheme();
     // Meeting recording settings (config.settings.meeting) — global so auto-record works regardless of
     // which app the panel is showing. Same shape as MEETING_DEFAULTS in main.js.
-    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', joplinEnabled: false, joplinUrl: '', joplinToken: '', joplinNotebook: 'NW Pipe', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30, highlightEnabled: false, panelsOpen: '', largeRecordButton: false }, (config.settings || {}).meeting || {});
+    const currentMe = () => Object.assign({ folder: '', processedFolder: '', processedByDate: false, transcribeUrl: '', analysisAi: 'claude', micDevice: '', echoGate: false, silenceStopMin: 0, autoRecord: false, recordApps: 'Zoom.exe,Teams.exe,ms-teams.exe', outlookEnabled: false, meetingInfoSource: 'classic', outlookAccount: '', outlookCalendar: 'Calendar', outlookSkipPrefixes: 'Canceled:', transcribeThreshold: '', myName: '', separateRecurring: false, appendMeetingName: false, separateTranscript: false, useDetailsFolder: false, transcribeHooksEnabled: false, preTranscribeCmd: '', postTranscribeCmd: '', taskListEnabled: false, taskListFolder: '', joplinEnabled: false, joplinUrl: '', joplinToken: '', joplinNotebook: 'NW Pipe', slideCaptureEnabled: false, slideAutoStartOnSelect: false, slideNotifications: true, slideHotkeyToggle: 'Ctrl+Alt+S', slideHotkeySelect: 'Ctrl+Alt+W', slideHotkeyManual: 'Ctrl+Alt+C', slideAppFilter: '', slideIdleStopMin: 30, highlightEnabled: false, panelsOpen: '', largeRecordButton: false, busyEnabled: false, busyApps: 'Zoom.exe,Teams.exe,ms-teams.exe,Webex.exe,slack.exe,Discord.exe', busyOnRecording: true, busyOffDelaySec: 5, busyLightEnabled: false, busyLightBusyColor: '#ff0000', busyLightFreeColor: '#00ff00', busyLightBrightness: 100, busyManualColor: '#a020f0', busyLightFreeOff: false, busySchedEnabled: false, busySchedDays: '1,2,3,4,5', busySchedStart: '08:00', busySchedEnd: '17:00', busySchedPerDay: false, busySchedTimes: {}, busyWledEnabled: false, busyWledHost: '', busyMqttEnabled: false, busyMqttUrl: '', busyMqttUser: '', busyMqttPassword: '', busyMqttBaseTopic: 'open-quake' }, (config.settings || {}).meeting || {});
     const me = currentMe();
+    // Day set for the busylight schedule. Built here so the markup below stays readable; the empty
+    // guard matters because ''.split(',') yields [''] and Number('') is 0, which would silently
+    // pre-tick Sunday for a user who has selected no days at all.
+    const schedDays = new Set(String(me.busySchedDays || '').split(/[,\s]+/)
+      .filter(x => x !== '').map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6));
     // Global TTS/STT (Wyoming) endpoints (config.settings.voice) — same shape as VOICE_DEFAULTS in
     // voiceConfig.js. Each service has its own host+port so STT and TTS can live on different servers.
     const currentVoice = () => Object.assign({ sttHost: '', sttPort: '10300', ttsHost: '', ttsPort: '10200' }, (config.settings || {}).voice || {});
@@ -3980,6 +3985,81 @@
       <div class="row" style="margin-top:12px"><label>Stop after silence</label>
         <input type="number" id="meSilence" min="0" step="1" value="${Number(me.silenceStopMin) || 0}" style="width:90px"> <span class="hint" style="margin:0 0 0 8px">minutes (0 = never)</span></div>
       <p class="hint">Automatically stop a recording after this many minutes with no audio on either channel.</p>
+
+      <p class="sectitle">Busy status</p>
+      <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meBusy" ${me.busyEnabled ? 'checked' : ''}> Show a busy indicator while you are on a call</label></div>
+      <details class="hint"><summary>Turns a busy light red while an app below has your microphone, and back to free when the call ends — replacing the light vendor's own software.</summary> Uses the same detection as auto-record, so it never triggers on Claude voice or other microphone use. Also publishes your status to Home Assistant if you enable it below.</details>
+      <div id="meBusyDeps"${me.busyEnabled ? '' : ' style="display:none"'}>
+        <div class="row"><label>Call apps</label>
+          <input id="meBusyApps" value="${esc(me.busyApps)}" style="flex:1"></div>
+        <p class="hint">Comma-separated Windows process names that count as being on a call. This list is separate from the auto-record list above — you may want the light for calls you do not record.</p>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meBusyRec" ${me.busyOnRecording ? 'checked' : ''}> Also show busy while open-quake is recording</label></div>
+        <div class="row" style="margin-top:12px"><label>Return to free after</label>
+          <input type="number" id="meBusyDelay" min="0" max="120" step="1" value="${Number(me.busyOffDelaySec) || 0}" style="width:90px"> <span class="hint" style="margin:0 0 0 8px">seconds</span></div>
+        <p class="hint">A short delay stops the light flickering when a call app briefly releases the microphone mid-meeting, which Teams does when the meeting window changes.</p>
+
+        <p class="sectitle" style="margin-top:20px">Busy light (USB)</p>
+        <div class="row"><label>Kuando Busylight</label><span id="meBusyLightStatus" class="hint" style="margin:0">Checking…</span></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meBusyLight" ${me.busyLightEnabled ? 'checked' : ''}> Drive a Kuando Busylight over USB</label></div>
+        <details class="hint"><summary>Talks to the light directly — Kuando's own Busylight for UC software must not be running.</summary> Windows lets only one program hold the device, so if theirs is running the light will appear to flicker or ignore open-quake. Uninstalling or quitting it is the fix.</details>
+        <div class="row"><label>Busy colour</label>
+          <input type="color" id="meBusyColor" value="${esc(me.busyLightBusyColor)}" style="width:64px;padding:2px">
+          <label style="width:auto;margin-left:16px">Free colour</label>
+          <input type="color" id="meFreeColor" value="${esc(me.busyLightFreeColor)}" style="width:64px;padding:2px"></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meFreeOff" ${me.busyLightFreeOff ? 'checked' : ''}> Turn the light off when free instead of showing the free colour</label></div>
+        <div class="row"><label>Custom colour</label>
+          <input type="color" id="meManualColor" value="${esc(me.busyManualColor)}" style="width:64px;padding:2px">
+          <span class="hint" style="margin:0 0 0 12px">Used by the panel's <b>Custom</b> busy mode; also pickable on the panel.</span></div>
+        <div class="row"><label>Brightness</label>
+          <input type="number" id="meBusyBright" min="1" max="100" step="1" value="${Number(me.busyLightBrightness) || 100}" style="width:90px"> <span class="hint" style="margin:0 0 0 8px">%</span></div>
+        <div class="row"><button id="meBusyTestLight" type="button">Test light</button> <span id="meBusyTestLightResult" class="hint" style="margin:0 0 0 10px"></span></div>
+        <div class="row" style="margin-top:14px"><label class="iconopt" style="width:auto"><input type="checkbox" id="meSched" ${me.busySchedEnabled ? 'checked' : ''}> Busylight schedule</label></div>
+        <details class="hint"><summary>Only drive the Busylight on the days and between the hours you pick.</summary> Outside the schedule the light stays off; the Home Assistant entity and any WLED light keep reporting normally. An end time earlier than the start time means the window runs overnight.</details>
+        <div id="meSchedDeps"${me.busySchedEnabled ? '' : ' style="display:none"'}>
+          <div class="row"><label>Days</label>
+            <span id="meSchedDays" style="display:flex;gap:14px;flex-wrap:wrap">${
+              ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((d, i) =>
+                `<label class="iconopt" style="width:auto;gap:5px"><input type="checkbox" data-day="${i}" ${schedDays.has(i) ? 'checked' : ''}> ${d}</label>`).join('')
+            }</span></div>
+          <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meSchedPerDay" ${me.busySchedPerDay ? 'checked' : ''}> Use different hours for each day</label></div>
+          <div id="meSchedShared"${me.busySchedPerDay ? ' style="display:none"' : ''}>
+            <div class="row"><label>Active from</label>
+              <input type="time" id="meSchedStart" value="${esc(me.busySchedStart)}" style="width:130px">
+              <label style="width:auto;margin-left:16px">to</label>
+              <input type="time" id="meSchedEnd" value="${esc(me.busySchedEnd)}" style="width:130px"></div>
+          </div>
+          <div id="meSchedPerDayRows"${me.busySchedPerDay ? '' : ' style="display:none"'}>${
+            ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((d, i) => schedDays.has(i)
+              ? `<div class="row"><label>${d}</label>
+                   <input type="time" data-daystart="${i}" value="${esc((me.busySchedTimes[i] || {}).s || me.busySchedStart)}" style="width:130px">
+                   <label style="width:auto;margin-left:16px">to</label>
+                   <input type="time" data-dayend="${i}" value="${esc((me.busySchedTimes[i] || {}).e || me.busySchedEnd)}" style="width:130px"></div>`
+              : '').join('')
+          }</div>
+          <p class="hint" id="meSchedSummary"></p>
+        </div>
+
+        <p class="sectitle" style="margin-top:20px">DIY light (WLED)</p>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meWled" ${me.busyWledEnabled ? 'checked' : ''}> Drive a WLED light over the network</label></div>
+        <div class="row"><label>Address</label>
+          <input id="meWledHost" value="${esc(me.busyWledHost)}" placeholder="192.168.1.50" style="flex:1"></div>
+        <p class="hint">The ESP32's IP address or hostname. Uses the same busy and free colours as the USB light.</p>
+        <div class="row"><button id="meBusyTestWled" type="button">Test light</button> <span id="meBusyTestWledResult" class="hint" style="margin:0 0 0 10px"></span></div>
+
+        <p class="sectitle" style="margin-top:20px">Home Assistant (MQTT)</p>
+        <div class="row"><label>Broker</label><span id="meMqttStatus" class="hint" style="margin:0">Not configured</span></div>
+        <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meMqtt" ${me.busyMqttEnabled ? 'checked' : ''}> Publish your busy status to Home Assistant</label></div>
+        <details class="hint"><summary>Creates a <b>binary_sensor.open_quake_busy</b> entity in Home Assistant automatically — no configuration needed on the Home Assistant side.</summary> Automations can trigger on it like any other sensor. If open-quake stops or the PC loses power, the entity goes <i>unavailable</i> on its own, so a light driven from it cannot get stuck showing busy. This is separate from the Home Assistant connection on the Auth tab, which is read-only.</details>
+        <div class="row"><label>Broker URL</label>
+          <input id="meMqttUrl" value="${esc(me.busyMqttUrl)}" placeholder="mqtt://192.168.1.25:1883" style="flex:1"></div>
+        <div class="row"><label>Username</label>
+          <input id="meMqttUser" value="${esc(me.busyMqttUser)}" style="flex:1"></div>
+        <div class="row"><label>Password</label>${secretInput(me.busyMqttPassword, 'id="meMqttPass" style="flex:1"', 'flex:1')}</div>
+        <p class="hint">Stored encrypted at rest. Leave both blank if your broker allows anonymous connections.</p>
+        <div class="row"><label>Topic prefix</label>
+          <input id="meMqttTopic" value="${esc(me.busyMqttBaseTopic)}" placeholder="open-quake" style="flex:1"></div>
+        <div class="row"><button id="meBusyTestMqtt" type="button">Test connection</button> <span id="meBusyTestMqttResult" class="hint" style="margin:0 0 0 10px"></span></div>
+      </div>
 
       <p class="sectitle">Capture</p>
       <div class="row"><label class="iconopt" style="width:auto"><input type="checkbox" id="meEcho" ${me.echoGate ? 'checked' : ''}> Echo-gate your microphone</label></div>
@@ -5221,6 +5301,137 @@
       };
       document.getElementById('meTransUrl').oninput = e => saveMe({ transcribeUrl: e.target.value.trim() });
       document.getElementById('meAnalysisAi').onchange = e => saveMe({ analysisAi: e.target.value });
+      // --- Busy status ---
+      const busyDeps = document.getElementById('meBusyDeps');
+      const syncBusyEnabled = on => { if (busyDeps) busyDeps.style.display = on ? '' : 'none'; };
+      document.getElementById('meBusy').onchange = e => { saveMe({ busyEnabled: e.target.checked }); syncBusyEnabled(e.target.checked); };
+      document.getElementById('meBusyApps').oninput = e => saveMe({ busyApps: e.target.value });
+      document.getElementById('meBusyRec').onchange = e => saveMe({ busyOnRecording: e.target.checked });
+      document.getElementById('meBusyDelay').oninput = e => saveMe({ busyOffDelaySec: Math.max(0, parseInt(e.target.value, 10) || 0) });
+      document.getElementById('meBusyLight').onchange = e => saveMe({ busyLightEnabled: e.target.checked });
+      document.getElementById('meBusyColor').oninput = e => saveMe({ busyLightBusyColor: e.target.value });
+      document.getElementById('meFreeColor').oninput = e => saveMe({ busyLightFreeColor: e.target.value });
+      document.getElementById('meFreeOff').onchange = e => saveMe({ busyLightFreeOff: e.target.checked });
+      document.getElementById('meManualColor').oninput = e => saveMe({ busyManualColor: e.target.value });
+
+      // --- Busylight schedule ---
+      // Re-rendering the whole tab on every change would steal focus mid-edit, so the per-day rows
+      // are rebuilt in place from the current day set instead.
+      const schedDeps = document.getElementById('meSchedDeps');
+      const schedShared = document.getElementById('meSchedShared');
+      const schedRows = document.getElementById('meSchedPerDayRows');
+      const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+      const readSchedDays = () => Array.from(document.querySelectorAll('#meSchedDays input[data-day]'))
+        .filter(c => c.checked).map(c => Number(c.dataset.day)).sort((a, b) => a - b);
+
+      const readSchedTimes = () => {
+        const out = {};
+        document.querySelectorAll('#meSchedPerDayRows input[data-daystart]').forEach(inp => {
+          const d = inp.dataset.daystart;
+          const end = document.querySelector('#meSchedPerDayRows input[data-dayend="' + d + '"]');
+          out[d] = { s: inp.value, e: end ? end.value : '' };
+        });
+        return out;
+      };
+
+      const renderSchedSummary = () => {
+        const el = document.getElementById('meSchedSummary'); if (!el) return;
+        const m = currentMe();
+        if (!m.busySchedEnabled) { el.textContent = ''; return; }
+        const days = readSchedDays();
+        if (!days.length) { el.textContent = 'No days selected — the light will never come on.'; return; }
+        const names = days.map(d => DAY_LABELS[d]).join(', ');
+        if (m.busySchedPerDay) { el.textContent = names + ', with hours set per day.'; return; }
+        const overnight = m.busySchedEnd <= m.busySchedStart ? ' (runs overnight)' : '';
+        el.textContent = names + ', ' + m.busySchedStart + ' to ' + m.busySchedEnd + overnight + '.';
+      };
+
+      const renderPerDayRows = () => {
+        if (!schedRows) return;
+        const m = currentMe();
+        const times = m.busySchedTimes || {};
+        schedRows.innerHTML = readSchedDays().map(i =>
+          '<div class="row"><label>' + DAY_LABELS[i] + '</label>'
+          + '<input type="time" data-daystart="' + i + '" value="' + esc((times[i] || {}).s || m.busySchedStart) + '" style="width:130px">'
+          + '<label style="width:auto;margin-left:16px">to</label>'
+          + '<input type="time" data-dayend="' + i + '" value="' + esc((times[i] || {}).e || m.busySchedEnd) + '" style="width:130px"></div>').join('');
+        schedRows.querySelectorAll('input[type=time]').forEach(inp => {
+          inp.oninput = () => { saveMe({ busySchedTimes: readSchedTimes() }); };
+        });
+      };
+
+      document.getElementById('meSched').onchange = e => {
+        saveMe({ busySchedEnabled: e.target.checked });
+        if (schedDeps) schedDeps.style.display = e.target.checked ? '' : 'none';
+        renderSchedSummary();
+      };
+      document.querySelectorAll('#meSchedDays input[data-day]').forEach(cb => {
+        cb.onchange = () => {
+          saveMe({ busySchedDays: readSchedDays().join(',') });
+          renderPerDayRows();          // a newly ticked day needs its own time row
+          saveMe({ busySchedTimes: readSchedTimes() });
+          renderSchedSummary();
+        };
+      });
+      document.getElementById('meSchedPerDay').onchange = e => {
+        saveMe({ busySchedPerDay: e.target.checked });
+        if (schedShared) schedShared.style.display = e.target.checked ? 'none' : '';
+        if (schedRows) schedRows.style.display = e.target.checked ? '' : 'none';
+        if (e.target.checked) { renderPerDayRows(); saveMe({ busySchedTimes: readSchedTimes() }); }
+        renderSchedSummary();
+      };
+      document.getElementById('meSchedStart').oninput = e => { saveMe({ busySchedStart: e.target.value }); renderSchedSummary(); };
+      document.getElementById('meSchedEnd').oninput = e => { saveMe({ busySchedEnd: e.target.value }); renderSchedSummary(); };
+      renderPerDayRows();
+      renderSchedSummary();
+      document.getElementById('meBusyBright').oninput = e => saveMe({ busyLightBrightness: Math.min(100, Math.max(1, parseInt(e.target.value, 10) || 100)) });
+      document.getElementById('meWled').onchange = e => saveMe({ busyWledEnabled: e.target.checked });
+      document.getElementById('meWledHost').oninput = e => saveMe({ busyWledHost: e.target.value });
+      document.getElementById('meMqtt').onchange = e => saveMe({ busyMqttEnabled: e.target.checked });
+      document.getElementById('meMqttUrl').oninput = e => saveMe({ busyMqttUrl: e.target.value });
+      document.getElementById('meMqttUser').oninput = e => saveMe({ busyMqttUser: e.target.value });
+      document.getElementById('meMqttPass').oninput = e => saveMe({ busyMqttPassword: e.target.value });
+      document.getElementById('meMqttTopic').oninput = e => saveMe({ busyMqttBaseTopic: e.target.value });
+
+      // Test buttons drive one output directly. They save first, because testing a value the user has
+      // typed but not saved would silently test the OLD value and report a misleading result.
+      const busyTest = (target, btnId, outId) => {
+        const btn = document.getElementById(btnId); if (!btn) return;
+        btn.onclick = async () => {
+          const out = document.getElementById(outId);
+          btn.disabled = true; if (out) out.textContent = 'Testing…';
+          try {
+            if (!await doSave()) { if (out) out.textContent = 'Save failed — not tested'; return; }
+            const r = await configApi.busyTest(target);
+            if (out) out.textContent = r && r.ok ? 'OK' : ('Failed: ' + ((r && (r.error || r.status)) || 'no response'));
+          } catch (err) { if (out) out.textContent = 'Failed: ' + (err && err.message ? err.message : String(err)); }
+          finally { btn.disabled = false; }
+        };
+      };
+      busyTest('light', 'meBusyTestLight', 'meBusyTestLightResult');
+      busyTest('wled', 'meBusyTestWled', 'meBusyTestWledResult');
+      busyTest('mqtt', 'meBusyTestMqtt', 'meBusyTestMqttResult');
+
+      // Live status lines, so the page says what it can actually see rather than only what is typed.
+      (async () => {
+        try {
+          const st = await configApi.busyStatus();
+          const light = document.getElementById('meBusyLightStatus');
+          if (light) {
+            const l = st && st.outputs && st.outputs.light;
+            light.textContent = l && l.connected ? ('Connected — ' + (l.product || 'Busylight'))
+              : (l && l.error ? l.error : 'Not detected');
+          }
+          const mq = document.getElementById('meMqttStatus');
+          if (mq) {
+            const m = st && st.outputs && st.outputs.mqtt;
+            mq.textContent = !m || !m.enabled ? 'Not configured'
+              : (m.connected ? 'Connected' : (m.error ? 'Error: ' + m.error : 'Connecting…'));
+          }
+        } catch (e) {}
+      })();
+
       document.getElementById('meAuto').onchange = e => { saveMe({ autoRecord: e.target.checked }); const deps = document.getElementById('meAutoDeps'); if (deps) deps.style.display = e.target.checked ? '' : 'none'; };
       document.getElementById('meApps').oninput = e => saveMe({ recordApps: e.target.value });
       document.getElementById('meSilence').onchange = e => saveMe({ silenceStopMin: Math.max(0, parseInt(e.target.value, 10) || 0) });

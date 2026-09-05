@@ -110,6 +110,62 @@ Recording and transcription for the Meeting panel (details in [meeting.md](meeti
   notes.
 - **Auto-record / Call apps / Stop after silence / Echo-gate** — unchanged recording
   behavior options.
+- **Busy status** — off by default. Turns a busy light red while a call app has your
+  microphone, and back to free when the call ends, replacing the light vendor's own
+  software. It uses the same app-scoped detection as auto-record, so it never triggers
+  on Claude voice or other microphone use.
+  - **Call apps** is a *separate* list from the auto-record one above, because the calls
+    worth showing a light for are usually more than the calls worth recording (Discord,
+    Slack and Webex are in the default list; the recorder's is not).
+  - **Also show busy while open-quake is recording** keeps the light on for a recording
+    you started by hand, after the call app has let go of the microphone.
+  - **Return to free after** is a short delay before going free. Teams releases and
+    retakes the microphone when its meeting window changes; without the delay the light
+    visibly blinks mid-meeting. Going *busy* is always immediate.
+  - **Busy light (USB)** drives a Kuando Busylight directly. **Kuando's own "Busylight
+    for UC" software must be closed or uninstalled** — Windows lets only one program hold
+    the device, so with both running the light appears to flicker or ignore open-quake.
+    That is the first thing to check if the light misbehaves. **Test light** confirms the
+    connection; the status line beside the checkbox reports the model it found.
+  - **Busylight schedule** — off by default. Restricts the Busylight to chosen days and
+    hours; outside the window it stays off. Tick the days (Mon–Fri by default) and set a
+    start and stop time. **Use different hours for each day** replaces the shared pair with
+    a start and stop for every ticked day.
+    - An end time earlier than the start runs the window **overnight**: `22:00`–`06:00` with
+      Friday ticked keeps the light active until 06:00 on Saturday, without ticking Saturday.
+      The window belongs to the day it started.
+    - Unticking every day means the light never comes on. An unparseable time is ignored and
+      the light works as if unscheduled, rather than going mysteriously dark.
+    - The schedule applies to the **USB Busylight only**. The Home Assistant entity and any
+      WLED light keep reporting your real status outside the window.
+  - **DIY light (WLED)** drives an ESP32 running WLED over the network — enter its IP
+    address. It uses the same busy and free colours.
+  - **Home Assistant (MQTT)** publishes a `binary_sensor.open_quake_busy` entity, created
+    automatically through MQTT discovery — nothing to configure on the Home Assistant
+    side. Automations trigger on it like any other sensor, and the attributes carry why
+    you are busy, which app, and since when. This is independent of the Home Assistant
+    connection on the **Auth** tab, which stays read-only. The broker password is
+    encrypted at rest.
+  - If open-quake stops, crashes, or the PC loses power, the light goes dark on its own
+    (the device requires a keep-alive) and the Home Assistant entity goes *unavailable*
+    (an MQTT last-will). Neither can get stuck showing you as busy.
+  - **Custom colour** is the colour the panel's **Custom** mode shows. Pick it here or on
+    the panel itself.
+  - On the panel, an opt-in **Busy** column shows the current state and offers four modes:
+    - **Auto** — follow the microphone and the recorder. The normal setting.
+    - **Busy** — force busy in the ordinary busy colour, for deep work or an in-person
+      visitor that no microphone can detect.
+    - **Free** — force free, even during a live call.
+    - **Custom** — force busy in your own colour, so "busy because I said so" looks
+      different from "busy because Teams has the mic". Tap **Custom** to switch to it using
+      the colour you last chose; tap it again while it is already active to change that
+      colour from eight presets. The choice is saved and survives a restart.
+
+    The state shown at the top of the column is what you *are* right now; the four buttons
+    are the mode you have *chosen*. In **Auto** those differ, which is the point.
+
+    The **Busy** button in the panel's top bar gains a red ring while you are busy, so the
+    state is visible with the column closed.
 - **Advanced → Pull meeting information from my calendar** — off by default. Choose a
   **Calendar source**:
   - **Classic Outlook (this PC)** attaches to the running OUTLOOK.EXE through COM and

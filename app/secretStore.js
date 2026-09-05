@@ -118,6 +118,12 @@ function createSecretStore({ safeStorage, dpapi, loadApps, log = () => {} }) {
     if (me && typeof me === 'object' && typeof me.joplinToken === 'string' && me.joplinToken !== '') {
       me.joplinToken = fn(me.joplinToken);
     }
+    // Busy-presence MQTT broker password. Registered here for the same reason as every entry above:
+    // a secret that is not listed in this function is written to config.json in cleartext, and
+    // nothing about the app looks or behaves any differently when that happens.
+    if (me && typeof me === 'object' && typeof me.busyMqttPassword === 'string' && me.busyMqttPassword !== '') {
+      me.busyMqttPassword = fn(me.busyMqttPassword);
+    }
     const oauth = config && config.settings && config.settings.oauth;
     if (oauth && typeof oauth === 'object') {
       const providers = oauth.providers && typeof oauth.providers === 'object' ? oauth.providers : {};

@@ -129,6 +129,49 @@
   .sstat b { color:var(--accent); font-variant-numeric:tabular-nums; }
   .sstat.warn { color:var(--danger); }
 
+  /* ---- busy column ----
+     Shape follows the Highlight column and docs/design-system.md: ONE primary control that IS the
+     state (no separate readout restating it), with secondary rows disclosed only when they apply.
+     Sizes come from the quake-touch-ui table: 112px primary console control, 64px standard rows,
+     26px state word, 18px action text, 15px non-critical status. */
+  #busy { display:none; flex:0 0 260px; background:var(--surf2); border-radius:18px; padding:18px; flex-direction:column; gap:14px; }
+  body.busyon.pbusy #busy { display:flex; }
+  /* The state IS the button. Tapping forces the opposite; colour and text change, geometry never
+     does, so the control stays pixel-stable across every state. */
+  .bbig { height:112px; border-radius:14px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px;
+    background:var(--ok,#2f8f5b); color:#04121f; width:100%; transition:background 180ms ease; }
+  .bbig .bword { font-size:26px; font-weight:800; letter-spacing:.5px; }
+  .bbig .bwhy { font-size:18px; font-weight:600; opacity:.8; text-align:center; padding:0 10px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:100%; }
+  body.isbusy .bbig { background:var(--danger); color:#1a0505; }
+  body.iscustom .bbig { background:var(--busycustom,#a020f0); color:#fff; }
+  /* 2x2 rather than four across: at 260px, four columns would be 55px wide each, under the 48px
+     minimum once padding is counted, and the labels would not fit. */
+  .bgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .bmode { height:64px; border-radius:12px; background:var(--surf); color:var(--fg);
+    font-size:18px; font-weight:700; border:0; display:flex; align-items:center; justify-content:center; gap:10px; }
+  .bmode.on { background:var(--accent); color:var(--accent-fg,#04121f); }
+  .bmode .sw { width:20px; height:20px; border-radius:50%; flex:0 0 auto; box-shadow:inset 0 0 0 2px rgba(255,255,255,.3); }
+  .bstat { font-size:15px; color:var(--dim); font-weight:600; text-align:center; min-height:20px; line-height:1.3; }
+  #btnBusyPanel { display:none; }
+  body.busyon #btnBusyPanel { display:block; }
+  body.busyon.isbusy #btnBusyPanel { box-shadow: inset 0 0 0 2px var(--danger); }
+
+  #bpick { display:none; position:absolute; inset:0; z-index:40; background:rgba(0,0,0,.55); }
+  body.bpicking #bpick { display:flex; align-items:center; justify-content:center; }
+  .bpbox { width:900px; background:var(--surf2); border-radius:18px; padding:24px; display:flex; flex-direction:column; gap:16px; }
+  .bphead { display:flex; align-items:center; gap:16px; }
+  .bptitle { font-size:26px; font-weight:800; flex:1; }
+  .bpclose { height:56px; min-width:56px; border-radius:12px; background:var(--surf); color:var(--dim); font-size:24px; font-weight:700; border:0; }
+  /* 4 x 2 so all eight fit with NO scrolling: 2 columns clipped the last row and fell back to a
+     native scrollbar, which is unusable with a finger. 2 rows x 72px + 12px gap = 156px, well inside
+     the 480px panel once the header and padding are counted. */
+  .bpgrid { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; }
+  .bpsw { height:96px; border-radius:12px; background:var(--surf); color:var(--fg); font-size:18px; font-weight:700;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; border:0; }
+  .bpsw .dot { width:40px; height:40px; border-radius:50%; flex:0 0 auto; box-shadow:inset 0 0 0 2px rgba(255,255,255,.25); }
+  .bpsw.on { background:var(--accent); color:var(--accent-fg,#04121f); }
+
   /* ---- highlight column ---- */
   #hl { display:none; flex:0 0 260px; background:var(--surf2); border-radius:18px; padding:18px; flex-direction:column; gap:14px; }
   body.hlon.phl #hl { display:flex; }
@@ -267,6 +310,7 @@
       <button class="topBtn colBtn press foc" id="btnCtlPanel" type="button">Control</button>
       <button class="topBtn colBtn press foc" id="btnSlidePanel" type="button">Slide Capture</button>
       <button class="topBtn colBtn press foc" id="btnHlPanel" type="button">Highlight</button>
+      <button class="topBtn colBtn press foc" id="btnBusyPanel" type="button">Busy</button>
       <div id="status">Ready</div>
       <div id="spacer"></div>
       <button class="topBtn press foc" id="btnAnalysis" type="button">Analysis</button>
@@ -314,6 +358,25 @@
         <button class="hbig press foc" id="hlToggle" type="button"><span class="hglyph"></span><span class="hlbl">Start highlighting</span></button>
         <button class="hclear press foc" id="hlClear" type="button">Clear current highlight</button>
         <div class="hstat" id="hlStat"></div>
+      </div>
+
+      <div id="busy">
+        <div class="rlabel">BUSY STATUS</div>
+        <div class="bbig"><span class="bword" id="busyWord">Free</span><span class="bwhy" id="busyWhy">&nbsp;</span></div>
+        <div class="bgrid">
+          <button class="bmode press foc" id="busyAuto" type="button">Auto</button>
+          <button class="bmode press foc" id="busyBusy" type="button">Busy</button>
+          <button class="bmode press foc" id="busyFree" type="button">Free</button>
+          <button class="bmode press foc" id="busyCustom" type="button">Custom<span class="sw" id="busySw"></span></button>
+        </div>
+        <div class="bstat" id="busyStat"></div>
+      </div>
+
+      <div id="bpick">
+        <div class="bpbox">
+          <div class="bphead"><div class="bptitle">Custom colour</div><button class="bpclose foc" id="bpCancel" type="button">&times;</button></div>
+          <div class="bpgrid" id="bpGrid"></div>
+        </div>
       </div>
 
       <div id="scrim"></div>
